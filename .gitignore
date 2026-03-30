@@ -1,0 +1,8 @@
+reference/
+target/
+DatRoot/
+ToSort/
+*.tmp
+*.Cache
+*Cache_tmp
+*CacheBackup

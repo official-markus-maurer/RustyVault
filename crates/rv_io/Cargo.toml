@@ -1,0 +1,5 @@
+[package]
+name = "rv_io"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true

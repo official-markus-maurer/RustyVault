@@ -1,0 +1,11 @@
+[package]
+name = "trrntzip_cmd"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+trrntzip = { path = "../trrntzip" }
+compress = { path = "../compress" }
+rv_io = { path = "../rv_io" }
+

@@ -1,0 +1,19 @@
+[package]
+name = "rv_core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+dat_reader = { path = "../dat_reader" }
+compress = { path = "../compress" }
+bitflags = { version = "2.4", features = ["serde"] }
+md-5 = "0.10"
+sha1 = "0.10"
+crc32fast = "1.3"
+chrono = "0.4"
+byteorder = "1.5.0"
+bincode = { version = "2.0.0-rc.3", features = ["serde"] }
+serde = { version = "1.0.228", features = ["derive", "rc"] }
+rayon = "1.11.0"
+memmap2 = "0.9"

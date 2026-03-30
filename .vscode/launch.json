@@ -1,0 +1,50 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug RomVault UI",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=romvault_ui",
+                    "--package=romvault_ui"
+                ],
+                "filter": {
+                    "name": "romvault_ui",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "RUST_BACKTRACE": "1"
+            },
+            "sourceLanguages": ["rust"],
+            "preLaunchTask": "cargo build",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Debug RomVault UI (Release)",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--release",
+                    "--bin=romvault_ui",
+                    "--package=romvault_ui"
+                ],
+                "filter": {
+                    "name": "romvault_ui",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "sourceLanguages": ["rust"],
+            "console": "integratedTerminal"
+        }
+    ]
+}

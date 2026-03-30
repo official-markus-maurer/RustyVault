@@ -1,0 +1,13 @@
+[package]
+name = "compress"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+bitflags = "2.4"
+zip = "0.6"
+sevenz-rust = "0.6"
+flate2 = "1.0"
+time = "0.3"
+

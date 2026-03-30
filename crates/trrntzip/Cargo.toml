@@ -1,0 +1,10 @@
+[package]
+name = "trrntzip"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+compress = { path = "../compress" }
+bitflags = "2.4"
+crc32fast = "1.3"

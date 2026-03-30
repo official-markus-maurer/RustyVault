@@ -1,0 +1,12 @@
+[package]
+name = "dir2dat"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+dat_reader = { path = "../dat_reader" }
+rv_core = { path = "../rv_core" }
+compress = { path = "../compress" }
+rv_io = { path = "../rv_io" }
+file_header_reader = { path = "../file_header_reader" }

@@ -1,0 +1,11 @@
+[package]
+name = "rom_vault"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+rv_core = { path = "../rv_core" }
+dat_reader = { path = "../dat_reader" }
+compress = { path = "../compress" }
+

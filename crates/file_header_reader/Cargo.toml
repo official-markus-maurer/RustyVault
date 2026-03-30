@@ -1,0 +1,9 @@
+[package]
+name = "file_header_reader"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+dat_reader = { path = "../dat_reader" }
+
