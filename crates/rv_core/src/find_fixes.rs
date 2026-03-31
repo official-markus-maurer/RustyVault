@@ -5,9 +5,21 @@ use dat_reader::enums::{DatStatus, GotStatus};
 use crate::enums::RepStatus;
 use crate::rv_file::RvFile;
 
+/// The logical matching engine for resolving missing ROMs.
+/// 
+/// `FindFixes` is responsible for calculating the logical repair state (`RepStatus`) of the 
+/// database. It identifies missing files in the primary `RustyVault` and attempts to map them 
+/// to available files sitting in `ToSort` using exact CRC/SHA1/MD5 hash matching.
+/// 
+/// Differences from C#:
+/// - The C# reference uses complex multithreading/Task dispatching for hashing and checking rules.
+/// - The Rust version currently implements a linear traversal and simple in-memory `HashMap` lookup
+///   to perform hash matching between `Got` files and `Missing` files.
+/// - CHDs and advanced rules (like size-only matching) are currently simplified compared to C#'s `FindFixes.cs`.
 pub struct FindFixes;
 
 impl FindFixes {
+    /// Recursively scans the tree to pair `Missing` files with unassigned `Got` files.
     pub fn scan_files(root: Rc<RefCell<RvFile>>) {
         // Step 1: Reset Status
         Self::reset_status(Rc::clone(&root));
@@ -144,8 +156,9 @@ impl FindFixes {
                 got_ref.set_rep_status(RepStatus::CorrectMIA);
                 got_ref.cached_stats = None;
             } else if got_ref.dat_status() == DatStatus::InToSort {
-                // Keep in tosort unless needed
-                got_ref.set_rep_status(RepStatus::Delete); // Wait, C# says if it's in ToSort and not needed, it should be deleted.
+                // Keep in tosort unless needed, if it's unused in ToSort, mark it as UnNeeded so it gets skipped
+                // The C# RomVault just leaves them in ToSort unless they are fixed or deleted by double-check
+                got_ref.set_rep_status(RepStatus::UnScanned);
                 got_ref.cached_stats = None;
             } else if got_ref.dat_status() == DatStatus::NotInDat {
                 got_ref.set_rep_status(RepStatus::MoveToSort);

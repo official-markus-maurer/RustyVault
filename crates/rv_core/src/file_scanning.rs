@@ -3,13 +3,31 @@ use std::cell::RefCell;
 use crate::rv_file::RvFile;
 use crate::scanned_file::ScannedFile;
 use crate::compare::FileCompare;
-use dat_reader::enums::{FileType, GotStatus};
+use dat_reader::enums::FileType;
 
+/// Synchronization engine between the physical filesystem and the internal database tree.
+/// 
+/// `FileScanning` compares the `ScannedFile` output produced by the `Scanner` against the
+/// existing `RvFile` nodes in the `dir_root` tree. It updates the `GotStatus` of nodes
+/// (e.g. `Got`, `NotGot`, `Corrupt`) based on whether the physical files still exist and match 
+/// their expected cryptographic hashes.
+/// 
+/// Differences from C#:
+/// - The C# `FileScanning` algorithm contains extensive `Phase2` deep-scan matching, CHD format 
+///   validation, and highly complex status propagation rules.
+/// - The Rust version implements a simplified 3-way merge algorithm (DB <-> FS). It correctly 
+///   handles basic matching (`Phase 1`), marking files as `Got` or inserting `NotInDat` orphans, 
+///   but skips some of the advanced header/CHD deep scan recoveries.
 pub struct FileScanning;
 
 impl FileScanning {
+    /// Recursively walks a physical directory tree alongside a DB directory tree,
+    /// syncing the physical findings into the database.
     pub fn scan_dir(db_dir: Rc<RefCell<RvFile>>, file_dir: &mut ScannedFile) {
         file_dir.sort();
+        db_dir.borrow_mut().children.sort_by(|a, b| {
+            a.borrow().name.to_lowercase().cmp(&b.borrow().name.to_lowercase())
+        });
         
         let mut db_index = 0;
         let mut file_index = 0;
@@ -92,15 +110,15 @@ impl FileScanning {
         match db_c.file_type {
             FileType::Zip | FileType::SevenZip => {
                 let status = db_c.dat_status();
-                db_c.set_dat_got_status(status, GotStatus::Got);
+                db_c.set_dat_got_status(status, dat_reader::enums::GotStatus::Got);
             },
             FileType::Dir => {
                 let status = db_c.dat_status();
-                db_c.set_dat_got_status(status, GotStatus::Got);
+                db_c.set_dat_got_status(status, dat_reader::enums::GotStatus::Got);
             },
             FileType::File => {
                 let status = db_c.dat_status();
-                db_c.set_dat_got_status(status, GotStatus::Got);
+                db_c.set_dat_got_status(status, dat_reader::enums::GotStatus::Got);
                 db_c.size = file_child.size;
                 db_c.crc = file_child.crc.clone();
                 db_c.sha1 = file_child.sha1.clone();
@@ -108,6 +126,7 @@ impl FileScanning {
             },
             _ => {}
         }
+        db_c.rep_status_reset();
     }
 
     fn new_file_found(file_child: &ScannedFile, db_dir: Rc<RefCell<RvFile>>, db_index: usize) {
@@ -117,9 +136,19 @@ impl FileScanning {
         new_child.crc = file_child.crc.clone();
         new_child.sha1 = file_child.sha1.clone();
         new_child.md5 = file_child.md5.clone();
-        new_child.set_dat_got_status(dat_reader::enums::DatStatus::NotInDat, GotStatus::Got);
+        
+        let parent_dat_status = db_dir.borrow().dat_status();
+        let new_dat_status = if parent_dat_status == dat_reader::enums::DatStatus::InToSort {
+            dat_reader::enums::DatStatus::InToSort
+        } else {
+            dat_reader::enums::DatStatus::NotInDat
+        };
+        
+        new_child.set_dat_got_status(new_dat_status, dat_reader::enums::GotStatus::Got);
+        new_child.rep_status_reset();
         
         let rc_child = Rc::new(RefCell::new(new_child));
+        rc_child.borrow_mut().parent = Some(Rc::downgrade(&db_dir));
         
         let mut dir = db_dir.borrow_mut();
         dir.cached_stats = None; // Invalidate parent cache
@@ -130,7 +159,14 @@ impl FileScanning {
         let should_remove = {
             let mut c = db_child.borrow_mut();
             c.cached_stats = None;
-            c.file_remove()
+            
+            // If it's a known Dat file/directory, we shouldn't fully remove it on missing scan
+            // Just mark it as NotGot
+            if c.dat_status() == dat_reader::enums::DatStatus::NotInDat || c.dat_status() == dat_reader::enums::DatStatus::InToSort {
+                c.file_remove()
+            } else {
+                false
+            }
         };
 
         let mut dir = db_dir.borrow_mut();
@@ -144,8 +180,13 @@ impl FileScanning {
                 FileType::Zip | FileType::SevenZip | FileType::Dir => {
                     c.mark_as_missing();
                 }
+                FileType::File => {
+                    let status = c.dat_status();
+                    c.set_dat_got_status(status, dat_reader::enums::GotStatus::NotGot);
+                }
                 _ => {}
             }
+            c.rep_status_reset();
             *db_index += 1;
         }
     }

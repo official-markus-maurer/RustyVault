@@ -1,5 +1,13 @@
 use std::path::Path as StdPath;
 
+/// Cross-platform wrapper for path string manipulation.
+/// 
+/// `Path` mimics the static methods of the C# `System.IO.Path` class,
+/// providing standard wrappers for extracting file extensions, names, and directories
+/// from string paths.
+/// 
+/// Differences from C#:
+/// - Internally utilizes Rust's highly robust `std::path::Path` rather than raw string splitting.
 pub struct Path;
 
 impl Path {

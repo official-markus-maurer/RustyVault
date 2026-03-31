@@ -17,3 +17,5 @@ bincode = { version = "2.0.0-rc.3", features = ["serde"] }
 serde = { version = "1.0.228", features = ["derive", "rc"] }
 rayon = "1.11.0"
 memmap2 = "0.9"
+quick-xml = { version = "0.39.2", features = ["serialize"] }
+zip = "8.4.0"

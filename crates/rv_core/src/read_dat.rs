@@ -11,9 +11,22 @@ use crate::rv_game::RvGame;
 use dat_reader::enums::DatStatus;
 use rayon::prelude::*;
 
+/// Central engine for reading DAT files and integrating them into the `DB` tree.
+/// 
+/// `DatUpdate` reads the physical `.dat` / `.xml` files residing in the `DatRoot` folder,
+/// parses them using `dat_reader`, and translates the resulting `DatNode` hierarchies into
+/// `RvFile` nodes within the `dir_root` DB tree.
+/// 
+/// Differences from C#:
+/// - The C# implementation uses background workers for XML parsing but integrates into the UI thread synchronously.
+/// - The Rust version implements highly scalable parallelization via `rayon`. It first reads and parses 
+///   ALL `.dat` files simultaneously in parallel (since XML/CMP parsing is CPU bound and independent).
+///   It then sequentially integrates the parsed ASTs into the `Rc<RefCell<RvFile>>` tree, dramatically
+///   reducing the "Update DATs" time for large `DatRoot` setups.
 pub struct DatUpdate;
 
 impl DatUpdate {
+    /// Recursively scans `dat_dir_path`, parses all found DATs in parallel, and merges them into `root`.
     pub fn update_dat(root: Rc<RefCell<RvFile>>, dat_dir_path: &str) {
         println!("Scanning for DATs in {}...", dat_dir_path);
         
@@ -79,6 +92,9 @@ impl DatUpdate {
                                     if found.is_none() {
                                         let mut new_dir = RvFile::new(FileType::Dir);
                                         new_dir.name = part.to_string();
+                                        // Virtual directories for organizing DATs should not be removed if they are missing on disk
+                                        new_dir.set_dat_got_status(dat_reader::enums::DatStatus::InDatCollect, dat_reader::enums::GotStatus::NotGot);
+                                        new_dir.rep_status_reset();
                                         let d_rc = Rc::new(RefCell::new(new_dir));
                                         cp_mut.child_add(Rc::clone(&d_rc));
                                         found = Some(d_rc);
@@ -105,10 +121,19 @@ impl DatUpdate {
                         }
                         
                         let target_dir = match target_dir {
-                            Some(d) => d,
+                            Some(d) => {
+                                // If the DAT directory already exists, we must clear its old children 
+                                // to prevent duplicating the entire DAT when clicking "Update DATs"
+                                d.borrow_mut().children.clear();
+                                // Also clear its cached stats so it recalculates
+                                d.borrow_mut().cached_stats = None;
+                                d
+                            },
                             None => {
                                 let mut new_dir = RvFile::new(FileType::Dir);
                                 new_dir.name = dir_name;
+                                new_dir.set_dat_got_status(dat_reader::enums::DatStatus::InDatCollect, dat_reader::enums::GotStatus::NotGot);
+                                new_dir.rep_status_reset();
                                 let d_rc = Rc::new(RefCell::new(new_dir));
                                 rv_dir_mut.child_add(Rc::clone(&d_rc));
                                 d_rc
@@ -146,6 +171,10 @@ impl DatUpdate {
             let d_dir = dat_node.dir().unwrap();
             new_rv.set_zip_dat_struct(d_dir.dat_struct(), d_dir.dat_struct_fix());
             
+            // Initially a DAT dir/game is completely "Missing"
+            new_rv.set_dat_got_status(dat_reader::enums::DatStatus::InDatCollect, dat_reader::enums::GotStatus::NotGot);
+            new_rv.rep_status_reset();
+            
             if let Some(ref d_game) = d_dir.d_game {
                 new_rv.game = Some(Rc::new(RefCell::new(RvGame::from_dat_game(d_game))));
             }
@@ -168,6 +197,10 @@ impl DatUpdate {
             }
             new_rv.status = d_file.status.clone();
             new_rv.set_header_file_type(d_file.header_file_type);
+
+            // Initially a DAT file is completely "Missing" because we haven't scanned
+            new_rv.set_dat_got_status(dat_reader::enums::DatStatus::InDatCollect, dat_reader::enums::GotStatus::NotGot);
+            new_rv.rep_status_reset();
 
             let new_rc = Rc::new(RefCell::new(new_rv));
             parent.borrow_mut().child_add(new_rc);
@@ -211,6 +244,7 @@ impl DatUpdate {
         }
     }
 
+    /// Cleans up orphaned DB nodes whose underlying physical DAT files have been deleted.
     pub fn check_all_dats(db_file: Rc<RefCell<RvFile>>, dat_path: &str) {
         let db_dir = db_file.borrow();
         if !db_dir.is_directory() {

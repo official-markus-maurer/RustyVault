@@ -1,3 +1,10 @@
+/// Return codes and states for archive operations.
+/// 
+/// `ZipReturn` and `ZipOpenType` define the possible error states and I/O modes
+/// when interacting with `ICompress` implementations.
+/// 
+/// Differences from C#:
+/// - Identical 1:1 mapping to the C# `Compress` enums.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ZipReturn {
     ZipGood,

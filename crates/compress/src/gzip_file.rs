@@ -11,6 +11,13 @@ use crate::i_compress::ICompress;
 use crate::structured_archive::ZipStructure;
 use crate::zip_enums::{ZipOpenType, ZipReturn};
 
+/// `ICompress` implementation for `.gz` files.
+/// 
+/// `GZipFile` acts as an adapter allowing the scanner to stream and hash the internal 
+/// contents of a single-file GZip archive without extracting it to disk.
+/// 
+/// Differences from C#:
+/// - Functionally identical, but utilizes the ecosystem `flate2` crate instead of custom C# streams.
 pub struct GZipFile {
     filename: String,
     zip_open_type: ZipOpenType,

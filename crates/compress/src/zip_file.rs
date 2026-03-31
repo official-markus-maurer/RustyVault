@@ -9,6 +9,19 @@ use crate::zip_enums::{ZipOpenType, ZipReturn};
 
 use zip::{ZipArchive, ZipWriter};
 
+/// ICompress wrapper for `.zip` files.
+/// 
+/// `ZipFile` implements the `ICompress` trait for standard ZIP archives using the ecosystem
+/// `zip` crate. It handles opening the archive, reading its internal Central Directory headers,
+/// and streaming out the uncompressed byte payloads for the scanner.
+/// 
+/// Differences from C#:
+/// - The C# `Compress.ZipFile` is a fully custom, hand-rolled ZIP parser. It allows for 
+///   arbitrary byte-level injection, custom header formatting, and zero-copy streaming 
+///   directly into a newly formatted `TorrentZip` output stream.
+/// - This Rust implementation delegates to the standard `zip` crate. It perfectly supports 
+///   extraction and hashing (`ZipFileOpenReadStream`), but does not yet implement the highly 
+///   specialized in-place TorrentZip repacking APIs (`ZipFileOpenWriteStream`).
 pub struct ZipFile {
     zip_filename: String,
     zip_open_type: ZipOpenType,

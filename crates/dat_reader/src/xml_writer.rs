@@ -1,6 +1,17 @@
 use crate::dat_store::DatHeader;
 use std::io::{self, Write};
 
+/// Logic for serializing a DAT AST back into an XML file.
+/// 
+/// `DatXmlWriter` takes the `DatHeader` and its underlying `DatNode` tree and 
+/// formats it into a standard Logiqx XML DAT format. This is heavily utilized
+/// by the `dir2dat` tool and the `fix_dat_report` exporter.
+/// 
+/// Differences from C#:
+/// - The C# `DatClean` logic and `FixDat` writers contain highly specialized XML writers
+///   with deep formatting rules for different DAT engines (e.g. MAME vs ClrMamePro).
+/// - The Rust version is currently a simplified generic XML emitter that covers the 
+///   standard Logiqx fields but does not yet support arbitrary DOCTYPE emulation.
 pub struct DatXmlWriter;
 
 impl DatXmlWriter {

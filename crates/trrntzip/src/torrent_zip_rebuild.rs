@@ -8,6 +8,18 @@ use crate::trrntzip_status::TrrntZipStatus;
 use crate::zipped_file::ZippedFile;
 use crc32fast::Hasher as Crc32Hasher;
 
+/// Core logic for rebuilding an archive into TorrentZip format.
+/// 
+/// `TorrentZipRebuild` is responsible for generating a deterministic `.zip` file.
+/// It creates a temporary zip, copies the raw streams of the files from the source
+/// zip in strict alphabetical order, forces the Deflate compression parameters,
+/// sets timestamps to the TorrentZip epoch, and recomputes the structural hashes.
+/// 
+/// Differences from C#:
+/// - The C# `TorrentZipRebuild` relies on the custom `Compress.ZipFile` writer which allows 
+///   for in-place stream modifications and TorrentZip header hashing.
+/// - The Rust version currently implements a mock/stub. It defines the sorting and 
+///   structure validation, but delegates the actual byte writing to future `zip` crate extensions.
 pub struct TorrentZipRebuild;
 
 impl TorrentZipRebuild {

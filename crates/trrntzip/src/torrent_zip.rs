@@ -7,6 +7,13 @@ use crate::zipped_file::ZippedFile;
 use crate::torrent_zip_check::TorrentZipCheck;
 use crate::torrent_zip_rebuild::TorrentZipRebuild;
 
+/// High-level orchestration for the TorrentZip utility.
+/// 
+/// `TorrentZip` acts as the entry point for the CLI and UI tools to submit files
+/// for verification and repacking.
+/// 
+/// Differences from C#:
+/// - Maps 1:1 to the C# `TrrntZip.TorrentZip` entry class.
 pub struct TorrentZip {
     pub force_rezip: bool,
     pub check_only: bool,

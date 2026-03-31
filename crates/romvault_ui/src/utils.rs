@@ -1,3 +1,11 @@
+/// Utility functions for the UI layer.
+/// 
+/// `utils.rs` contains shared helper logic, specifically the status bar coloring mappings,
+/// which translate internal `RepStatus` enums into the actual RGBA color codes used by 
+/// the `egui` rendering engine.
+/// 
+/// Differences from C#:
+/// - Functionally mirrors the hardcoded WinForms `Color` assignments in the original `RvTreeRow.cs`.
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::io::Read as _;

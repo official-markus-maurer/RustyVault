@@ -3,10 +3,21 @@ use crate::scanned_file::ScannedFile;
 use dat_reader::enums::FileType;
 use crate::settings::EScanLevel;
 
+/// Logic for comparing physically scanned files against database nodes.
+/// 
+/// `FileCompare` evaluates whether a `ScannedFile` (physical) correctly matches an `RvFile` (logical)
+/// based on name, size, timestamps, and cryptographic hashes.
+/// 
+/// Differences from C#:
+/// - The C# implementation contains deep logic for `Phase2Test`, which attempts to fuzzy-match files
+///   that might have incorrect names or be stripped of extraneous headers.
+/// - The Rust version currently only implements `phase_1_test`, focusing strictly on exact name 
+///   and hash/timestamp equivalence.
 pub struct FileCompare;
 
+/// Performs a basic alphabetical name comparison between a DB file and a scanned file.
 pub fn compare_db_to_file(db_file: &RvFile, file_c: &ScannedFile) -> i32 {
-    let name_cmp = db_file.name.as_bytes().cmp(file_c.name.as_bytes());
+    let name_cmp = db_file.name.to_lowercase().cmp(&file_c.name.to_lowercase());
     match name_cmp {
         std::cmp::Ordering::Less => -1,
         std::cmp::Ordering::Equal => 0,
@@ -15,6 +26,10 @@ pub fn compare_db_to_file(db_file: &RvFile, file_c: &ScannedFile) -> i32 {
 }
 
 impl FileCompare {
+    /// Core evaluation logic that matches physical metadata against logical expected metadata.
+    /// 
+    /// This function strictly evaluates "Phase 1" equivalence: Exact File Name, Size, CRC,
+    /// SHA1, and MD5 matching depending on the strictness of the current `EScanLevel` settings.
     pub fn phase_1_test(db_file: &RvFile, test_file: &ScannedFile, e_scan_level: EScanLevel, index_case: i32) -> (bool, bool) {
         let mut matched_alt = false;
 

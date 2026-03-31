@@ -1,10 +1,15 @@
 use std::env;
-use std::io::{self, Write};
+use std::io;
 use compress::structured_archive::ZipStructure;
 use trrntzip::torrent_zip::TorrentZip;
 use rv_io::directory::Directory;
 use rv_io::directory_info::DirectoryInfo;
 
+/// CLI tool for verifying and rebuilding `.zip` files into `TorrentZip` format.
+/// 
+/// `trrntzip_cmd` mirrors the exact command-line arguments and capabilities of the C# 
+/// `TrrntZip.Net` utility, allowing users to normalize archive file metadata (like timestamps
+/// and file ordering) so their CRCs are deterministic across all computers.
 fn main() {
     let args: Vec<String> = env::args().collect();
 

@@ -10,6 +10,18 @@ use crate::zip_enums::{ZipOpenType, ZipReturn};
 // Using sevenz-rust crate
 use sevenz_rust::{Archive, Password, SevenZArchiveEntry};
 
+/// ICompress wrapper for `.7z` archives.
+/// 
+/// `SevenZipFile` implements the `ICompress` trait for 7z files, allowing the scanner to 
+/// open, read headers, and extract payloads from 7-Zip archives.
+/// 
+/// Differences from C#:
+/// - The C# `Compress.SevenZip` library is a massively complex custom LZMA decoder built 
+///   specifically to handle solid-block streaming and chunked hashing without extracting 
+///   the entire solid block to disk.
+/// - The Rust version utilizes the `sevenz-rust` crate. It successfully reads and extracts 
+///   files, but currently lacks the granular solid-block stream-hashing optimizations present 
+///   in the custom C# engine, meaning it may use more memory when extracting very large solid 7z files.
 pub struct SevenZipFile {
     zip_filename: String,
     zip_open_type: ZipOpenType,

@@ -2,6 +2,15 @@ use crate::dat_store::{DatDir, DatGame, DatHeader, DatNode};
 use crate::enums::FileType;
 use crate::cmp_reader::DatFileLoader;
 
+/// DOSCenter DAT parser.
+/// 
+/// `dos_reader.rs` parses the legacy DOSCenter DAT format, which structurally resembles
+/// ClrMamePro (CMP) but uses parentheses `( )` instead of curly braces for blocks.
+/// 
+/// Differences from C#:
+/// - Like `rom_center_reader`, this heavily leverages the zero-copy `DatFileLoader` 
+///   tokenizer from `cmp_reader.rs` for extreme speed and memory efficiency compared 
+///   to standard C# `StreamReader` loops.
 pub fn read_dos_dat(input: &str, filename: &str) -> Result<DatHeader, String> {
     let mut dfl = DatFileLoader::new(input);
     let mut dat_header = DatHeader {

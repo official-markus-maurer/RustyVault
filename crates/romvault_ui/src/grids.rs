@@ -10,6 +10,15 @@ use rv_core::file_scanning::FileScanning;
 use rv_core::rv_file::RvFile;
 use rv_core::scanner::Scanner;
 
+/// Logic for rendering the DataGridView component.
+/// 
+/// `grids.rs` contains the logic for rendering the right-hand panel of the main UI,
+/// which displays the children of the currently selected tree node in a tabular format.
+/// 
+/// Differences from C#:
+/// - C# utilizes the stateful `WinForms.DataGridView` control.
+/// - The Rust version manually draws an `egui::Grid`, dynamically fetching the currently 
+///   selected node from the `RomVaultApp` state and rendering its children every frame.
 impl RomVaultApp {
     pub fn draw_game_grid(&mut self, ui: &mut egui::Ui) {
         let selection_color = ui.style().visuals.selection.bg_fill;
@@ -65,7 +74,11 @@ impl RomVaultApp {
                         if node.parent.is_some() {
                             body.row(20.0, |mut row| {
                                 row.col(|ui| {
-                                    ui.add(egui::Image::new(include_asset!("Dir.png")).max_width(16.0));
+                                    ui.add(
+                                        egui::Image::new(include_asset!("Dir.png"))
+                                            .texture_options(egui::TextureOptions::NEAREST)
+                                            .max_width(16.0),
+                                    );
                                 });
                                 row.col(|ui| {
                                     let label_resp = ui.add(egui::SelectableLabel::new(false, ".."));
@@ -205,7 +218,11 @@ impl RomVaultApp {
                             body.row(20.0, |mut row| {
                                 row.col(|ui| {
                                     ui.painter().rect_filled(ui.max_rect(), 0.0, row_color);
-                                    ui.add(egui::Image::new(file_icon).max_width(16.0));
+                                    ui.add(
+                                        egui::Image::new(file_icon)
+                                            .texture_options(egui::TextureOptions::NEAREST)
+                                            .max_width(16.0),
+                                    );
                                 });
                                 row.col(|ui| {
                                     ui.painter().rect_filled(ui.max_rect(), 0.0, row_color);
@@ -341,6 +358,7 @@ impl RomVaultApp {
                                         if correct > 0 {
                                             ui.add(
                                                 egui::Image::new(include_asset!("G_Correct.png"))
+                                                    .texture_options(egui::TextureOptions::NEAREST)
                                                     .max_width(16.0),
                                             );
                                             ui.label(correct.to_string());
@@ -348,6 +366,7 @@ impl RomVaultApp {
                                         if missing > 0 {
                                             ui.add(
                                                 egui::Image::new(include_asset!("G_Missing.png"))
+                                                    .texture_options(egui::TextureOptions::NEAREST)
                                                     .max_width(16.0),
                                             );
                                             ui.label(missing.to_string());
@@ -355,6 +374,7 @@ impl RomVaultApp {
                                         if fixes > 0 {
                                             ui.add(
                                                 egui::Image::new(include_asset!("G_CanBeFixed.png"))
+                                                    .texture_options(egui::TextureOptions::NEAREST)
                                                     .max_width(16.0),
                                             );
                                             ui.label(fixes.to_string());
@@ -362,6 +382,7 @@ impl RomVaultApp {
                                         if unknown > 0 {
                                             ui.add(
                                                 egui::Image::new(include_asset!("G_Unknown.png"))
+                                                    .texture_options(egui::TextureOptions::NEAREST)
                                                     .max_width(16.0),
                                             );
                                             ui.label(unknown.to_string());
@@ -567,7 +588,11 @@ impl RomVaultApp {
                             body.row(20.0, |mut row| {
                                 row.col(|ui| {
                                     ui.painter().rect_filled(ui.max_rect(), 0.0, row_color);
-                                    ui.add(egui::Image::new(status_icon).max_width(16.0));
+                                    ui.add(
+                                        egui::Image::new(status_icon)
+                                            .texture_options(egui::TextureOptions::NEAREST)
+                                            .max_width(16.0),
+                                    );
                                 });
                                 row.col(|ui| {
                                     ui.painter().rect_filled(ui.max_rect(), 0.0, row_color);

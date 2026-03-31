@@ -2,6 +2,15 @@ use crate::dat_store::{DatDir, DatGame, DatHeader, DatNode};
 use crate::enums::FileType;
 use roxmltree::{Document, Node};
 
+/// Parser for MESS Software List XML formats.
+/// 
+/// `mess_xml_reader.rs` is responsible for parsing the slightly specialized XML format 
+/// used by MESS (Multi Emulator Super System) software lists. It translates `<software>`, 
+/// `<dataarea>`, and `<diskarea>` nodes into the standard `DatNode` hierarchy.
+/// 
+/// Differences from C#:
+/// - Similar to `xml_reader.rs`, this uses `roxmltree` for fast, zero-copy in-memory DOM parsing
+///   rather than the stateful stream-reading approach of the C# `MessXmlReader`.
 pub fn read_mess_xml_dat(xml: &str, filename: &str) -> Result<DatHeader, String> {
     let doc = Document::parse(xml).map_err(|e| format!("Failed to parse XML: {}", e))?;
     let root = doc.root_element();

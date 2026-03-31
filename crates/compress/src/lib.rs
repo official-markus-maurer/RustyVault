@@ -1,3 +1,14 @@
+/// Archive and compression abstractions.
+/// 
+/// The `compress` crate unifies handling of different archive formats (`.zip`, `.7z`, `.gz`, raw files)
+/// behind a single `ICompress` trait. It allows the core engine to transparently scan, hash, and 
+/// (eventually) write into archives regardless of their underlying structure.
+/// 
+/// Differences from C#:
+/// - The C# `Compress` library contains completely custom, from-scratch implementations of ZIP and 7Z 
+///   parsing optimized specifically for ROM management and TorrentZip structure preservation.
+/// - The Rust version acts primarily as an abstraction layer over robust ecosystem crates (`zip`, `sevenz-rust`),
+///   though it retains the same `ICompress` API surface to ensure compatibility with the rest of the port.
 pub mod file_header;
 pub mod structured_archive;
 pub mod zip_enums;

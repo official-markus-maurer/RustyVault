@@ -1,5 +1,16 @@
 use crate::enums::{DatStatus, FileType, HeaderFileType, ZipStructure};
 
+/// In-memory Abstract Syntax Tree (AST) for parsed DAT files.
+/// 
+/// `dat_store.rs` defines the hierarchical structures (`DatHeader`, `DatNode`, `DatDir`, `DatFile`, `DatGame`)
+/// that represent the raw parsed contents of an XML/CMP DAT file before it is folded into the 
+/// core `rv_core::DB` file tree.
+/// 
+/// Differences from C#:
+/// - The C# `DatReader` directly interacts with the core `RvFile` and `RvDir` database nodes.
+/// - The Rust version completely decouples the parsing phase from the database representation,
+///   constructing an intermediate AST (`DatNode`) which is later safely merged by `rv_core::read_dat::DatUpdate`.
+///   This decoupling is what enables the Rust port to parse multiple DAT files entirely in parallel!
 #[derive(Debug, Clone)]
 pub struct DatNode {
     pub name: String,

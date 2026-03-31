@@ -1,4 +1,13 @@
 bitflags::bitflags! {
+    /// Bitflags representing the health and format state of a zip archive.
+    /// 
+    /// `TrrntZipStatus` maps exactly to the C# `TrrntZipStatus` bitfield enum. It is used
+    /// by the `TorrentZipCheck` engine to accumulate all the structural flaws found inside 
+    /// a standard zip file before attempting to rebuild it.
+    /// 
+    /// Differences from C#:
+    /// - Utilizes the Rust `bitflags` crate to enforce type safety over raw integer masking,
+    ///   preventing invalid status combinations.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct TrrntZipStatus: u32 {
         const UNKNOWN = 0;

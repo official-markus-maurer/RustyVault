@@ -14,9 +14,22 @@ use compress::zip_enums::ZipReturn;
 
 use crate::scanned_file::ScannedFile;
 
+/// Core physical file scanning and hashing engine.
+/// 
+/// `Scanner` is responsible for interacting with the physical disk and the `compress` crate 
+/// to open files and archives, extract their headers, and perform deep cryptographic hashing
+/// (CRC32, SHA1, MD5) on their contents.
+/// 
+/// Differences from C#:
+/// - The C# `Scanner` is highly integrated with multi-threaded ThreadPools (`ThreadWorker`) to
+///   concurrently hash large files and chunks of ZIPs in memory.
+/// - The Rust version currently implements a robust but primarily single-threaded synchronous 
+///   hash streaming mechanism. It maps `ICompress` trait behaviors into Rust's `Box<dyn ICompress>`.
 pub struct Scanner;
 
 impl Scanner {
+    /// Opens an archive (or raw file) and scans its internal directory structure.
+    /// If `deep_scan` is true, it will also calculate cryptographic hashes for every file inside.
     pub fn scan_archive_file(
         archive_type: FileType,
         filename: &str,
@@ -154,6 +167,7 @@ impl Scanner {
         results
     }
 
+    /// Scans a single uncompressed file on disk.
     pub fn scan_raw_file(file_path: &str) -> Result<ScannedFile, std::io::Error> {
         let metadata = fs::metadata(file_path)?;
         let path = Path::new(file_path);
@@ -190,6 +204,7 @@ impl Scanner {
         Ok(sf)
     }
 
+    /// Recursively scans a physical directory.
     pub fn scan_directory(path_str: &str) -> Vec<ScannedFile> {
         let mut results = Vec::new();
         let path = Path::new(path_str);

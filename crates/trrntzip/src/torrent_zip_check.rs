@@ -1,6 +1,15 @@
 use crate::trrntzip_status::TrrntZipStatus;
 use crate::zipped_file::ZippedFile;
 
+/// Core logic for validating if an archive matches the TorrentZip specification.
+/// 
+/// `TorrentZipCheck` scans the central directory of an archive without extracting 
+/// its contents. It verifies file ordering, directory separators, compression methods,
+/// timestamps, and file name casings to determine if a repack is required.
+/// 
+/// Differences from C#:
+/// - Functionally maps 1:1 to the C# `TrrntZip.TorrentZipCheck` logic.
+/// - The `TrrntZipStatus` bitflag accumulation has been strictly typed.
 pub struct TorrentZipCheck;
 
 impl TorrentZipCheck {

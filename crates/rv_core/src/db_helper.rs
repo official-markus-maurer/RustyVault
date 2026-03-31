@@ -3,9 +3,21 @@ use std::cell::RefCell;
 use dat_reader::enums::DatStatus;
 use crate::rv_file::RvFile;
 
+/// Utility functions for querying the database tree.
+/// 
+/// `DbHelper` contains static helper functions for extracting specific subsets
+/// of `RvFile` nodes from the `dir_root` tree, such as generating flat lists
+/// of all currently selected directories.
+/// 
+/// Differences from C#:
+/// - The C# `DB` class includes many of these helper functions directly within it.
+/// - The Rust version splits them into a dedicated `DbHelper` module to keep `db.rs` clean
+///   and prevent `RefCell` borrowing collisions during recursive queries.
 pub struct DbHelper;
 
 impl DbHelper {
+    /// Recursively flattens a directory branch into a flat vector of directories
+    /// that are actively marked as `InDatCollect` (part of the primary vault).
     pub fn get_selected_dir_list(lst_dir: &mut Vec<Rc<RefCell<RvFile>>>, this_dir: Rc<RefCell<RvFile>>) {
         let dir = this_dir.borrow();
         

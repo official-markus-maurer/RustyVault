@@ -3,6 +3,16 @@ use crate::file_header::FileHeader;
 use crate::structured_archive::ZipStructure;
 use crate::zip_enums::{ZipOpenType, ZipReturn};
 
+/// The unified trait for all archive and file operations.
+/// 
+/// `ICompress` allows the scanner to interact with ZIPs, 7Zs, GZs, and raw files
+/// through a single API. It defines methods for opening archives, iterating over 
+/// their headers, and extracting read/write streams.
+/// 
+/// Differences from C#:
+/// - Maps exactly to the C# `Compress.ICompress` interface. The stream returns are 
+///   wrapped in `Result<(Box<dyn Read>, u64), ZipReturn>` to handle dynamic stream 
+///   types safely in Rust.
 pub trait ICompress {
     fn local_files_count(&self) -> usize;
     

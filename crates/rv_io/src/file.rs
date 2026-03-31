@@ -1,7 +1,15 @@
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io;
 use std::path::Path as StdPath;
 
+/// Cross-platform wrapper for file operations.
+/// 
+/// `File` mimics the static methods of the C# `System.IO.File` class,
+/// providing standard wrappers for moving, copying, and deleting physical files.
+/// 
+/// Differences from C#:
+/// - Similar to `Directory`, this bypasses the need for the legacy C# `RVIO` long-path 
+///   workarounds by relying on Rust's `std::fs` abstractions.
 pub struct File;
 
 impl File {

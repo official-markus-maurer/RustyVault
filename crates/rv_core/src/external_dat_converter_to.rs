@@ -7,18 +7,39 @@ use dat_reader::dat_store::{DatHeader, DatDir, DatNode, DatGame};
 use dat_reader::enums::{FileType, HeaderFileType, DatStatus};
 use crate::enums::RepStatus;
 
+/// Logic for translating the internal DB tree back into external standard DAT structures.
+/// 
+/// `ExternalDatConverterTo` recursively walks a given `RvFile` tree branch and generates
+/// a `dat_reader::DatHeader` AST representation of it. This is used by the UI's "Export DAT" 
+/// functionality, as well as the underlying `FixDatReport` system.
+/// 
+/// Differences from C#:
+/// - The C# implementation contains highly complex flattening rules (`DatClean.ArchiveDirectoryFlattern`)
+///   to strip empty folders from the exported DAT.
+/// - The Rust version is a more literal 1:1 translation, directly mapping the internal `RvFile` 
+///   children to external `DatDir` and `DatGame` nodes based on the applied boolean filters 
+///   (`filter_got`, `filter_missing`, etc).
 pub struct ExternalDatConverterTo {
+    /// Include the XML header block.
     pub use_header: bool,
+    /// Include files currently marked as Got.
     pub filter_got: bool,
+    /// Include files currently marked as Missing.
     pub filter_missing: bool,
+    /// Include files currently marked as CanBeFixed.
     pub filter_fixable: bool,
+    /// Include files currently marked as Missing in Action.
     pub filter_mia: bool,
+    /// Exclude files marked as Merged.
     pub filter_merged: bool,
+    /// Only include loose files (not inside archives).
     pub filter_files: bool,
+    /// Only include archive files.
     pub filter_zips: bool,
 }
 
 impl ExternalDatConverterTo {
+    /// Instantiates a new external converter configured with default boolean inclusion filters.
     pub fn new() -> Self {
         Self {
             use_header: true,
@@ -26,12 +47,14 @@ impl ExternalDatConverterTo {
             filter_missing: true,
             filter_fixable: true,
             filter_mia: true,
-            filter_merged: true,
+            filter_merged: false,
             filter_files: true,
             filter_zips: true,
         }
     }
 
+    /// Converts an internal `RvFile` tree branch into an external `DatHeader` AST representation
+    /// according to the configured state filters.
     pub fn convert_to_external_dat(&self, rv_file_rc: Rc<RefCell<RvFile>>) -> Option<DatHeader> {
         let rv_file = rv_file_rc.borrow();
         if rv_file.file_type == FileType::File {

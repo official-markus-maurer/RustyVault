@@ -1,3 +1,12 @@
+/// Asset loading macros and utilities.
+/// 
+/// `assets.rs` provides macros like `include_asset!` and `include_toolbar_image!`
+/// to embed static image resources directly into the Rust binary at compile time.
+/// 
+/// Differences from C#:
+/// - C# uses `.resx` files and Visual Studio's built-in resource manager.
+/// - Rust utilizes `include_bytes!` and an internal `egui` caching layer to embed
+///   and serve raw PNG/SVG bytes efficiently to the immediate-mode UI renderer.
 #[macro_export]
 macro_rules! include_asset {
     ($file:literal) => {
@@ -13,7 +22,6 @@ pub fn processed_image_source(
     raw_bytes: &'static [u8],
 ) -> eframe::egui::ImageSource<'static> {
     use eframe::egui;
-    use image::ImageEncoder;
     use std::borrow::Cow;
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
@@ -30,32 +38,7 @@ pub fn processed_image_source(
         }
     }
 
-    let processed: Vec<u8> = match image::load_from_memory(raw_bytes) {
-        Ok(img) => {
-            let mut rgba = img.to_rgba8();
-            let (w, h) = rgba.dimensions();
-
-            // Exact color-key: remove only pixels that exactly match the top-left color.
-            // This keeps edges and text pixels untouched to avoid "scuffed" outlines.
-            let bg = rgba.get_pixel(0, 0).0;
-            for p in rgba.pixels_mut() {
-                if p.0[0] == bg[0] && p.0[1] == bg[1] && p.0[2] == bg[2] && p.0[3] == bg[3] {
-                    p.0[3] = 0;
-                }
-            }
-
-            let mut out = Vec::new();
-            if image::codecs::png::PngEncoder::new(&mut out)
-                .write_image(rgba.as_raw(), w, h, image::ExtendedColorType::Rgba8)
-                .is_ok()
-            {
-                out
-            } else {
-                raw_bytes.to_vec()
-            }
-        }
-        Err(_) => raw_bytes.to_vec(),
-    };
+    let processed: Vec<u8> = raw_bytes.to_vec();
 
     let bytes: egui::load::Bytes = processed.into();
     if let Ok(mut cache) = cache.lock() {

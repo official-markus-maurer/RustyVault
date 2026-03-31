@@ -11,6 +11,15 @@ use rv_core::find_fixes::FindFixes;
 use rv_core::read_dat::DatUpdate;
 use rv_core::scanner::Scanner;
 
+/// Logic for rendering the top main menu and toolbar.
+/// 
+/// `toolbar.rs` contains the top-level `egui::TopBottomPanel` rendering for the main
+/// application, drawing buttons like `Update DATs`, `Scan ROMs`, and `Fix ROMs`.
+/// 
+/// Differences from C#:
+/// - C# uses `ToolStrip` and `MenuStrip` objects bound to internal event handlers.
+/// - Rust utilizes `egui::menu::bar` and directly triggers state transitions (or worker threads)
+///   when the immediate-mode buttons report a `.clicked()` event.
 pub fn draw_left_toolbar(app: &mut RomVaultApp, ctx: &egui::Context) {
     egui::SidePanel::left("left_toolbar_panel")
         .exact_width(80.0)
@@ -183,6 +192,8 @@ pub fn draw_left_toolbar(app: &mut RomVaultApp, ctx: &egui::Context) {
                                                     let _ = tx.send("Scanning DatRoot...".to_string());
                                                     DatUpdate::check_all_dats(Rc::clone(&db.dir_root), "DatRoot");
                                                     DatUpdate::update_dat(Rc::clone(&db.dir_root), "DatRoot");
+                                                    rv_core::repair_status::RepairStatus::report_status_reset(Rc::clone(&db.dir_root));
+                                                    db.write_cache();
                                                 }
                                             });
                                         });
@@ -192,6 +203,8 @@ pub fn draw_left_toolbar(app: &mut RomVaultApp, ctx: &egui::Context) {
                                                 if let Some(db) = db_ref.borrow().as_ref() {
                                                     let _ = tx.send("Scanning DatRoot...".to_string());
                                                     DatUpdate::update_dat(Rc::clone(&db.dir_root), "DatRoot");
+                                                    rv_core::repair_status::RepairStatus::report_status_reset(Rc::clone(&db.dir_root));
+                                                    db.write_cache();
                                                 }
                                             });
                                         });
@@ -244,7 +257,7 @@ pub fn draw_left_toolbar(app: &mut RomVaultApp, ctx: &egui::Context) {
                                                     let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
                                                     root_scan.children = files;
                                                     let _ = tx.send("Integrating RustyVault files into DB...".to_string());
-                                                    FileScanning::scan_dir(rv, &mut root_scan);
+                                                    FileScanning::scan_dir(Rc::clone(&rv), &mut root_scan);
                                                 }
 
                                                 if let Some(ts) = ts_node {
@@ -252,8 +265,11 @@ pub fn draw_left_toolbar(app: &mut RomVaultApp, ctx: &egui::Context) {
                                                     let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
                                                     root_scan.children = files;
                                                     let _ = tx.send("Integrating ToSort files into DB...".to_string());
-                                                    FileScanning::scan_dir(ts, &mut root_scan);
+                                                    FileScanning::scan_dir(Rc::clone(&ts), &mut root_scan);
                                                 }
+                                                
+                                                rv_core::repair_status::RepairStatus::report_status_reset(Rc::clone(&db.dir_root));
+                                                db.write_cache();
                                             }
                                         });
                                     });
@@ -286,6 +302,8 @@ pub fn draw_left_toolbar(app: &mut RomVaultApp, ctx: &egui::Context) {
                                         GLOBAL_DB.with(|db_ref| {
                                             if let Some(db) = db_ref.borrow().as_ref() {
                                                 FindFixes::scan_files(Rc::clone(&db.dir_root));
+                                                db.dir_root.borrow_mut().cached_stats = None;
+                                                db.write_cache();
                                             }
                                         });
                                     });
@@ -313,6 +331,42 @@ pub fn draw_left_toolbar(app: &mut RomVaultApp, ctx: &egui::Context) {
                                         GLOBAL_DB.with(|db_ref| {
                                             if let Some(db) = db_ref.borrow().as_ref() {
                                                 Fix::perform_fixes(Rc::clone(&db.dir_root));
+                                                
+                                                // Because Rust port doesn't move RvFile nodes in memory during fix,
+                                                // we must rescan to bring the DB logically back in sync with disk,
+                                                // matching C# RomVault's post-fix consistency.
+                                                let _ = tx.send("Rescanning to sync DB with disk...".to_string());
+                                                let mut rv_node = None;
+                                                let mut ts_node = None;
+                                                for child in db.dir_root.borrow().children.iter() {
+                                                    let name = child.borrow().name.clone();
+                                                    if name == "RustyVault" {
+                                                        rv_node = Some(Rc::clone(child));
+                                                    }
+                                                    if name == "ToSort" {
+                                                        ts_node = Some(Rc::clone(child));
+                                                    }
+                                                }
+
+                                                if let Some(ref rv) = rv_node {
+                                                    let files = Scanner::scan_directory("RustyVault");
+                                                    let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
+                                                    root_scan.children = files;
+                                                    FileScanning::scan_dir(Rc::clone(rv), &mut root_scan);
+                                                }
+
+                                                if let Some(ref ts) = ts_node {
+                                                    let files = Scanner::scan_directory("ToSort");
+                                                    let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
+                                                    root_scan.children = files;
+                                                    FileScanning::scan_dir(Rc::clone(ts), &mut root_scan);
+                                                }
+                                                
+                                                let _ = tx.send("Finding Fixes...".to_string());
+                                                FindFixes::scan_files(Rc::clone(&db.dir_root));
+                                                
+                                                db.dir_root.borrow_mut().cached_stats = None;
+                                                db.write_cache();
                                             }
                                         });
                                     });
@@ -334,18 +388,18 @@ pub fn draw_left_toolbar(app: &mut RomVaultApp, ctx: &egui::Context) {
                                                     }
                                                 }
 
-                                                if let Some(rv) = rv_node {
+                                                if let Some(ref rv) = rv_node {
                                                     let files = Scanner::scan_directory("RustyVault");
                                                     let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
                                                     root_scan.children = files;
-                                                    FileScanning::scan_dir(rv, &mut root_scan);
+                                                    FileScanning::scan_dir(Rc::clone(rv), &mut root_scan);
                                                 }
 
-                                                if let Some(ts) = ts_node {
+                                                if let Some(ref ts) = ts_node {
                                                     let files = Scanner::scan_directory("ToSort");
                                                     let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
                                                     root_scan.children = files;
-                                                    FileScanning::scan_dir(ts, &mut root_scan);
+                                                    FileScanning::scan_dir(Rc::clone(ts), &mut root_scan);
                                                 }
 
                                                 let _ = tx.send("Finding Fixes...".to_string());
@@ -353,6 +407,27 @@ pub fn draw_left_toolbar(app: &mut RomVaultApp, ctx: &egui::Context) {
 
                                                 let _ = tx.send("Fixing...".to_string());
                                                 Fix::perform_fixes(Rc::clone(&db.dir_root));
+                                                
+                                                // Second scan/find pass to bring DB perfectly in sync with disk
+                                                let _ = tx.send("Rescanning to sync DB with disk...".to_string());
+                                                if let Some(rv) = rv_node.as_ref() {
+                                                    let files = Scanner::scan_directory("RustyVault");
+                                                    let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
+                                                    root_scan.children = files;
+                                                    FileScanning::scan_dir(Rc::clone(rv), &mut root_scan);
+                                                }
+
+                                                if let Some(ts) = ts_node.as_ref() {
+                                                    let files = Scanner::scan_directory("ToSort");
+                                                    let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
+                                                    root_scan.children = files;
+                                                    FileScanning::scan_dir(Rc::clone(ts), &mut root_scan);
+                                                }
+                                                
+                                                let _ = tx.send("Finalizing Fixes...".to_string());
+                                                FindFixes::scan_files(Rc::clone(&db.dir_root));
+
+                                                db.dir_root.borrow_mut().cached_stats = None;
                                                 db.write_cache();
                                             }
                                         });

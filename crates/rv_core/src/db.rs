@@ -8,11 +8,21 @@ use crate::enums::ToSortDirType;
 
 use crate::cache::Cache;
 
+/// Represents the global database state for the RomVault core.
+/// 
+/// In the C# reference, this is managed as a static `DB` class containing the `dirTree`.
+/// In Rust, this is managed as a `thread_local!` instance of `DB` holding the root node of the file tree.
+/// The `dir_root` is a hierarchical tree of `RvFile` nodes representing physical and virtual (DAT) directories.
 pub struct DB {
+    /// The root node of the internal file tree.
     pub dir_root: Rc<RefCell<RvFile>>,
 }
 
 impl DB {
+    /// Initializes a new database instance.
+    /// 
+    /// If a valid cache file exists (`RomVault.db`), it loads the tree from disk.
+    /// Otherwise, it initializes a fresh tree with default `RustyVault` and `ToSort` directories.
     pub fn new() -> Self {
         if let Some(root) = Cache::read_cache() {
             Self::check_create_root_dirs();
@@ -25,10 +35,10 @@ impl DB {
             root_mut.set_dat_status(DatStatus::InDatCollect);
 
             let mut rv = RvFile::new(FileType::Dir);
-        rv.name = "RustyVault".to_string();
+            rv.name = "RustyVault".to_string();
             rv.set_dat_status(DatStatus::InDatCollect);
             root_mut.child_add(Rc::new(RefCell::new(rv)));
-
+            
             let mut ts = RvFile::new(FileType::Dir);
             ts.name = "ToSort".to_string();
             ts.set_dat_status(DatStatus::InToSort);
@@ -43,6 +53,10 @@ impl DB {
         }
     }
 
+    /// Checks for and creates essential physical root directories (`DatRoot`, `RustyVault`, `ToSort`).
+    /// 
+    /// This mimics the C# initialization behavior where physical paths are generated
+    /// based on the global configuration upon starting up the DB.
     fn check_create_root_dirs() {
         // Create DatRoot
         let dat_root = crate::settings::get_settings().dat_root;
@@ -60,14 +74,10 @@ impl DB {
         if !Path::new("ToSort").exists() {
             let _ = fs::create_dir_all("ToSort");
         }
-        
-        // Create ToSort Cache Directory (mimicking the ToSortPrimary logic)
-        // Usually it's just the ToSort dir itself for Primary/Cache, but let's ensure it exists
-        if !Path::new("ToSort").exists() {
-            let _ = fs::create_dir_all("ToSort");
-        }
     }
 
+    /// Retrieves the designated cache directory for sorting operations.
+    /// Used heavily by extraction/fixing routines to identify temporary workspaces.
     pub fn get_to_sort_cache(&self) -> Rc<RefCell<RvFile>> {
         let root = self.dir_root.borrow();
         for child in &root.children {
@@ -84,6 +94,7 @@ impl DB {
         }
     }
 
+    /// Retrieves the primary `ToSort` directory.
     pub fn get_to_sort_primary(&self) -> Rc<RefCell<RvFile>> {
         let root = self.dir_root.borrow();
         for child in root.children.iter().skip(1) {
@@ -99,6 +110,7 @@ impl DB {
         }
     }
 
+    /// Retrieves the file-only `ToSort` directory variant, or falls back to primary.
     pub fn get_to_sort_file_only(&self) -> Rc<RefCell<RvFile>> {
         let root = self.dir_root.borrow();
         for child in root.children.iter().skip(1) {
@@ -110,16 +122,19 @@ impl DB {
         self.get_to_sort_primary()
     }
 
+    /// Serializes the entire `dir_root` tree to disk via `cache::Cache::write_cache`.
     pub fn write_cache(&self) {
         Cache::write_cache(Rc::clone(&self.dir_root));
     }
 }
 
-// Global DB instance placeholder
 thread_local! {
+    /// Global, thread-local database instance. 
+    /// Mimics the C# static `DB` class structure while abiding by Rust's safety guarantees.
     pub static GLOBAL_DB: RefCell<Option<DB>> = RefCell::new(None);
 }
 
+/// Initializes the global DB if not already initialized.
 pub fn init_db() {
     GLOBAL_DB.with(|db| {
         *db.borrow_mut() = Some(DB::new());

@@ -2,6 +2,15 @@ use std::fs;
 use std::path::Path as StdPath;
 use crate::file_info::FileInfo;
 
+/// Object-oriented wrapper representing a specific directory on disk.
+/// 
+/// `DirectoryInfo` mimics the C# `System.IO.DirectoryInfo` class. It encapsulates 
+/// a directory path and provides methods to query its existence or retrieve its child 
+/// files/directories as objects.
+/// 
+/// Differences from C#:
+/// - Internally delegates to `std::fs` and `PathBuf`.
+#[derive(Debug, Clone)]
 pub struct DirectoryInfo {
     pub name: String,
     pub full_name: String,

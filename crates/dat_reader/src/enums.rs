@@ -1,5 +1,12 @@
 use bitflags::bitflags;
 
+/// Core status enums for DAT parsing.
+/// 
+/// `enums.rs` contains the core file types, zip structures, and data status states
+/// (like `InDatCollect`, `InToSort`) used when converting XML/CMP text into the `DatNode` AST.
+/// 
+/// Differences from C#:
+/// - Maps 1:1 to the C# `DATReader.Enums` namespace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub enum DatStatus {
     InDatCollect,

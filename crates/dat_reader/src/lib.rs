@@ -16,6 +16,18 @@ pub use dos_reader::*;
 pub use mess_xml_reader::*;
 pub use xml_writer::*;
 
+/// Main entry point for reading DAT files.
+/// 
+/// `read_dat` sniffs the file content to detect whether it is an XML DAT, 
+/// ClrMamePro (CMP) DAT, DOSCenter DAT, or RomCenter DAT, and routes it to 
+/// the appropriate highly optimized parser.
+/// 
+/// Differences from C#:
+/// - C# uses a stream-based parser architecture (`DatReader`) that reads files line-by-line 
+///   or block-by-block.
+/// - The Rust version takes advantage of zero-copy (or low-copy) full-file buffers `Cow<str>`, 
+///   rapidly searching for signatures (`<!DOCTYPE`, `<datafile>`) and feeding them to specialized 
+///   parsers (`quick-xml` for XML, custom iterators for CMP) to achieve massively higher throughput.
 pub fn read_dat(buffer: &[u8], filename: &str) -> Result<DatHeader, String> {
     use std::borrow::Cow;
     // Avoid an unconditional allocation: borrow when UTF-8 is valid, else fallback to lossy String

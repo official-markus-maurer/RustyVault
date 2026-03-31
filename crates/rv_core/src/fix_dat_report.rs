@@ -10,9 +10,21 @@ use crate::external_dat_converter_to::ExternalDatConverterTo;
 use std::path::Path;
 use std::fs::File;
 
+/// Engine for exporting "Fix DATs" (lists of missing files).
+/// 
+/// `FixDatReport` traverses the database to find files marked as `Missing` or `CanBeFixed`
+/// and exports a standard XML DAT file containing only those missing files. This allows users
+/// to take the Fix DAT to other tools or sites to acquire the missing files.
+/// 
+/// Differences from C#:
+/// - The C# reference calls out to `DatClean.ArchiveDirectoryFlattern` and `DatClean.RemoveUnNeededDirectories`
+///   to highly optimize the output structure of the Fix DATs.
+/// - The Rust version currently exports the exact structural hierarchy of the missing files without 
+///   the advanced flattening passes.
 pub struct FixDatReport;
 
 impl FixDatReport {
+    /// Recursively traverses a directory tree, looking for bound DATs to export as Fix DATs.
     pub fn recursive_dat_tree(out_directory: &str, t_dir_rc: Rc<RefCell<RvFile>>, red_only: bool) {
         let t_dir = t_dir_rc.borrow();
 
@@ -30,7 +42,7 @@ impl FixDatReport {
         if !dir_dats.is_empty() {
             println!("Dats found in {}", t_dir.name);
             for (i, rv_dat) in dir_dats.iter().enumerate() {
-                println!("  {} {:?}", i, rv_dat.borrow().get_data(DatData::DatName));
+                println!("  {} {:?}", i, rv_dat.borrow().get_data(crate::rv_dat::DatData::DatName));
                 Self::extract_dat(out_directory, Rc::clone(rv_dat), Rc::clone(&t_dir_rc), red_only);
             }
         }
@@ -47,6 +59,7 @@ impl FixDatReport {
         }
     }
 
+    /// Extracts the missing components of a single DAT node into an XML file at the target output directory.
     pub fn extract_dat(out_directory: &str, rv_dat_rc: Rc<RefCell<RvDat>>, t_dir_rc: Rc<RefCell<RvFile>>, red_only: bool) {
         let mut out_dir = RvFile::new(FileType::Dir);
         out_dir.dir_dats.push(Rc::clone(&rv_dat_rc));

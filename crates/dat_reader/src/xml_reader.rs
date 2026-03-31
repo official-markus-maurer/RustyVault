@@ -2,6 +2,16 @@ use crate::dat_store::{DatDir, DatGame, DatHeader, DatNode};
 use crate::enums::FileType;
 use roxmltree::{Document, Node};
 
+/// Standard XML DAT parser.
+/// 
+/// `xml_reader.rs` handles standard Logiqx and MAME XML DAT files, converting their
+/// `<header>`, `<game>`, `<rom>`, and `<disk>` tags into the internal `DatNode` AST.
+/// 
+/// Differences from C#:
+/// - C# uses `System.Xml.XmlReader` for stateful, forward-only stream parsing to minimize RAM.
+/// - The Rust version uses `roxmltree`, which parses the entire XML document into an immutable,
+///   in-memory DOM tree in one extremely fast pass, allowing for highly ergonomic node traversal 
+///   at the cost of requiring the entire file buffer to fit into RAM simultaneously.
 pub fn read_xml_dat(xml: &str, filename: &str) -> Result<DatHeader, String> {
     let doc = Document::parse(xml).map_err(|e| format!("Failed to parse XML: {}", e))?;
     let root = doc.root_element();

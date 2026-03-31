@@ -7,6 +7,20 @@ use crate::rv_file::RvFile;
 use bincode;
 use memmap2::MmapOptions;
 
+/// Cache management system for serializing and deserializing the RomVault database.
+/// 
+/// The `Cache` struct is responsible for saving the entire state of the file tree
+/// (`DB::dir_root`) to a local binary file, allowing instantaneous startup times
+/// without having to re-parse all DATs and re-scan the entire physical disk.
+/// 
+/// Differences from C#:
+/// - The C# reference uses a highly optimized, manually packed `BinaryWriter`/`BinaryReader`
+///   stream implementation (`DB.Write` / `DB.Read`). It manually walks the tree and packs 
+///   enums into bit-fields.
+/// - The Rust implementation delegates serialization entirely to the `serde` framework
+///   via the `bincode` format, which offers near-native performance automatically. 
+/// - Rust utilizes `memmap2` for zero-copy memory-mapped file loading during cache reads,
+///   massively accelerating deserialization of large trees compared to standard buffered I/O.
 pub struct Cache;
 
 impl Cache {
@@ -14,6 +28,11 @@ impl Cache {
     const BACKUP_FILE: &'static str = "RustyVault3_3.CacheBackup";
     const TMP_FILE: &'static str = "RustyVault3_3.Cache_tmp";
 
+    /// Reads the binary cache file from disk and deserializes it into the `dir_root` tree.
+    /// 
+    /// If memory mapping (`mmap`) is available, it performs a zero-copy read. Otherwise,
+    /// it falls back to a standard buffered reader. After deserialization, it invokes
+    /// `relink_parents` to reconstruct the `Weak` pointer tree hierarchy that `serde` skips.
     pub fn read_cache() -> Option<Rc<RefCell<RvFile>>> {
         let path = Path::new(Self::CACHE_FILE);
         if !path.exists() {
@@ -73,6 +92,7 @@ impl Cache {
         Some(root)
     }
 
+    /// Serializes the entire `RvFile` tree back to disk using `bincode` into the standard `RustyVault3_3.Cache` file format.
     pub fn write_cache(root: Rc<RefCell<RvFile>>) {
         Self::prepare_for_serialize(Rc::clone(&root));
         
@@ -123,7 +143,16 @@ impl Cache {
         
         while let Some((node, p, p_dats)) = stack.pop() {
             let mut n = node.borrow_mut();
-            n.parent = p;
+            n.parent = p.clone();
+            
+            // Fixup: any item in ToSort should have a datStatus of InToSort
+            if let Some(parent_weak) = &p {
+                if let Some(parent_rc) = parent_weak.upgrade() {
+                    if parent_rc.borrow().dat_status() == dat_reader::enums::DatStatus::InToSort {
+                        n.set_dat_status(dat_reader::enums::DatStatus::InToSort);
+                    }
+                }
+            }
             
             if (n.file_type == dat_reader::enums::FileType::Dir || 
                 n.file_type == dat_reader::enums::FileType::Zip || 

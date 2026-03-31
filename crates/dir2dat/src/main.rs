@@ -5,6 +5,11 @@ use dat_reader::enums::FileType;
 use dat_reader::dat_store::{DatHeader, DatNode, DatGame};
 use dat_reader::xml_writer::DatXmlWriter;
 
+/// CLI tool to generate a standard XML DAT file from a physical directory.
+/// 
+/// `dir2dat` mimics the functionality of the C# `RomVault` `Dir2Dat` context menu option.
+/// It scans a directory, dives into zip/7z archives, calculates their hashes, and exports
+/// a `.dat` XML describing the folder's structure perfectly.
 fn main() {
     let args: Vec<String> = env::args().collect();
 

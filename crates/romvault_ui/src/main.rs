@@ -12,6 +12,18 @@ use dat_reader::enums::FileType;
 use rv_core::db::{init_db, GLOBAL_DB};
 use rv_core::rv_file::{RvFile, TreeSelect};
 use dat_reader::enums::DatStatus;
+
+/// Main GUI entry point using `egui` and `eframe`.
+/// 
+/// `romvault_ui` completely replaces the C# WinForms implementation. It provides a modern, 
+/// dark-mode native desktop application that leverages immediate-mode rendering.
+/// 
+/// Differences from C#:
+/// - C# uses stateful `WinForms` components (TreeView, DataGridView, etc.) which bind directly 
+///   to the database objects.
+/// - The Rust `egui` implementation is "immediate mode", meaning the entire UI tree is rebuilt 
+///   and drawn 60 times a second. It traverses the `RvFile` tree every frame to render the left pane,
+///   relying heavily on the `cached_stats` inside `RepairStatus` to maintain high frame rates.
 #[macro_use]
 mod assets;
 mod panels;
@@ -111,11 +123,15 @@ struct RomVaultApp {
     task_logs: Vec<String>,
 
     // Dialog state
-    show_dir_settings: bool,
-    show_dir_mappings: bool,
+    pub show_dir_settings: bool,
+    pub dir_settings_tab: usize,
+    pub show_dir_mappings: bool,
+    working_dir_mappings: Vec<rv_core::settings::DirMapping>,
+    selected_dir_mapping_idx: Option<usize>,
     show_sam_dialog: bool,
     show_color_key: bool,
-    show_settings: bool,
+    pub show_settings: bool,
+    pub global_settings_tab: usize,
     show_about: bool,
     show_rom_info: bool,
     selected_rom_for_info: Option<Rc<RefCell<RvFile>>>,
@@ -167,11 +183,16 @@ impl RomVaultApp {
             filter_text: String::new(),
             show_filter_panel: true,
             task_logs: Vec::new(),
+
             show_dir_settings: false,
+            dir_settings_tab: 0,
             show_dir_mappings: false,
+            working_dir_mappings: Vec::new(),
+            selected_dir_mapping_idx: None,
             show_sam_dialog: false,
             show_color_key: false,
             show_settings: false,
+            global_settings_tab: 0,
             show_about: false,
             show_rom_info: false,
             selected_rom_for_info: None,
@@ -192,6 +213,12 @@ impl RomVaultApp {
             startup_phase: 0,
             startup_done_at: None,
         }
+    }
+
+    pub fn open_dir_mappings(&mut self) {
+        self.working_dir_mappings = self.global_settings.dir_mappings.items.clone();
+        self.selected_dir_mapping_idx = None;
+        self.show_dir_mappings = true;
     }
 
     fn update_artwork(&mut self) {
@@ -548,7 +575,7 @@ impl eframe::App for RomVaultApp {
             self.active_dat_rule = rv_core::settings::find_rule("RustyVault");
             self.show_dir_settings = true;
         } else if ctx.input(|i| i.key_pressed(egui::Key::F10) && i.modifiers.ctrl) {
-            self.show_dir_mappings = true;
+            self.open_dir_mappings();
         } else if ctx.input(|i| i.key_pressed(egui::Key::F10)) {
             self.global_settings = rv_core::settings::get_settings();
             self.show_settings = true;
@@ -562,16 +589,28 @@ impl eframe::App for RomVaultApp {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
                     if ui.button("Add ToSort").clicked() {
-                        self.task_logs.push("Add ToSort folder requested. (Using file dialog stub)".to_string());
-                        GLOBAL_DB.with(|db_ref| {
-                            if let Some(db) = db_ref.borrow().as_ref() {
-                                let mut ts = RvFile::new(FileType::Dir);
-                                ts.name = "New_ToSort_Folder".to_string(); // In a real app we'd use rfd or tinyfiledialogs
-                                ts.set_dat_status(DatStatus::InToSort);
-                                db.dir_root.borrow_mut().child_add(Rc::new(RefCell::new(ts)));
-                                db.write_cache();
-                            }
-                        });
+                        if let Some(folder) = rfd::FileDialog::new()
+                            .set_title("Select new ToSort Folder")
+                            .pick_folder()
+                        {
+                            let path = folder.to_string_lossy().to_string();
+                            self.task_logs.push(format!("Add ToSort folder requested: {}", path));
+                            rv_core::db::GLOBAL_DB.with(|db_ref| {
+                                if let Some(db) = db_ref.borrow().as_ref() {
+                                    let ts = std::rc::Rc::new(std::cell::RefCell::new(
+                                        rv_core::rv_file::RvFile::new(dat_reader::enums::FileType::Dir)
+                                    ));
+                                    {
+                                        let mut t = ts.borrow_mut();
+                                        t.name = path;
+                                        t.set_dat_status(dat_reader::enums::DatStatus::InToSort);
+                                    }
+                                    db.dir_root.borrow_mut().child_add(ts);
+                                    rv_core::repair_status::RepairStatus::report_status_reset(std::rc::Rc::clone(&db.dir_root));
+                                    db.write_cache();
+                                }
+                            });
+                        }
                         ui.close_menu();
                     }
                     if ui.button("Exit").clicked() {
@@ -590,6 +629,7 @@ impl eframe::App for RomVaultApp {
                                     }
                                     let _ = tx.send("Scanning DatRoot...".to_string());
                                     DatUpdate::update_dat(Rc::clone(&db.dir_root), "DatRoot");
+                                    db.dir_root.borrow_mut().cached_stats = None;
                                 }
                             });
                         });
@@ -602,6 +642,7 @@ impl eframe::App for RomVaultApp {
                                     let _ = tx.send("Scanning DatRoot...".to_string());
                                     DatUpdate::check_all_dats(Rc::clone(&db.dir_root), "DatRoot");
                                     DatUpdate::update_dat(Rc::clone(&db.dir_root), "DatRoot");
+                                    db.dir_root.borrow_mut().cached_stats = None;
                                 }
                             });
                         });
@@ -627,7 +668,8 @@ impl eframe::App for RomVaultApp {
                                         let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
                                         root_scan.children = files;
                                         let _ = tx.send("Integrating RustyVault files into DB...".to_string());
-                                        FileScanning::scan_dir(rv, &mut root_scan);
+                                        FileScanning::scan_dir(Rc::clone(&rv), &mut root_scan);
+                                        rv.borrow_mut().rep_status_reset();
                                     }
                                     
                                     if let Some(ts) = ts_node {
@@ -635,8 +677,10 @@ impl eframe::App for RomVaultApp {
                                         let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
                                         root_scan.children = files;
                                         let _ = tx.send("Integrating ToSort files into DB...".to_string());
-                                        FileScanning::scan_dir(ts, &mut root_scan);
+                                        FileScanning::scan_dir(Rc::clone(&ts), &mut root_scan);
+                                        ts.borrow_mut().rep_status_reset();
                                     }
+                                    db.dir_root.borrow_mut().cached_stats = None;
                                 }
                             });
                         });
@@ -660,7 +704,8 @@ impl eframe::App for RomVaultApp {
                                         let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
                                         root_scan.children = files;
                                         let _ = tx.send("Integrating RustyVault files into DB...".to_string());
-                                        FileScanning::scan_dir(rv, &mut root_scan);
+                                        FileScanning::scan_dir(Rc::clone(&rv), &mut root_scan);
+                                        rv.borrow_mut().rep_status_reset();
                                     }
                                     
                                     if let Some(ts) = ts_node {
@@ -668,8 +713,10 @@ impl eframe::App for RomVaultApp {
                                         let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
                                         root_scan.children = files;
                                         let _ = tx.send("Integrating ToSort files into DB...".to_string());
-                                        FileScanning::scan_dir(ts, &mut root_scan);
+                                        FileScanning::scan_dir(Rc::clone(&ts), &mut root_scan);
+                                        ts.borrow_mut().rep_status_reset();
                                     }
+                                    db.dir_root.borrow_mut().cached_stats = None;
                                 }
                             });
                         });
@@ -693,7 +740,8 @@ impl eframe::App for RomVaultApp {
                                         let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
                                         root_scan.children = files;
                                         let _ = tx.send("Integrating RustyVault files into DB...".to_string());
-                                        FileScanning::scan_dir(rv, &mut root_scan);
+                                        FileScanning::scan_dir(Rc::clone(&rv), &mut root_scan);
+                                        rv.borrow_mut().rep_status_reset();
                                     }
                                     
                                     if let Some(ts) = ts_node {
@@ -701,8 +749,10 @@ impl eframe::App for RomVaultApp {
                                         let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
                                         root_scan.children = files;
                                         let _ = tx.send("Integrating ToSort files into DB...".to_string());
-                                        FileScanning::scan_dir(ts, &mut root_scan);
+                                        FileScanning::scan_dir(Rc::clone(&ts), &mut root_scan);
+                                        ts.borrow_mut().rep_status_reset();
                                     }
+                                    db.dir_root.borrow_mut().cached_stats = None;
                                 }
                             });
                         });
@@ -716,6 +766,7 @@ impl eframe::App for RomVaultApp {
                             GLOBAL_DB.with(|db_ref| {
                                 if let Some(db) = db_ref.borrow().as_ref() {
                                     FindFixes::scan_files(Rc::clone(&db.dir_root));
+                                    db.dir_root.borrow_mut().cached_stats = None;
                                 }
                             });
                         });
@@ -727,9 +778,10 @@ impl eframe::App for RomVaultApp {
                         self.launch_task("Fix ROMs", |tx| {
                             let _ = tx.send("Running Fix Engine...".to_string());
                             GLOBAL_DB.with(|db_ref| {
-                                if let Some(_db) = db_ref.borrow().as_ref() {
+                                if let Some(db) = db_ref.borrow().as_ref() {
                                     // Placeholder for fix engine
                                     let _ = tx.send("Fix files is disabled for safety".to_string());
+                                    db.dir_root.borrow_mut().cached_stats = None;
                                 }
                             });
                         });
@@ -774,7 +826,7 @@ impl eframe::App for RomVaultApp {
                         ui.close_menu();
                     }
                     if ui.button("Directory Mappings").clicked() {
-                        self.show_dir_mappings = true;
+                        self.open_dir_mappings();
                         ui.close_menu();
                     }
                     ui.separator();
@@ -792,16 +844,28 @@ impl eframe::App for RomVaultApp {
                 });
                 ui.menu_button("Add ToSort", |ui| {
                     if ui.button("Add ToSort").clicked() {
-                        self.task_logs.push("Adding new ToSort directory...".to_string());
-                        GLOBAL_DB.with(|db_ref| {
-                            if let Some(db) = db_ref.borrow().as_ref() {
-                                let mut ts = RvFile::new(FileType::Dir);
-                                ts.name = "New_ToSort".to_string(); // In a real app we'd prompt the user
-                                ts.set_dat_status(DatStatus::InToSort);
-                                db.dir_root.borrow_mut().child_add(Rc::new(RefCell::new(ts)));
-                                db.write_cache();
-                            }
-                        });
+                        if let Some(folder) = rfd::FileDialog::new()
+                            .set_title("Select new ToSort Folder")
+                            .pick_folder()
+                        {
+                            let path = folder.to_string_lossy().to_string();
+                            self.task_logs.push(format!("Add ToSort folder requested: {}", path));
+                            GLOBAL_DB.with(|db_ref| {
+                                if let Some(db) = db_ref.borrow().as_ref() {
+                                    let ts = Rc::new(RefCell::new(
+                                        RvFile::new(FileType::Dir)
+                                    ));
+                                    {
+                                        let mut t = ts.borrow_mut();
+                                        t.name = path;
+                                        t.set_dat_status(DatStatus::InToSort);
+                                    }
+                                    db.dir_root.borrow_mut().child_add(ts);
+                                    rv_core::repair_status::RepairStatus::report_status_reset(Rc::clone(&db.dir_root));
+                                    db.write_cache();
+                                }
+                            });
+                        }
                         ui.close_menu();
                     }
                 });
@@ -1036,12 +1100,25 @@ impl eframe::App for RomVaultApp {
                     let mut unknown = 0;
 
                     if let Some(node_rc) = &self.selected_node {
-                        let mut stats = rv_core::repair_status::RepairStatus::new();
-                        stats.report_status(Rc::clone(node_rc));
-                        got = stats.roms_correct + stats.roms_correct_mia;
-                        missing = stats.roms_missing + stats.roms_missing_mia + stats.roms_fixes + stats.roms_unknown;
-                        fixable = stats.roms_fixes + stats.roms_unneeded + stats.roms_unknown;
-                        unknown = stats.roms_unknown;
+                        let node = node_rc.borrow();
+                        if let Some(stats) = &node.cached_stats {
+                            got = stats.roms_correct + stats.roms_correct_mia;
+                            missing = stats.roms_missing + stats.roms_missing_mia + stats.roms_fixes + stats.roms_unknown;
+                            fixable = stats.roms_fixes + stats.roms_unneeded + stats.roms_unknown;
+                            unknown = stats.roms_unknown;
+                        } else {
+                            // Only calculate once if not cached
+                            drop(node);
+                            let mut stats = rv_core::repair_status::RepairStatus::new();
+                            stats.report_status(Rc::clone(node_rc));
+                            let mut node_mut = node_rc.borrow_mut();
+                            node_mut.cached_stats = Some(stats.clone());
+                            
+                            got = stats.roms_correct + stats.roms_correct_mia;
+                            missing = stats.roms_missing + stats.roms_missing_mia + stats.roms_fixes + stats.roms_unknown;
+                            fixable = stats.roms_fixes + stats.roms_unneeded + stats.roms_unknown;
+                            unknown = stats.roms_unknown;
+                        }
                     }
                     
                     egui::Grid::new("tree_status_grid").num_columns(4).show(ui, |ui| {
@@ -1204,6 +1281,7 @@ impl eframe::App for RomVaultApp {
             .show(ctx, |ui| {
                 egui::TopBottomPanel::top("info_and_filters_panel")
                 .resizable(false)
+                .exact_height(180.0)
                 .frame(egui::Frame::none())
                 .show_inside(ui, |ui| {
                     panels::draw_info_and_filters(self, ui);

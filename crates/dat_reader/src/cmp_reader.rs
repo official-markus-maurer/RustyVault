@@ -1,6 +1,16 @@
 use crate::dat_store::{DatDir, DatGame, DatHeader, DatNode};
 use crate::enums::FileType;
 
+/// ClrMamePro (CMP) DAT parser.
+/// 
+/// `cmp_reader.rs` handles the legacy non-XML ClrMamePro DAT format (which uses curly braces `{ }` 
+/// and space-separated key-value pairs).
+/// 
+/// Differences from C#:
+/// - The C# `CmpReader` operates directly on a `StreamReader`, buffering line by line.
+/// - The Rust version reads the entire text buffer into memory and uses a custom `Chars` iterator
+///   to tokenize strings (`gn`, `gn_rest`) with zero/low allocations, providing extremely fast 
+///   parsing of legacy text DATs.
 pub struct DatFileLoader<'a> {
     _input: &'a str,
     chars: std::str::Chars<'a>,
