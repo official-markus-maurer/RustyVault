@@ -37,13 +37,17 @@ impl DB {
             let mut rv = RvFile::new(FileType::Dir);
             rv.name = "RustyVault".to_string();
             rv.set_dat_status(DatStatus::InDatCollect);
-            root_mut.child_add(Rc::new(RefCell::new(rv)));
+            let rv_rc = Rc::new(RefCell::new(rv));
+            rv_rc.borrow_mut().parent = Some(Rc::downgrade(&root));
+            root_mut.child_add(Rc::clone(&rv_rc));
             
             let mut ts = RvFile::new(FileType::Dir);
             ts.name = "ToSort".to_string();
             ts.set_dat_status(DatStatus::InToSort);
             ts.to_sort_status_set(ToSortDirType::TO_SORT_PRIMARY | ToSortDirType::TO_SORT_CACHE);
-            root_mut.child_add(Rc::new(RefCell::new(ts)));
+            let ts_rc = Rc::new(RefCell::new(ts));
+            ts_rc.borrow_mut().parent = Some(Rc::downgrade(&root));
+            root_mut.child_add(Rc::clone(&ts_rc));
         }
 
         Self::check_create_root_dirs();

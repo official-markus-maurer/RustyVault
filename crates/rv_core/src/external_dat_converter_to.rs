@@ -74,6 +74,7 @@ impl ExternalDatConverterTo {
         if let Some(d) = dat {
             if self.use_header {
                 let d_ref = d.borrow();
+                dat_header.id = d_ref.get_data(DatData::Id);
                 dat_header.name = d_ref.get_data(DatData::DatName);
                 dat_header.root_dir = d_ref.get_data(DatData::RootDir);
                 dat_header.description = d_ref.get_data(DatData::Description);
@@ -84,9 +85,10 @@ impl ExternalDatConverterTo {
                 dat_header.email = d_ref.get_data(DatData::Email);
                 dat_header.homepage = d_ref.get_data(DatData::HomePage);
                 dat_header.url = d_ref.get_data(DatData::Url);
-                // dat_header.dir = d_ref.get_data(DatData::DirSetup);
-                // dat_header.header = d_ref.get_data(DatData::Header);
-                // dat_header.compression = d_ref.get_data(DatData::Compression);
+                dat_header.dir = d_ref.get_data(DatData::DirSetup);
+                dat_header.header = d_ref.get_data(DatData::Header);
+                dat_header.compression = d_ref.get_data(DatData::Compression);
+                dat_header.merge_type = d_ref.get_data(DatData::MergeType);
             } else {
                 dat_header.name = Some(rv_file.name.clone());
             }
@@ -100,13 +102,40 @@ impl ExternalDatConverterTo {
             self.child_add(&mut dat_header.base_dir, Rc::clone(child));
         }
 
+        Self::archive_directory_flatten(&mut dat_header.base_dir);
+        Self::remove_unneeded_directories(&mut dat_header.base_dir);
+
         Some(dat_header)
+    }
+
+    fn is_archive_type(file_type: FileType) -> bool {
+        matches!(file_type, FileType::Zip | FileType::SevenZip)
+    }
+
+    fn is_within_archive(rv_file: &RvFile) -> bool {
+        let mut current = rv_file.parent.as_ref().and_then(|parent| parent.upgrade());
+        while let Some(node_rc) = current {
+            let node = node_rc.borrow();
+            if Self::is_archive_type(node.file_type) {
+                return true;
+            }
+            current = node.parent.as_ref().and_then(|parent| parent.upgrade());
+        }
+        false
     }
 
     fn child_add(&self, ext_dir: &mut DatDir, rv_file_rc: Rc<RefCell<RvFile>>) {
         let rv_file = rv_file_rc.borrow();
 
         if rv_file.file_type == FileType::File {
+            let is_archive_member = Self::is_within_archive(&rv_file);
+            if is_archive_member && !self.filter_zips {
+                return;
+            }
+            if !is_archive_member && !self.filter_files {
+                return;
+            }
+
             match rv_file.rep_status() {
                 RepStatus::Correct | RepStatus::CorrectMIA | RepStatus::UnNeeded | 
                 RepStatus::Unknown | RepStatus::MoveToSort | RepStatus::Delete | 
@@ -170,6 +199,10 @@ impl ExternalDatConverterTo {
             return;
         }
 
+        if Self::is_archive_type(rv_file.file_type) && !self.filter_zips {
+            return;
+        }
+
         let mut game_name = rv_file.name.clone();
         if rv_file.file_type == FileType::Zip && game_name.to_lowercase().ends_with(".zip") {
             game_name = game_name[..game_name.len()-4].to_string();
@@ -224,5 +257,247 @@ impl ExternalDatConverterTo {
             return None;
         }
         Some(instr.split('|').map(|s| s.trim().to_string()).collect())
+    }
+
+    fn archive_directory_flatten(d_dir: &mut DatDir) {
+        if d_dir.d_game.is_some() {
+            let mut list = Vec::new();
+            Self::archive_flat(d_dir, &mut list, "");
+            d_dir.children.clear();
+            d_dir.children.extend(list);
+            return;
+        }
+
+        for node in &mut d_dir.children {
+            if let Some(dat_dir) = node.dir_mut() {
+                Self::archive_directory_flatten(dat_dir);
+            }
+        }
+    }
+
+    fn archive_flat(d_dir: &DatDir, new_dir: &mut Vec<DatNode>, sub_dir: &str) {
+        for node in &d_dir.children {
+            let this_name = if sub_dir.is_empty() {
+                node.name.to_string()
+            } else {
+                format!("{}/{}", sub_dir, node.name)
+            };
+
+            if node.file().is_some() {
+                let mut new_node = node.clone();
+                new_node.name = this_name;
+                new_dir.push(new_node);
+            } else if let Some(d) = node.dir() {
+                let mut new_node = DatNode::new_file(format!("{}/", this_name), FileType::UnSet);
+                if let Some(f_mut) = new_node.file_mut() {
+                    f_mut.size = Some(0);
+                    f_mut.crc = Some(vec![0, 0, 0, 0]);
+                }
+                new_dir.push(new_node);
+
+                Self::archive_flat(d, new_dir, &this_name);
+            }
+        }
+    }
+
+    fn remove_unneeded_directories(d_dir: &mut DatDir) {
+        let mut kept_children = Vec::new();
+
+        for mut node in d_dir.children.drain(..) {
+            let keep = if let Some(child_dir) = node.dir_mut() {
+                Self::remove_unneeded_directories(child_dir);
+                !child_dir.children.is_empty()
+            } else {
+                true
+            };
+
+            if keep {
+                kept_children.push(node);
+            }
+        }
+
+        d_dir.children = kept_children;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_convert_to_external_dat_flattens_archive_directories() {
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        root.borrow_mut().name = "Root".to_string();
+
+        let zip = Rc::new(RefCell::new(RvFile::new(FileType::Zip)));
+        zip.borrow_mut().name = "game.zip".to_string();
+
+        let subdir = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        subdir.borrow_mut().name = "sub".to_string();
+
+        let file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut f = file.borrow_mut();
+            f.name = "inner.bin".to_string();
+            f.size = Some(4);
+            f.crc = Some(vec![1, 2, 3, 4]);
+        }
+
+        subdir.borrow_mut().child_add(Rc::clone(&file));
+        zip.borrow_mut().child_add(Rc::clone(&subdir));
+        root.borrow_mut().child_add(Rc::clone(&zip));
+
+        let converter = ExternalDatConverterTo::new();
+        let dat = converter.convert_to_external_dat(Rc::clone(&root)).unwrap();
+
+        assert_eq!(dat.base_dir.children.len(), 1);
+        let game_node = dat.base_dir.children[0].dir().unwrap();
+        let child_names: Vec<_> = game_node.children.iter().map(|child| child.name.clone()).collect();
+        assert_eq!(child_names, vec!["sub/".to_string(), "sub/inner.bin".to_string()]);
+        assert!(game_node.children[0].file().is_some());
+        assert!(game_node.children[1].file().is_some());
+    }
+
+    #[test]
+    fn test_convert_to_external_dat_drops_empty_filtered_directories() {
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        root.borrow_mut().name = "Root".to_string();
+
+        let zip = Rc::new(RefCell::new(RvFile::new(FileType::Zip)));
+        {
+            let mut z = zip.borrow_mut();
+            z.name = "game.zip".to_string();
+        }
+
+        let file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut f = file.borrow_mut();
+            f.name = "present.bin".to_string();
+            f.set_rep_status(RepStatus::Correct);
+        }
+
+        zip.borrow_mut().child_add(Rc::clone(&file));
+        root.borrow_mut().child_add(Rc::clone(&zip));
+
+        let mut converter = ExternalDatConverterTo::new();
+        converter.filter_got = false;
+        let dat = converter.convert_to_external_dat(Rc::clone(&root)).unwrap();
+
+        assert!(dat.base_dir.children.is_empty());
+    }
+
+    #[test]
+    fn test_convert_to_external_dat_can_filter_loose_files_only() {
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        root.borrow_mut().name = "Root".to_string();
+
+        let loose = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut f = loose.borrow_mut();
+            f.name = "loose.bin".to_string();
+            f.size = Some(1);
+            f.crc = Some(vec![1, 2, 3, 4]);
+            f.parent = Some(Rc::downgrade(&root));
+        }
+        root.borrow_mut().child_add(Rc::clone(&loose));
+
+        let zip = Rc::new(RefCell::new(RvFile::new(FileType::Zip)));
+        {
+            let mut z = zip.borrow_mut();
+            z.name = "game.zip".to_string();
+            z.parent = Some(Rc::downgrade(&root));
+        }
+        root.borrow_mut().child_add(Rc::clone(&zip));
+
+        let archive_file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut f = archive_file.borrow_mut();
+            f.name = "inside.bin".to_string();
+            f.size = Some(1);
+            f.crc = Some(vec![5, 6, 7, 8]);
+            f.parent = Some(Rc::downgrade(&zip));
+        }
+        zip.borrow_mut().child_add(Rc::clone(&archive_file));
+
+        let mut converter = ExternalDatConverterTo::new();
+        converter.filter_zips = false;
+        let dat = converter.convert_to_external_dat(Rc::clone(&root)).unwrap();
+
+        assert_eq!(dat.base_dir.children.len(), 1);
+        assert_eq!(dat.base_dir.children[0].name, "loose.bin");
+    }
+
+    #[test]
+    fn test_convert_to_external_dat_can_filter_archive_files_only() {
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        root.borrow_mut().name = "Root".to_string();
+
+        let loose = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut f = loose.borrow_mut();
+            f.name = "loose.bin".to_string();
+            f.size = Some(1);
+            f.crc = Some(vec![1, 2, 3, 4]);
+            f.parent = Some(Rc::downgrade(&root));
+        }
+        root.borrow_mut().child_add(Rc::clone(&loose));
+
+        let zip = Rc::new(RefCell::new(RvFile::new(FileType::Zip)));
+        {
+            let mut z = zip.borrow_mut();
+            z.name = "game.zip".to_string();
+            z.parent = Some(Rc::downgrade(&root));
+        }
+        root.borrow_mut().child_add(Rc::clone(&zip));
+
+        let archive_file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut f = archive_file.borrow_mut();
+            f.name = "inside.bin".to_string();
+            f.size = Some(1);
+            f.crc = Some(vec![5, 6, 7, 8]);
+            f.parent = Some(Rc::downgrade(&zip));
+        }
+        zip.borrow_mut().child_add(Rc::clone(&archive_file));
+
+        let mut converter = ExternalDatConverterTo::new();
+        converter.filter_files = false;
+        let dat = converter.convert_to_external_dat(Rc::clone(&root)).unwrap();
+
+        assert_eq!(dat.base_dir.children.len(), 1);
+        let game = dat.base_dir.children[0].dir().unwrap();
+        assert_eq!(dat.base_dir.children[0].name, "game");
+        assert_eq!(game.children.len(), 1);
+        assert_eq!(game.children[0].name, "inside.bin");
+    }
+
+    #[test]
+    fn test_convert_to_external_dat_round_trips_extended_header_fields() {
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        root.borrow_mut().name = "Root".to_string();
+
+        let dat = Rc::new(RefCell::new(crate::rv_dat::RvDat::new()));
+        {
+            let mut d = dat.borrow_mut();
+            d.set_data(DatData::Id, Some("id-1".to_string()));
+            d.set_data(DatData::DatName, Some("SampleDat".to_string()));
+            d.set_data(DatData::RootDir, Some("Roms".to_string()));
+            d.set_data(DatData::Header, Some("nes".to_string()));
+            d.set_data(DatData::Compression, Some("zip".to_string()));
+            d.set_data(DatData::MergeType, Some("split".to_string()));
+            d.set_data(DatData::DirSetup, Some("full".to_string()));
+        }
+        root.borrow_mut().dir_dats.push(Rc::clone(&dat));
+
+        let converter = ExternalDatConverterTo::new();
+        let external = converter.convert_to_external_dat(Rc::clone(&root)).unwrap();
+
+        assert_eq!(external.id, Some("id-1".to_string()));
+        assert_eq!(external.name, Some("SampleDat".to_string()));
+        assert_eq!(external.root_dir, Some("Roms".to_string()));
+        assert_eq!(external.header, Some("nes".to_string()));
+        assert_eq!(external.compression, Some("zip".to_string()));
+        assert_eq!(external.merge_type, Some("split".to_string()));
+        assert_eq!(external.dir, Some("full".to_string()));
     }
 }

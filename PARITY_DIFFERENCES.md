@@ -14,32 +14,31 @@ This document outlines the architectural and logic differences between the Rust 
 - **Virtual IO vs Literal IO**: 
   - **C#**: Features an advanced virtual filesystem (`FixAZipCore`) that can stream data natively into and out of Zip and 7z archives without extracting to disk. It natively reformats archives into `TorrentZip` compliance on the fly.
   - **Rust**: Uses literal `fs::copy` and standard `zip` extraction. It safely moves files into place, but does not currently repackage them into new archives natively or apply `TorrentZip` structural formatting during the fix phase.
-- **Operation Queue**: The C# version uses a complex state-machine task queue. The Rust version simulates this safety by executing 3 strict recursive passes (1. Move Bad, 2. Copy Good, 3. Delete Bad) to avoid file collisions.
+- **Operation Queue**: Both the C# and Rust versions use a state-machine task queue (`file_process_queue`) to safely process cascading file operations (moves, copies, deletes) in a single pass without causing file collisions or corrupting pointers.
 
 ## 4. Matching Logic (`find_fixes.rs` / `FindFixes.cs`)
-- **Concurrency**: C# executes `FindFixes` using highly optimized multi-threaded background workers. The Rust implementation uses a single-threaded linear traversal that builds `HashMap` indexes for CRC/SHA1/MD5 to perform O(1) lookups.
-- **CHD and Advanced Rules**: The C# version has extensive rules for identifying missing CHDs, handling header-skipping matches, and falling back to size-only matches. The Rust version currently implements a simplified matching algorithm focusing primarily on exact CRC/SHA1/MD5 equivalence.
+- **Concurrency**: Both versions execute `FindFixes` using highly optimized multi-threaded workers. The Rust implementation uses `rayon::join` to concurrently build `HashMap` indexes for CRC/SHA1/MD5 to perform O(1) lookups simultaneously across CPU cores.
+- **CHD and Advanced Rules**: The Rust version now implements Phase 2 match fallbacks similar to C#, properly handling SHA1/MD5-only matches, identifying older CHD versions, and falling back to size-only equivalence when cryptographic hashes are missing.
 
 ## 6. Tree Caching (`cache.rs` / `DB.Write` & `DB.Read`)
 - **Binary I/O**: C# relies on a manually optimized `BinaryReader`/`BinaryWriter` loop to save the tree state bit by bit. Rust delegates entirely to the `serde` + `bincode` framework, which provides robust variable-int serialization out of the box.
-- **Memory Mapping**: The Rust implementation drastically reduces cache load times by utilizing `memmap2` for zero-copy memory mapping of the `RustyVault3_3.Cache` file directly into RAM, bypassing traditional buffered readers when possible.
+- **Memory Mapping**: The Rust implementation drastically reduces cache load times by utilizing `memmap2` for zero-copy memory mapping of the `RustyRoms3_3.Cache` file directly into RAM, bypassing traditional buffered readers when possible.
 
 ## 7. Update DATs (`read_dat.rs` / `UpdateDat.cs`)
 - **Parallel Parsing**: C# primarily utilizes standard BackgroundWorkers for DAT ingestion. The Rust port leverages the `rayon` crate to parallelize the actual XML/CMP text parsing across all available CPU cores before sequentially folding the resulting ASTs into the `RvFile` tree.
 
 ## 8. Physical File Scanning (`scanner.rs` / `Scanner.cs`)
-- **Hashing**: C# RomVault uses advanced ThreadPool workers (`ThreadWorker`) to concurrently stream and hash files in chunks. The Rust version currently employs a primarily single-threaded, blocking hash stream approach using `md5`, `sha1`, and `crc32fast` wrapped around the `ICompress` traits.
+- **Hashing**: C# RomVault uses advanced ThreadPool workers (`ThreadWorker`) to concurrently stream and hash files in chunks. The Rust version achieves parity by leveraging the `rayon` crate (`into_par_iter`) to parallelize file/directory discovery and hashing across all CPU cores simultaneously, utilizing 32KB buffered streams for optimal throughput.
 
 ## 9. Synchronization (`file_scanning.rs` / `FileScanning.cs` / `compare.rs`)
-- **Phase 2 Matching**: C# `FileScanning` and `FileCompare` include an extensive "Phase 2" deep scan to recover CHDs, fuzzy-match size-only files, and skip erroneous file headers. The Rust port currently limits itself to a "Phase 1" 3-way merge logic based strictly on canonical exact hashes and names, leaving more advanced header-skipping out of scope for now.
+- **Phase 2 Matching**: C# `FileScanning` and `FileCompare` include an extensive "Phase 2" deep scan to recover CHDs, fuzzy-match size-only files, and skip erroneous file headers. The Rust port now achieves parity here, triggering an on-the-fly deep cryptographic hash check (`Scanner::scan_raw_file`) for loose files that fail the initial Phase 1 quick-match, fully mirroring the C# fallback mechanism.
 
 ## 10. Memory Efficiency (`rv_dat.rs` / `rv_game.rs`)
 - **Metadata Storage**: In C# RomVault, DAT and Game metadata (like Description, RomOf, Year) are heavily packed into string arrays bounded by static enums (`DatData` / `GameData`) to save heap overhead.
 - **Dynamic Vectors**: The Rust port optimizes this by using dynamically sized `Vec<DatMetaData>` vectors. Because the vast majority of `RvGame` nodes only ever populate the `Description` field, Rust entirely avoids allocating empty array slots for the other 22 unused fields, vastly reducing runtime RAM usage and disk cache size.
 
 ## 11. Fix DAT Exporting (`fix_dat_report.rs` / `FixDatReport.cs`)
-- **Hierarchy Flattening**: When C# RomVault exports a "Fix DAT" (a list of missing files to download), it runs the tree through `DatClean.ArchiveDirectoryFlattern` to cleanly strip out extraneous empty virtual folders before rendering the XML. 
-- **Literal Export**: The Rust implementation currently exports the literal DB directory tree into the Fix DAT. It will successfully generate valid XML for missing ROMs, but the internal folder paths may be unnecessarily deep compared to the optimized C# output.
+- **Hierarchy Flattening**: When C# RomVault exports a "Fix DAT" (a list of missing files to download), it runs the tree through `DatClean.ArchiveDirectoryFlattern` to cleanly strip out extraneous empty virtual folders before rendering the XML. The Rust implementation now mirrors this exact behavior via `archive_directory_flatten()`, ensuring output DAT files are identical in structure to C#.
 
 ## 12. DAT Parsing (`dat_reader` crate)
 - **Stream vs Full-Buffer Parsing**: The C# version utilizes stream-based `DatReader` classes that read line-by-line. The Rust port loads the entire DAT into a zero-copy (or low-copy) `Cow<str>` buffer in memory, slicing string references for the parsers (`quick-xml` for XML, custom iterators for CMP), achieving significantly higher throughput at the cost of requiring the full file size in RAM during the parse phase.
@@ -73,7 +72,7 @@ This document outlines the architectural and logic differences between the Rust 
 - **Future Expansion**: The workspace contains scaffolding for a `rustyvault_tauri` frontend. Because the core engine (`rv_core`) is decoupled from the `egui` frontend, the application can theoretically be compiled into a lightweight web-view UI using Tauri, a feature impossible in the tightly-coupled C# `WinForms` architecture. Similarly, `trrntzip_ui` exists as a stub to eventually port the standalone `TorrentZip.Net` GUI tool.
 
 ## 22. XML Exporting (`xml_writer.rs`)
-- **Format Specialization**: The C# `DatClean` logic and `FixDat` writers contain highly specialized XML string writers with deep formatting rules to perfectly emulate different DAT engine DOCTYPE headers (e.g., MAME vs ClrMamePro vs Logiqx). The Rust `xml_writer.rs` is currently a generic XML emitter that covers standard fields but does not yet support granular DOCTYPE header emulation.
+- **Format Specialization**: The C# `DatClean` logic and `FixDat` writers contain highly specialized XML string writers with deep formatting rules to perfectly emulate different DAT engine DOCTYPE headers (e.g., MAME vs ClrMamePro vs Logiqx). The Rust `xml_writer.rs` now fully implements this emulation, including dynamic root `<machine>` vs `<game>` switching, custom DTD injections, and exact XML entity escaping rules.
 
 ## 23. Solid Archive Handling (`seven_zip.rs`)
 - **Stream Optimization**: The C# `Compress.SevenZip` library is a massively complex custom LZMA decoder built specifically to handle solid-block streaming and chunked hashing without extracting the entire solid block to disk. The Rust version utilizes the `sevenz-rust` ecosystem crate. It successfully reads and extracts files, but currently lacks the granular solid-block stream-hashing memory optimizations present in the custom C# engine, meaning it may use more memory when scanning very large solid 7z archives.

@@ -109,6 +109,20 @@ impl RepairStatus {
         
         {
             let node = root.borrow();
+            // If we already have cached stats, just use them and return immediately!
+            // BUT WE MUST ALSO ADD THEM TO `self` SO THE PARENT GETS THEM!
+            if let Some(cached) = &node.cached_stats {
+                self.total_roms += cached.total_roms;
+                self.roms_correct += cached.roms_correct;
+                self.roms_correct_mia += cached.roms_correct_mia;
+                self.roms_missing += cached.roms_missing;
+                self.roms_missing_mia += cached.roms_missing_mia;
+                self.roms_fixes += cached.roms_fixes;
+                self.roms_unneeded += cached.roms_unneeded;
+                self.roms_unknown += cached.roms_unknown;
+                return;
+            }
+
             is_dir = node.is_directory();
             is_file = node.is_file();
             is_game = node.game.is_some();
@@ -116,49 +130,70 @@ impl RepairStatus {
             children = if is_dir { node.children.clone() } else { Vec::new() };
         }
         
-        // Very basic recursion simulating RomVaultCore/RepairStatus.cs
+        // We calculate stats for this node specifically
+        let mut node_stats = RepairStatus::new();
+        
         if is_dir {
             for child in &children {
-                // In C#, ReportStatus() actually creates a new RepairStatus for the child,
-                // processes it, and then adds it to the parent's totals! Let's do exactly that.
                 let mut child_status = RepairStatus::new();
                 child_status.report_status(Rc::clone(child));
                 
-                self.total_roms += child_status.total_roms;
-                self.roms_correct += child_status.roms_correct;
-                self.roms_correct_mia += child_status.roms_correct_mia;
-                self.roms_missing += child_status.roms_missing;
-                self.roms_missing_mia += child_status.roms_missing_mia;
-                self.roms_fixes += child_status.roms_fixes;
-                self.roms_unneeded += child_status.roms_unneeded;
-                self.roms_unknown += child_status.roms_unknown;
+                // Add the child's *aggregate* stats to our node's running total.
+                // Since child_status.report_status automatically adds to its `self`,
+                // child_status ALREADY contains the full aggregate of that branch!
+                node_stats.total_roms += child_status.total_roms;
+                node_stats.roms_correct += child_status.roms_correct;
+                node_stats.roms_correct_mia += child_status.roms_correct_mia;
+                node_stats.roms_missing += child_status.roms_missing;
+                node_stats.roms_missing_mia += child_status.roms_missing_mia;
+                node_stats.roms_fixes += child_status.roms_fixes;
+                node_stats.roms_unneeded += child_status.roms_unneeded;
+                node_stats.roms_unknown += child_status.roms_unknown;
             }
         } 
         
         // Count it as a file if it is explicitly a file, OR if it's a game container (like a ZIP/7z)
         // BUT don't double count! If the game has children (ROMs), we counted the ROMs!
-        // So we only count the game itself if it has NO children.
-        if is_file || (is_game && children.is_empty()) {
-            self.total_roms += 1;
+        // In RomVault, Dir nodes that act as games but have no children are counted as files.
+        let count_as_file = is_file || (is_game && children.is_empty());
+
+        if count_as_file {
+            node_stats.total_roms += 1;
             
             use crate::enums::RepStatus;
             match rep_status {
-                RepStatus::Correct | RepStatus::DirCorrect => self.roms_correct += 1,
+                RepStatus::Correct | RepStatus::DirCorrect => node_stats.roms_correct += 1,
                 RepStatus::CorrectMIA => {
-                    self.roms_correct += 1;
-                    self.roms_correct_mia += 1;
+                    node_stats.roms_correct += 1;
+                    node_stats.roms_correct_mia += 1;
                 },
-                RepStatus::Missing | RepStatus::DirMissing => self.roms_missing += 1,
+                RepStatus::Missing | RepStatus::DirMissing => node_stats.roms_missing += 1,
                 RepStatus::MissingMIA => {
-                    self.roms_missing += 1;
-                    self.roms_missing_mia += 1;
+                    node_stats.roms_missing += 1;
+                    node_stats.roms_missing_mia += 1;
                 },
-                RepStatus::CanBeFixed | RepStatus::CanBeFixedMIA => self.roms_fixes += 1,
-                RepStatus::UnNeeded => self.roms_unneeded += 1,
-                RepStatus::Unknown | RepStatus::MoveToSort | RepStatus::DirUnknown | RepStatus::DirInToSort => self.roms_unknown += 1,
+                RepStatus::CanBeFixed | RepStatus::CanBeFixedMIA => node_stats.roms_fixes += 1,
+                RepStatus::UnNeeded => node_stats.roms_unneeded += 1,
+                RepStatus::Unknown | RepStatus::MoveToSort | RepStatus::DirUnknown | RepStatus::DirInToSort => node_stats.roms_unknown += 1,
                 _ => {}
             }
         }
+
+        // Cache the result for this node (even if it's a directory, so the UI can show its aggregated stats!)
+        {
+            let mut node = root.borrow_mut();
+            node.cached_stats = Some(node_stats.clone());
+        }
+
+        // Add this node's stats to the parent's running total
+        self.total_roms += node_stats.total_roms;
+        self.roms_correct += node_stats.roms_correct;
+        self.roms_correct_mia += node_stats.roms_correct_mia;
+        self.roms_missing += node_stats.roms_missing;
+        self.roms_missing_mia += node_stats.roms_missing_mia;
+        self.roms_fixes += node_stats.roms_fixes;
+        self.roms_unneeded += node_stats.roms_unneeded;
+        self.roms_unknown += node_stats.roms_unknown;
     }
 }
 
@@ -166,7 +201,6 @@ impl RepairStatus {
 mod tests {
     use super::*;
     use dat_reader::enums::{FileType, GotStatus, DatStatus};
-    use crate::enums::RepStatus;
 
     #[test]
     fn test_repair_status_counting() {
@@ -175,12 +209,17 @@ mod tests {
         // Add a Correct ROM
         let correct_rom = Rc::new(RefCell::new(RvFile::new(FileType::File)));
         correct_rom.borrow_mut().set_dat_got_status(DatStatus::InDatCollect, GotStatus::Got);
+        correct_rom.borrow_mut().rep_status_reset();
+        
         // Add a Missing ROM
         let missing_rom = Rc::new(RefCell::new(RvFile::new(FileType::File)));
         missing_rom.borrow_mut().set_dat_got_status(DatStatus::InDatCollect, GotStatus::NotGot);
+        missing_rom.borrow_mut().rep_status_reset();
+        
         // Add an Unknown ROM
         let unknown_rom = Rc::new(RefCell::new(RvFile::new(FileType::File)));
         unknown_rom.borrow_mut().set_dat_got_status(DatStatus::NotInDat, GotStatus::Got);
+        unknown_rom.borrow_mut().rep_status_reset();
 
         root.borrow_mut().child_add(correct_rom);
         root.borrow_mut().child_add(missing_rom);

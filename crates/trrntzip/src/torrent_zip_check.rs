@@ -13,6 +13,52 @@ use crate::zipped_file::ZippedFile;
 pub struct TorrentZipCheck;
 
 impl TorrentZipCheck {
+    fn ascii_lower(byte: u8) -> u8 {
+        if byte >= b'A' && byte <= b'Z' {
+            byte + 0x20
+        } else {
+            byte
+        }
+    }
+
+    fn compare_ascii_casefolded(a: &str, b: &str) -> i32 {
+        let bytes_a = a.as_bytes();
+        let bytes_b = b.as_bytes();
+        let len = std::cmp::min(bytes_a.len(), bytes_b.len());
+
+        for i in 0..len {
+            let ca = Self::ascii_lower(bytes_a[i]);
+            let cb = Self::ascii_lower(bytes_b[i]);
+
+            if ca < cb {
+                return -1;
+            }
+            if ca > cb {
+                return 1;
+            }
+        }
+
+        if bytes_a.len() < bytes_b.len() {
+            -1
+        } else if bytes_a.len() > bytes_b.len() {
+            1
+        } else {
+            0
+        }
+    }
+
+    fn seven_zip_extension_key(name: &str) -> Vec<String> {
+        let trimmed = name.trim_end_matches('/');
+        let file_name = trimmed.rsplit('/').next().unwrap_or(trimmed);
+        let mut parts: Vec<String> = file_name
+            .split('.')
+            .skip(1)
+            .map(|part| part.to_ascii_lowercase())
+            .collect();
+        parts.reverse();
+        parts
+    }
+
     pub fn check_zip_files(zipped_files: &mut Vec<ZippedFile>) -> TrrntZipStatus {
         let mut tz_status = TrrntZipStatus::UNKNOWN;
 
@@ -183,12 +229,8 @@ impl TorrentZipCheck {
         let len = std::cmp::min(bytes_a.len(), bytes_b.len());
 
         for i in 0..len {
-            let mut ca = bytes_a[i];
-            let mut cb = bytes_b[i];
-
-            // to lowercase
-            if ca >= b'A' && ca <= b'Z' { ca += 0x20; }
-            if cb >= b'A' && cb <= b'Z' { cb += 0x20; }
+            let ca = Self::ascii_lower(bytes_a[i]);
+            let cb = Self::ascii_lower(bytes_b[i]);
 
             if ca < cb { return -1; }
             if ca > cb { return 1; }
@@ -201,16 +243,26 @@ impl TorrentZipCheck {
     }
 
     pub fn trrnt_7zip_string_compare(a: &ZippedFile, b: &ZippedFile) -> i32 {
-        let name_a = &a.name;
-        let name_b = &b.name;
+        if a.is_dir || b.is_dir || a.name.ends_with('/') || b.name.ends_with('/') {
+            return Self::trrnt_zip_string_compare(a, b);
+        }
 
-        // Basic placeholder for 7zip extension sorting rule
-        let ext_a = name_a.split('.').last().unwrap_or("");
-        let ext_b = name_b.split('.').last().unwrap_or("");
-        
-        let ext_cmp = ext_a.cmp(ext_b);
-        if ext_cmp != std::cmp::Ordering::Equal {
-            return ext_cmp as i32;
+        let ext_key_a = Self::seven_zip_extension_key(&a.name);
+        let ext_key_b = Self::seven_zip_extension_key(&b.name);
+        let len = std::cmp::min(ext_key_a.len(), ext_key_b.len());
+
+        for i in 0..len {
+            let cmp = Self::compare_ascii_casefolded(&ext_key_a[i], &ext_key_b[i]);
+            if cmp != 0 {
+                return cmp;
+            }
+        }
+
+        if ext_key_a.len() < ext_key_b.len() {
+            return -1;
+        }
+        if ext_key_a.len() > ext_key_b.len() {
+            return 1;
         }
 
         Self::trrnt_zip_string_compare(a, b)
@@ -223,9 +275,12 @@ mod tests {
 
     fn make_zf(name: &str) -> ZippedFile {
         ZippedFile {
+            index: 0,
             name: name.to_string(),
             size: 0,
-            crc: 0,
+            crc: None,
+            sha1: None,
+            is_dir: false,
         }
     }
 
@@ -244,6 +299,9 @@ mod tests {
         // Sorts by extension first
         assert_eq!(TorrentZipCheck::trrnt_7zip_string_compare(&make_zf("b.aaa"), &make_zf("a.zzz")), -1);
         assert_eq!(TorrentZipCheck::trrnt_7zip_string_compare(&make_zf("z.aaa"), &make_zf("a.aaa")), 1);
+        assert_eq!(TorrentZipCheck::trrnt_7zip_string_compare(&make_zf("a.tar.gz"), &make_zf("b.zip")), -1);
+        assert_eq!(TorrentZipCheck::trrnt_7zip_string_compare(&make_zf("a"), &make_zf("b.txt")), -1);
+        assert_eq!(TorrentZipCheck::trrnt_7zip_string_compare(&make_zf("folder/"), &make_zf("file.bin")), 1);
     }
 
     #[test]

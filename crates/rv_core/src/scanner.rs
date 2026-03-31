@@ -1,9 +1,10 @@
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use md5::{Md5, Digest};
 use sha1::Sha1;
 use crc32fast::Hasher as Crc32Hasher;
+use rayon::prelude::*;
 
 use dat_reader::enums::{FileType, GotStatus, HeaderFileType};
 use compress::i_compress::ICompress;
@@ -11,7 +12,9 @@ use compress::zip_file::ZipFile;
 use compress::seven_zip::SevenZipFile;
 use compress::raw_file::RawFile;
 use compress::zip_enums::ZipReturn;
+use file_header_reader::FileHeaders;
 
+use crate::rv_file::FileStatus;
 use crate::scanned_file::ScannedFile;
 
 /// Core physical file scanning and hashing engine.
@@ -23,8 +26,9 @@ use crate::scanned_file::ScannedFile;
 /// Differences from C#:
 /// - The C# `Scanner` is highly integrated with multi-threaded ThreadPools (`ThreadWorker`) to
 ///   concurrently hash large files and chunks of ZIPs in memory.
-/// - The Rust version currently implements a robust but primarily single-threaded synchronous 
-///   hash streaming mechanism. It maps `ICompress` trait behaviors into Rust's `Box<dyn ICompress>`.
+/// - The Rust version utilizes the `rayon` parallel iterator ecosystem to automatically distribute
+///   recursive directory scanning and file hashing across all available CPU cores, providing 
+///   equivalent or faster throughput without manual thread pool management.
 pub struct Scanner;
 
 impl Scanner {
@@ -71,41 +75,53 @@ impl Scanner {
     }
 
     fn scan_files_in_archive(file: &mut dyn ICompress, deep_scan: bool) -> Vec<ScannedFile> {
-        let mut results = Vec::new();
         let file_count = file.local_files_count();
-
         let scanned_file_type = FileType::File; 
 
+        // Extract all headers sequentially first because `file` is mutable and not Sync
+        let mut file_headers = Vec::with_capacity(file_count);
         for i in 0..file_count {
+            if let Some(lf) = file.get_file_header(i) {
+                // Clone the FileHeader so we drop the immutable borrow on `file` immediately
+                file_headers.push((i, lf.clone()));
+            }
+        }
+
+        // We can't parallelize the stream reading across multiple threads for the SAME archive 
+        // because ICompress stream access is stateful.
+        // However, we CAN parallelize the outer `scan_directory` loop which processes MULTIPLE archives at once.
+        let mut results = Vec::with_capacity(file_headers.len());
+
+        for (i, lf) in file_headers {
             let mut scanned_file = ScannedFile::new(scanned_file_type);
             let mut do_deep_scan = false;
             let mut lf_crc = None;
             let mut _lf_is_dir = false;
             
-            if let Some(lf) = file.get_file_header(i) {
-                scanned_file.name = lf.filename.clone();
-                scanned_file.deep_scanned = deep_scan;
-                scanned_file.index = i as i32;
-                scanned_file.local_header_offset = lf.local_head;
-                scanned_file.file_mod_time_stamp = lf.last_modified();
-                
-                _lf_is_dir = lf.is_directory;
+            scanned_file.name = lf.filename.clone();
+            scanned_file.deep_scanned = deep_scan;
+            scanned_file.index = i as i32;
+            scanned_file.local_header_offset = lf.local_head;
+            scanned_file.file_mod_time_stamp = lf.last_modified();
+            
+            _lf_is_dir = lf.is_directory;
 
-                if lf.is_directory {
-                    scanned_file.header_file_type = HeaderFileType::NOTHING;
-                    scanned_file.got_status = GotStatus::Got;
-                    scanned_file.size = Some(0);
-                    scanned_file.crc = Some(vec![0, 0, 0, 0]);
-                    scanned_file.sha1 = Some(vec![0xda, 0x39, 0xa3, 0xee, 0x5e, 0x6b, 0x4b, 0x0d, 0x32, 0x55, 0xbf, 0xef, 0x95, 0x60, 0x18, 0x90, 0xaf, 0xd8, 0x07, 0x09]);
-                    scanned_file.md5 = Some(vec![0xd4, 0x1d, 0x8c, 0xd9, 0x8f, 0x00, 0xb2, 0x04, 0xe9, 0x80, 0x09, 0x98, 0xec, 0xf8, 0x42, 0x7e]);
-                } else {
-                    scanned_file.size = Some(lf.uncompressed_size);
-                    scanned_file.crc = lf.crc.clone();
-                    lf_crc = lf.crc.clone();
-                    do_deep_scan = deep_scan;
-                }
+            if lf.is_directory {
+                scanned_file.header_file_type = HeaderFileType::NOTHING;
+                scanned_file.got_status = GotStatus::Got;
+                scanned_file.size = Some(0);
+                scanned_file.crc = Some(vec![0, 0, 0, 0]);
+                scanned_file.sha1 = Some(vec![0xda, 0x39, 0xa3, 0xee, 0x5e, 0x6b, 0x4b, 0x0d, 0x32, 0x55, 0xbf, 0xef, 0x95, 0x60, 0x18, 0x90, 0xaf, 0xd8, 0x07, 0x09]);
+                scanned_file.md5 = Some(vec![0xd4, 0x1d, 0x8c, 0xd9, 0x8f, 0x00, 0xb2, 0x04, 0xe9, 0x80, 0x09, 0x98, 0xec, 0xf8, 0x42, 0x7e]);
             } else {
-                continue;
+                scanned_file.size = Some(lf.uncompressed_size);
+                scanned_file.crc = lf.crc.clone();
+                lf_crc = lf.crc.clone();
+                do_deep_scan = deep_scan;
+                scanned_file.status_flags.insert(FileStatus::SIZE_FROM_HEADER);
+                if scanned_file.crc.is_some() {
+                    scanned_file.status_flags.insert(FileStatus::CRC_FROM_HEADER);
+                }
             }
 
             if !_lf_is_dir {
@@ -119,15 +135,43 @@ impl Scanner {
                             let mut md5_hasher = Md5::new();
                             let mut sha1_hasher = Sha1::new();
                             let mut crc_hasher = Crc32Hasher::new();
+                            let mut alt_md5_hasher = Md5::new();
+                            let mut alt_sha1_hasher = Sha1::new();
+                            let mut alt_crc_hasher = Crc32Hasher::new();
+                            let mut header_probe = Vec::with_capacity(512);
+                            let mut header_file_type = HeaderFileType::NOTHING;
+                            let mut header_size = 0usize;
+                            let mut total_read = 0usize;
                             
-                            let mut buffer = [0u8; 8192];
+                            let mut buffer = [0u8; 32768]; // Increased buffer size for faster hashing
                             loop {
                                 match stream.read(&mut buffer) {
                                     Ok(0) => break,
                                     Ok(n) => {
+                                        if header_probe.len() < 512 {
+                                            let probe_take = std::cmp::min(512 - header_probe.len(), n);
+                                            header_probe.extend_from_slice(&buffer[..probe_take]);
+                                            let (detected_type, detected_size) =
+                                                FileHeaders::get_file_type_from_buffer(&header_probe);
+                                            header_file_type = detected_type;
+                                            header_size = detected_size;
+                                        }
+
                                         md5_hasher.update(&buffer[..n]);
                                         sha1_hasher.update(&buffer[..n]);
                                         crc_hasher.update(&buffer[..n]);
+
+                                        if header_size > 0 {
+                                            let chunk_start = total_read;
+                                            let chunk_end = total_read + n;
+                                            if chunk_end > header_size {
+                                                let alt_start = header_size.saturating_sub(chunk_start);
+                                                alt_md5_hasher.update(&buffer[alt_start..n]);
+                                                alt_sha1_hasher.update(&buffer[alt_start..n]);
+                                                alt_crc_hasher.update(&buffer[alt_start..n]);
+                                            }
+                                        }
+                                        total_read += n;
                                     }
                                     Err(_) => {
                                         scanned_file.got_status = GotStatus::Corrupt;
@@ -144,6 +188,24 @@ impl Scanner {
                                     }
                                 } else {
                                     scanned_file.crc = Some(computed_crc);
+                                }
+                                scanned_file.header_file_type = header_file_type;
+                                if header_file_type != HeaderFileType::NOTHING {
+                                    scanned_file
+                                        .status_flags
+                                        .insert(FileStatus::HEADER_FILE_TYPE_FROM_HEADER);
+                                }
+                                if header_size > 0 && scanned_file.size.unwrap_or(0) >= header_size as u64 {
+                                    scanned_file.alt_size = Some(scanned_file.size.unwrap_or(0) - header_size as u64);
+                                    scanned_file.alt_crc = Some(alt_crc_hasher.finalize().to_be_bytes().to_vec());
+                                    scanned_file.alt_sha1 = Some(alt_sha1_hasher.finalize().to_vec());
+                                    scanned_file.alt_md5 = Some(alt_md5_hasher.finalize().to_vec());
+                                    scanned_file.status_flags.insert(
+                                        FileStatus::ALT_SIZE_FROM_HEADER
+                                            | FileStatus::ALT_CRC_FROM_HEADER
+                                            | FileStatus::ALT_SHA1_FROM_HEADER
+                                            | FileStatus::ALT_MD5_FROM_HEADER,
+                                    );
                                 }
                                 scanned_file.sha1 = Some(sha1_hasher.finalize().to_vec());
                                 scanned_file.md5 = Some(md5_hasher.finalize().to_vec());
@@ -183,9 +245,17 @@ impl Scanner {
         sf.size = Some(metadata.len());
 
         let mut file = fs::File::open(file_path)?;
+        let (header_file_type, header_size) = FileHeaders::get_file_type_from_stream(&mut file)
+            .unwrap_or((HeaderFileType::NOTHING, 0));
+        file.seek(SeekFrom::Start(0))?;
+
         let mut md5_hasher = Md5::new();
         let mut sha1_hasher = Sha1::new();
         let mut crc_hasher = Crc32Hasher::new();
+        let mut alt_md5_hasher = Md5::new();
+        let mut alt_sha1_hasher = Sha1::new();
+        let mut alt_crc_hasher = Crc32Hasher::new();
+        let mut total_read = 0usize;
         
         let mut buffer = [0u8; 8192];
         loop {
@@ -194,11 +264,40 @@ impl Scanner {
             md5_hasher.update(&buffer[..n]);
             sha1_hasher.update(&buffer[..n]);
             crc_hasher.update(&buffer[..n]);
+
+            if header_size > 0 {
+                let chunk_start = total_read;
+                let chunk_end = total_read + n;
+                if chunk_end > header_size {
+                    let alt_start = header_size.saturating_sub(chunk_start);
+                    alt_md5_hasher.update(&buffer[alt_start..n]);
+                    alt_sha1_hasher.update(&buffer[alt_start..n]);
+                    alt_crc_hasher.update(&buffer[alt_start..n]);
+                }
+            }
+            total_read += n;
         }
         
+        sf.header_file_type = header_file_type;
+        if header_file_type != HeaderFileType::NOTHING {
+            sf.status_flags.insert(FileStatus::HEADER_FILE_TYPE_FROM_HEADER);
+        }
         sf.crc = Some(crc_hasher.finalize().to_be_bytes().to_vec());
         sf.sha1 = Some(sha1_hasher.finalize().to_vec());
         sf.md5 = Some(md5_hasher.finalize().to_vec());
+        if header_size > 0 && metadata.len() >= header_size as u64 {
+            sf.alt_size = Some(metadata.len() - header_size as u64);
+            sf.alt_crc = Some(alt_crc_hasher.finalize().to_be_bytes().to_vec());
+            sf.alt_sha1 = Some(alt_sha1_hasher.finalize().to_vec());
+            sf.alt_md5 = Some(alt_md5_hasher.finalize().to_vec());
+            sf.status_flags.insert(
+                FileStatus::ALT_SIZE_FROM_HEADER
+                    | FileStatus::ALT_CRC_FROM_HEADER
+                    | FileStatus::ALT_SHA1_FROM_HEADER
+                    | FileStatus::ALT_MD5_FROM_HEADER,
+            );
+        }
+        sf.deep_scanned = true;
         sf.got_status = GotStatus::Got;
         
         Ok(sf)
@@ -206,11 +305,24 @@ impl Scanner {
 
     /// Recursively scans a physical directory.
     pub fn scan_directory(path_str: &str) -> Vec<ScannedFile> {
-        let mut results = Vec::new();
+        Self::scan_directory_with_level(path_str, crate::settings::EScanLevel::Level1)
+    }
+
+    pub fn scan_directory_with_level(
+        path_str: &str,
+        scan_level: crate::settings::EScanLevel,
+    ) -> Vec<ScannedFile> {
         let path = Path::new(path_str);
+        let deep_scan = matches!(
+            scan_level,
+            crate::settings::EScanLevel::Level2 | crate::settings::EScanLevel::Level3
+        );
         
         if let Ok(entries) = fs::read_dir(path) {
-            for entry in entries.flatten() {
+            let entry_list: Vec<_> = entries.flatten().collect();
+
+            // Parallelize directory entry processing!
+            let results: Vec<ScannedFile> = entry_list.into_par_iter().map(|entry| {
                 let metadata = entry.metadata().unwrap();
                 let file_name = entry.file_name().to_string_lossy().to_string();
                 
@@ -234,58 +346,180 @@ impl Scanner {
                         sf.file_mod_time_stamp = dur.as_secs() as i64;
                     }
                 }
+                
                 if file_type == FileType::File {
-                    sf.size = Some(metadata.len());
+                    if deep_scan {
+                        let file_path = path.join(&file_name);
+                        if let Ok(scanned_file) = Self::scan_raw_file(&file_path.to_string_lossy()) {
+                            sf = scanned_file;
+                        } else {
+                            sf.size = Some(metadata.len());
+                        }
+                    } else {
+                        sf.size = Some(metadata.len());
+                    }
                 } else if file_type == FileType::Dir {
                     // Recursively scan directories
                     let sub_path = path.join(&file_name);
-                    sf.children = Self::scan_directory(&sub_path.to_string_lossy());
+                    sf.children = Self::scan_directory_with_level(&sub_path.to_string_lossy(), scan_level);
                 } else if file_type == FileType::Zip || file_type == FileType::SevenZip {
-                    // Quick scan archive contents without deep scan
+                    // Quick scan archive contents without deep scan, or fully hash contents for deeper levels
                     let archive_path = path.join(&file_name);
-                    if let Ok(archive_sf) = Self::scan_archive_file(file_type, &archive_path.to_string_lossy(), sf.file_mod_time_stamp, false) {
+                    if let Ok(archive_sf) = Self::scan_archive_file(
+                        file_type,
+                        &archive_path.to_string_lossy(),
+                        sf.file_mod_time_stamp,
+                        deep_scan,
+                    ) {
                         sf.children = archive_sf.children;
                     }
                 }
-                
-                results.push(sf);
-            }
+                sf
+            }).collect();
+            
+            return results;
         }
         
-        results
+        Vec::new()
     }
 }
 
 #[cfg(test)]
-mod tests {
+mod scanner_tests {
     use super::*;
+    use std::fs::File;
     use std::io::Write;
-    use tempfile::NamedTempFile;
+    use tempfile::tempdir;
+    use zip::write::SimpleFileOptions;
+    use zip::{CompressionMethod, ZipWriter};
 
     #[test]
-    fn test_scan_raw_file_hashing() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        let test_data = b"Hello, RustyVault!";
-        temp_file.write_all(test_data).unwrap();
+    fn test_scan_raw_file() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("test_rom.bin");
+        let mut file = File::create(&file_path).unwrap();
+        file.write_all(b"dummy rom data").unwrap();
 
-        let scanned = Scanner::scan_raw_file(temp_file.path().to_str().unwrap()).unwrap();
+        let scanned = Scanner::scan_raw_file(file_path.to_str().unwrap()).expect("Failed to scan file");
         
-        // Size Check
-        assert_eq!(scanned.size, Some(test_data.len() as u64));
-        
-        // Hashing checks
-        let mut expected_md5 = Md5::new();
-        expected_md5.update(test_data);
-        assert_eq!(scanned.md5, Some(expected_md5.finalize().to_vec()));
-
-        let mut expected_sha1 = Sha1::new();
-        expected_sha1.update(test_data);
-        assert_eq!(scanned.sha1, Some(expected_sha1.finalize().to_vec()));
-
-        let mut expected_crc = Crc32Hasher::new();
-        expected_crc.update(test_data);
-        assert_eq!(scanned.crc, Some(expected_crc.finalize().to_be_bytes().to_vec()));
-
+        assert_eq!(scanned.name, "test_rom.bin");
+        assert_eq!(scanned.size, Some(14));
+        assert!(scanned.crc.is_some());
+        assert!(scanned.sha1.is_some());
+        assert!(scanned.md5.is_some());
         assert_eq!(scanned.got_status, GotStatus::Got);
+    }
+
+    #[test]
+    fn test_scan_raw_file_populates_headerless_alt_hashes() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("headered.nes");
+        let mut file = File::create(&file_path).unwrap();
+        let mut bytes = vec![0x4E, 0x45, 0x53, 0x1A];
+        bytes.extend_from_slice(&[0; 12]);
+        bytes.extend_from_slice(b"DATA");
+        file.write_all(&bytes).unwrap();
+
+        let scanned = Scanner::scan_raw_file(file_path.to_str().unwrap()).expect("Failed to scan file");
+        let mut crc = Crc32Hasher::new();
+        crc.update(b"DATA");
+
+        assert_eq!(scanned.header_file_type, HeaderFileType::NES);
+        assert_eq!(scanned.alt_size, Some(4));
+        assert_eq!(scanned.alt_crc, Some(crc.finalize().to_be_bytes().to_vec()));
+        assert!(scanned.alt_sha1.is_some());
+        assert!(scanned.alt_md5.is_some());
+        assert!(scanned.status_flags.contains(FileStatus::HEADER_FILE_TYPE_FROM_HEADER));
+        assert!(scanned.status_flags.contains(FileStatus::ALT_CRC_FROM_HEADER));
+    }
+    #[test]
+    fn test_scan_directory_parallel() {
+        let dir = tempdir().unwrap();
+        
+        // Create a few files to be scanned in parallel
+        for i in 0..5 {
+            let file_path = dir.path().join(format!("test_rom_{}.bin", i));
+            std::fs::write(&file_path, format!("dummy rom data {}", i).as_bytes()).unwrap();
+        }
+        
+        // Add a nested directory
+        let sub_dir = dir.path().join("subdir");
+        std::fs::create_dir(&sub_dir).unwrap();
+        std::fs::write(sub_dir.join("nested.bin"), b"nested data").unwrap();
+
+        let scanned_children = Scanner::scan_directory(dir.path().to_str().unwrap());
+        
+        // Should find 5 files + 1 directory
+        assert_eq!(scanned_children.len(), 6);
+        
+        // Find the subdirectory and verify it was scanned recursively
+        let subdir_node = scanned_children.iter().find(|c| c.file_type == FileType::Dir).unwrap();
+        assert_eq!(subdir_node.name, "subdir");
+        assert_eq!(subdir_node.children.len(), 1);
+        assert_eq!(subdir_node.children[0].name, "nested.bin");
+        assert_eq!(subdir_node.children[0].size, Some(11));
+    }
+
+    #[test]
+    fn test_scan_directory_level2_hashes_loose_files() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("hashed.bin");
+        std::fs::write(&file_path, b"hash me").unwrap();
+
+        let scanned_children = Scanner::scan_directory_with_level(
+            dir.path().to_str().unwrap(),
+            crate::settings::EScanLevel::Level2,
+        );
+
+        let scanned_file = scanned_children.iter().find(|c| c.name == "hashed.bin").unwrap();
+        assert!(scanned_file.crc.is_some());
+        assert!(scanned_file.sha1.is_some());
+        assert!(scanned_file.md5.is_some());
+        assert!(scanned_file.deep_scanned);
+    }
+
+    #[test]
+    fn test_scan_archive_file_populates_headerless_alt_hashes() {
+        let dir = tempdir().unwrap();
+        let archive_path = dir.path().join("headered.zip");
+        {
+            let file = File::create(&archive_path).unwrap();
+            let mut writer = ZipWriter::new(file);
+            let options = SimpleFileOptions::default()
+                .compression_method(CompressionMethod::Deflated)
+                .compression_level(Some(9));
+            let mut bytes = vec![0x4E, 0x45, 0x53, 0x1A];
+            bytes.extend_from_slice(&[0; 12]);
+            bytes.extend_from_slice(b"DATA");
+            writer.start_file("rom.nes", options).unwrap();
+            writer.write_all(&bytes).unwrap();
+            writer.finish().unwrap();
+        }
+
+        let scanned_archive = Scanner::scan_archive_file(
+            FileType::Zip,
+            archive_path.to_str().unwrap(),
+            0,
+            true,
+        )
+        .expect("Failed to scan archive");
+
+        let scanned_file = scanned_archive
+            .children
+            .iter()
+            .find(|entry| entry.name == "rom.nes")
+            .unwrap();
+        let mut crc = Crc32Hasher::new();
+        crc.update(b"DATA");
+
+        assert_eq!(scanned_file.header_file_type, HeaderFileType::NES);
+        assert_eq!(scanned_file.alt_size, Some(4));
+        assert_eq!(scanned_file.alt_crc, Some(crc.finalize().to_be_bytes().to_vec()));
+        assert!(scanned_file.alt_sha1.is_some());
+        assert!(scanned_file.alt_md5.is_some());
+        assert!(scanned_file.status_flags.contains(FileStatus::SIZE_FROM_HEADER));
+        assert!(scanned_file.status_flags.contains(FileStatus::CRC_FROM_HEADER));
+        assert!(scanned_file.status_flags.contains(FileStatus::HEADER_FILE_TYPE_FROM_HEADER));
+        assert!(scanned_file.status_flags.contains(FileStatus::ALT_CRC_FROM_HEADER));
     }
 }

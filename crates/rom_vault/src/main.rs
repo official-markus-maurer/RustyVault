@@ -18,6 +18,10 @@ use dat_reader::enums::FileType;
 /// - This Rust port includes this CLI binary specifically to allow the engine to run on headless 
 ///   servers (e.g. Linux Docker containers, NAS systems) for automated ROM management.
 fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+
     println!("Welcome to RustyVault v0.1.0");
 
     // Initialize the DB

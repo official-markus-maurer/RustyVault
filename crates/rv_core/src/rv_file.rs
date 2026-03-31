@@ -290,16 +290,19 @@ impl RvFile {
         // Rust port simplification of RomVaultCore/RvDB/rvFile.cs RepStatusReset
         self.search_found = false;
         
+        // When rep_status resets, the cached_stats need to be cleared
+        self.cached_stats = None;
+        
         let new_status = match (self.file_type, self.dat_status, self.got_status) {
-            (FileType::File | FileType::Zip | FileType::SevenZip, dat_reader::enums::DatStatus::InDatCollect, dat_reader::enums::GotStatus::Got) => RepStatus::Correct,
-            (FileType::File | FileType::Zip | FileType::SevenZip, dat_reader::enums::DatStatus::InDatCollect, dat_reader::enums::GotStatus::NotGot) => RepStatus::Missing,
-            (FileType::File | FileType::Zip | FileType::SevenZip, dat_reader::enums::DatStatus::InDatCollect, dat_reader::enums::GotStatus::Corrupt) => RepStatus::Corrupt,
-            (FileType::File | FileType::Zip | FileType::SevenZip, dat_reader::enums::DatStatus::InDatMIA, dat_reader::enums::GotStatus::NotGot) => RepStatus::MissingMIA,
-            (FileType::File | FileType::Zip | FileType::SevenZip, dat_reader::enums::DatStatus::InDatMIA, dat_reader::enums::GotStatus::Got) => RepStatus::CorrectMIA,
-            (FileType::File | FileType::Zip | FileType::SevenZip, dat_reader::enums::DatStatus::InToSort, dat_reader::enums::GotStatus::Got) => RepStatus::InToSort,
-            (FileType::File | FileType::Zip | FileType::SevenZip, dat_reader::enums::DatStatus::InToSort, dat_reader::enums::GotStatus::NotGot) => RepStatus::Deleted,
-            (FileType::File | FileType::Zip | FileType::SevenZip, dat_reader::enums::DatStatus::NotInDat, dat_reader::enums::GotStatus::Got) => RepStatus::Unknown,
-            (FileType::File | FileType::Zip | FileType::SevenZip, dat_reader::enums::DatStatus::NotInDat, dat_reader::enums::GotStatus::NotGot) => RepStatus::Deleted,
+            (FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly | FileType::Zip | FileType::SevenZip, dat_reader::enums::DatStatus::InDatCollect, dat_reader::enums::GotStatus::Got) => RepStatus::Correct,
+            (FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly | FileType::Zip | FileType::SevenZip, dat_reader::enums::DatStatus::InDatCollect, dat_reader::enums::GotStatus::NotGot) => RepStatus::Missing,
+            (FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly | FileType::Zip | FileType::SevenZip, dat_reader::enums::DatStatus::InDatCollect, dat_reader::enums::GotStatus::Corrupt) => RepStatus::Corrupt,
+            (FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly | FileType::Zip | FileType::SevenZip, dat_reader::enums::DatStatus::InDatMIA, dat_reader::enums::GotStatus::NotGot) => RepStatus::MissingMIA,
+            (FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly | FileType::Zip | FileType::SevenZip, dat_reader::enums::DatStatus::InDatMIA, dat_reader::enums::GotStatus::Got) => RepStatus::CorrectMIA,
+            (FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly | FileType::Zip | FileType::SevenZip, dat_reader::enums::DatStatus::InToSort, dat_reader::enums::GotStatus::Got) => RepStatus::InToSort,
+            (FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly | FileType::Zip | FileType::SevenZip, dat_reader::enums::DatStatus::InToSort, dat_reader::enums::GotStatus::NotGot) => RepStatus::Deleted,
+            (FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly | FileType::Zip | FileType::SevenZip, dat_reader::enums::DatStatus::NotInDat, dat_reader::enums::GotStatus::Got) => RepStatus::Unknown,
+            (FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly | FileType::Zip | FileType::SevenZip, dat_reader::enums::DatStatus::NotInDat, dat_reader::enums::GotStatus::NotGot) => RepStatus::Deleted,
             (FileType::Dir, dat_reader::enums::DatStatus::InDatCollect, dat_reader::enums::GotStatus::Got) => RepStatus::DirCorrect,
             (FileType::Dir, dat_reader::enums::DatStatus::InDatCollect, dat_reader::enums::GotStatus::NotGot) => RepStatus::DirMissing,
             (FileType::Dir, dat_reader::enums::DatStatus::NotInDat, dat_reader::enums::GotStatus::Got) => RepStatus::DirUnknown,
@@ -390,13 +393,21 @@ impl RvFile {
     /// Explicitly marks a node as missing by reverting its `GotStatus` and removing any physical file attributes.
     pub fn mark_as_missing(&mut self) {
         self.cached_stats = None;
+        self.set_got_status(GotStatus::NotGot);
+        
         let mut i = 0;
         while i < self.children.len() {
             let child_rc = Rc::clone(&self.children[i]);
             let should_remove = {
                 let mut child = child_rc.borrow_mut();
                 child.cached_stats = None;
-                child.file_remove()
+                child.set_got_status(GotStatus::NotGot);
+                
+                if child.dat_status() == DatStatus::NotInDat || child.dat_status() == DatStatus::InToSort {
+                    child.file_remove()
+                } else {
+                    false
+                }
             };
 
             if should_remove {
@@ -417,7 +428,7 @@ impl RvFile {
     pub fn file_remove(&mut self) -> bool {
         self.cached_stats = None;
         if self.is_file() {
-            return false;
+            return true;
         }
 
         self.children.clear();
@@ -481,25 +492,28 @@ mod tests {
     fn test_rvfile_hierarchy() {
         let mut root = RvFile::new(FileType::Dir);
         root.name = "Root".to_string();
+        let root_rc = Rc::new(RefCell::new(root));
 
         let child1 = Rc::new(RefCell::new(RvFile::new(FileType::File)));
         child1.borrow_mut().name = "File1.zip".to_string();
+        child1.borrow_mut().parent = Some(Rc::downgrade(&root_rc));
         
         let child2 = Rc::new(RefCell::new(RvFile::new(FileType::File)));
         child2.borrow_mut().name = "File2.zip".to_string();
+        child2.borrow_mut().parent = Some(Rc::downgrade(&root_rc));
 
-        root.child_add(Rc::clone(&child1));
-        root.child_add(Rc::clone(&child2));
+        root_rc.borrow_mut().child_add(Rc::clone(&child1));
+        root_rc.borrow_mut().child_add(Rc::clone(&child2));
 
-        assert_eq!(root.children.len(), 2);
+        assert_eq!(root_rc.borrow().children.len(), 2);
         
         // Test parent linking
-        assert!(Rc::ptr_eq(&child1.borrow().parent.as_ref().unwrap().upgrade().unwrap(), &child1.borrow().parent.as_ref().unwrap().upgrade().unwrap())); // They point to same node
+        assert!(Rc::ptr_eq(&child1.borrow().parent.as_ref().unwrap().upgrade().unwrap(), &root_rc)); 
         
         // Remove child
-        root.child_remove(0);
-        assert_eq!(root.children.len(), 1);
-        assert_eq!(root.children[0].borrow().name, "File2.zip");
+        root_rc.borrow_mut().child_remove(0);
+        assert_eq!(root_rc.borrow().children.len(), 1);
+        assert_eq!(root_rc.borrow().children[0].borrow().name, "File2.zip");
     }
 
     #[test]
@@ -520,17 +534,18 @@ mod tests {
         root.dat_status = DatStatus::InDatCollect;
         
         let child1 = Rc::new(RefCell::new(RvFile::new(FileType::File)));
-        child1.borrow_mut().dat_status = DatStatus::NotInDat; // Should be removed
+        child1.borrow_mut().dat_status = DatStatus::NotInDat; 
         
         let child2 = Rc::new(RefCell::new(RvFile::new(FileType::File)));
-        child2.borrow_mut().dat_status = DatStatus::InDatCollect; // Should be kept and marked NotGot
+        child2.borrow_mut().dat_status = DatStatus::InDatCollect; 
 
         root.child_add(Rc::clone(&child1));
         root.child_add(Rc::clone(&child2));
 
         root.mark_as_missing();
 
-        assert_eq!(root.children.len(), 1);
-        assert_eq!(root.children[0].borrow().got_status, GotStatus::NotGot);
+        assert_eq!(root.children.len(), 2);
+        assert_eq!(root.children[0].borrow().rep_status(), RepStatus::Deleted);
+        assert_eq!(root.children[1].borrow().rep_status(), RepStatus::Missing);
     }
 }

@@ -6,3 +6,6 @@ ToSort/
 *.Cache
 *Cache_tmp
 *CacheBackup
+*.xml
+*.xmlbackup
+RustyVault/

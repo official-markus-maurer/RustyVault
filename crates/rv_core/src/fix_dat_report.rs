@@ -104,8 +104,9 @@ impl FixDatReport {
             None => return,
         };
 
-        // Note: C# calls DatClean.ArchiveDirectoryFlattern and DatClean.RemoveUnNeededDirectories here.
-        // We will skip those unless necessary for basic fix DATs.
+        // Align with C# `DatClean.ArchiveDirectoryFlattern` behavior
+        // The Fix DAT export shouldn't contain deeply nested virtual folders unless they are games.
+        Self::archive_directory_flatten(&mut dh.base_dir);
 
         let old_name = dh.name.clone().unwrap_or_default();
         let old_desc = dh.description.clone().unwrap_or_default();
@@ -273,6 +274,54 @@ impl FixDatReport {
             parent_rc.borrow_mut().child_add(file_rc);
         }
     }
+
+    /// Mirrors C# `DatClean.ArchiveDirectoryFlattern`
+    /// Flattens sub-directories recursively by prefixing their names to child files,
+    /// except when encountering an explicit Game node (which forms the new root).
+    fn archive_directory_flatten(d_dir: &mut dat_reader::dat_store::DatDir) {
+        if d_dir.d_game.is_some() {
+            let mut list = Vec::new();
+            Self::archive_flat(d_dir, &mut list, "");
+            
+            // Clear children and add the flattened list back
+            d_dir.children.clear();
+            d_dir.children.extend(list);
+            return;
+        }
+
+        // Keep searching for games down the tree
+        for node in &mut d_dir.children {
+            if let Some(dat_dir) = node.dir_mut() {
+                Self::archive_directory_flatten(dat_dir);
+            }
+        }
+    }
+
+    /// Helper for `archive_directory_flatten`
+    fn archive_flat(d_dir: &dat_reader::dat_store::DatDir, new_dir: &mut Vec<dat_reader::dat_store::DatNode>, sub_dir: &str) {
+        for node in &d_dir.children {
+            let this_name = if sub_dir.is_empty() {
+                node.name.to_string()
+            } else {
+                format!("{}/{}", sub_dir, node.name)
+            };
+
+            if let Some(_f) = node.file() {
+                let mut new_node = node.clone();
+                new_node.name = this_name;
+                new_dir.push(new_node);
+            } else if let Some(d) = node.dir() {
+                let mut new_node = dat_reader::dat_store::DatNode::new_file(format!("{}/", this_name), dat_reader::enums::FileType::UnSet);
+                if let Some(f_mut) = new_node.file_mut() {
+                    f_mut.size = Some(0);
+                    f_mut.crc = Some(vec![0,0,0,0]);
+                }
+                new_dir.push(new_node);
+
+                Self::archive_flat(d, new_dir, &this_name);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -281,8 +330,9 @@ mod tests {
 
     #[test]
     fn test_recursive_dat_tree_finding_dat() {
-        let rv_dat = Rc::new(RefCell::new(RvDat::new()));
-        rv_dat.borrow_mut().set_data(DatData::DatName, "TestDat".to_string());
+        let mut dat = RvDat::new();
+        dat.set_data(DatData::DatName, Some("TestDat".to_string()));
+        let rv_dat = Rc::new(RefCell::new(dat));
 
         let t_dir = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
         

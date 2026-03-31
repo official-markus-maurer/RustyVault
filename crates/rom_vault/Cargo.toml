@@ -8,4 +8,5 @@ authors.workspace = true
 rv_core = { path = "../rv_core" }
 dat_reader = { path = "../dat_reader" }
 compress = { path = "../compress" }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 

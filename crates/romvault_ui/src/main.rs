@@ -50,9 +50,11 @@ mod tests {
 
         let sub_dir = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
         sub_dir.borrow_mut().name = "MAME".to_string();
+        sub_dir.borrow_mut().parent = Some(Rc::downgrade(&root));
         
         let game = Rc::new(RefCell::new(RvFile::new(FileType::Zip)));
         game.borrow_mut().name = "pacman.zip".to_string();
+        game.borrow_mut().parent = Some(Rc::downgrade(&sub_dir));
 
         sub_dir.borrow_mut().child_add(Rc::clone(&game));
         root.borrow_mut().child_add(Rc::clone(&sub_dir));
@@ -60,9 +62,29 @@ mod tests {
         let path = get_full_node_path(Rc::clone(&game));
         assert_eq!(path, "RustyVault\\MAME\\pacman.zip");
     }
+
+    #[test]
+    fn test_branch_has_selected_nodes_finds_selected_descendant() {
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        root.borrow_mut().tree_checked = TreeSelect::UnSelected;
+
+        let child_dir = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        child_dir.borrow_mut().tree_checked = TreeSelect::UnSelected;
+
+        let selected_file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        selected_file.borrow_mut().tree_checked = TreeSelect::Selected;
+
+        child_dir.borrow_mut().child_add(Rc::clone(&selected_file));
+        root.borrow_mut().child_add(Rc::clone(&child_dir));
+
+        assert!(RomVaultApp::branch_has_selected_nodes(&root.borrow()));
+    }
 }
 
 fn main() -> eframe::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -304,6 +326,118 @@ impl RomVaultApp {
         
         self.task_logs.push("Task completed.".to_string());
     }
+
+    fn scan_selected_roots(tx: &Sender<String>, scan_level: rv_core::settings::EScanLevel) {
+        GLOBAL_DB.with(|db_ref| {
+            if let Some(db) = db_ref.borrow().as_ref() {
+                let root_children = db.dir_root.borrow().children.clone();
+
+                for child in root_children {
+                    let (name, is_selected) = {
+                        let node = child.borrow();
+                        (node.name.clone(), Self::branch_has_selected_nodes(&node))
+                    };
+
+                    if !is_selected {
+                        continue;
+                    }
+
+                    let _ = tx.send(format!("Scanning {}...", name));
+                    let files = Scanner::scan_directory_with_level(&name, scan_level);
+                    let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
+                    root_scan.name = name.clone();
+                    root_scan.children = files;
+                    let _ = tx.send(format!("Integrating {} files into DB...", name));
+                    FileScanning::scan_dir_with_level(Rc::clone(&child), &mut root_scan, scan_level);
+                }
+
+                rv_core::repair_status::RepairStatus::report_status_reset(Rc::clone(&db.dir_root));
+            }
+        });
+    }
+
+    fn branch_has_selected_nodes(node: &RvFile) -> bool {
+        if matches!(node.tree_checked, TreeSelect::Selected | TreeSelect::Locked) {
+            return true;
+        }
+
+        for child in &node.children {
+            if Self::branch_has_selected_nodes(&child.borrow()) {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    fn launch_scan_roms_task(
+        &mut self,
+        task_name: &'static str,
+        status_message: &'static str,
+        scan_level: rv_core::settings::EScanLevel,
+    ) {
+        self.launch_task(task_name, move |tx| {
+            let _ = tx.send(status_message.to_string());
+            Self::scan_selected_roots(&tx, scan_level);
+        });
+    }
+
+    fn launch_fix_roms_task(&mut self) {
+        self.launch_task("Fix ROMs", |tx| {
+            let _ = tx.send("Performing physical fixes...".to_string());
+            GLOBAL_DB.with(|db_ref| {
+                if let Some(db) = db_ref.borrow().as_ref() {
+                    Fix::perform_fixes(Rc::clone(&db.dir_root));
+                }
+            });
+
+            let _ = tx.send("Rescanning to sync DB with disk...".to_string());
+            Self::scan_selected_roots(&tx, rv_core::settings::EScanLevel::Level2);
+
+            let _ = tx.send("Finding Fixes...".to_string());
+            GLOBAL_DB.with(|db_ref| {
+                if let Some(db) = db_ref.borrow().as_ref() {
+                    FindFixes::scan_files(Rc::clone(&db.dir_root));
+                    rv_core::repair_status::RepairStatus::report_status_reset(Rc::clone(&db.dir_root));
+                }
+            });
+        });
+    }
+
+    fn launch_scan_find_fix_fix_task(&mut self) {
+        self.launch_task("Scan / Find Fix / Fix", |tx| {
+            let _ = tx.send("Full automated fix routine started...".to_string());
+
+            let _ = tx.send("Scanning...".to_string());
+            Self::scan_selected_roots(&tx, rv_core::settings::EScanLevel::Level2);
+
+            let _ = tx.send("Finding Fixes...".to_string());
+            GLOBAL_DB.with(|db_ref| {
+                if let Some(db) = db_ref.borrow().as_ref() {
+                    FindFixes::scan_files(Rc::clone(&db.dir_root));
+                    rv_core::repair_status::RepairStatus::report_status_reset(Rc::clone(&db.dir_root));
+                }
+            });
+
+            let _ = tx.send("Fixing...".to_string());
+            GLOBAL_DB.with(|db_ref| {
+                if let Some(db) = db_ref.borrow().as_ref() {
+                    Fix::perform_fixes(Rc::clone(&db.dir_root));
+                }
+            });
+
+            let _ = tx.send("Rescanning to sync DB with disk...".to_string());
+            Self::scan_selected_roots(&tx, rv_core::settings::EScanLevel::Level2);
+
+            let _ = tx.send("Finalizing Fixes...".to_string());
+            GLOBAL_DB.with(|db_ref| {
+                if let Some(db) = db_ref.borrow().as_ref() {
+                    FindFixes::scan_files(Rc::clone(&db.dir_root));
+                    rv_core::repair_status::RepairStatus::report_status_reset(Rc::clone(&db.dir_root));
+                }
+            });
+        });
+    }
     // Tree Preset Loading/Saving (simulating DatTreeStatusStore)
     fn load_tree_preset(&mut self, preset_index: i32) {
         let filename = format!("treeDefault{}.json", preset_index);
@@ -491,36 +625,23 @@ impl eframe::App for RomVaultApp {
         }
 
         if ctx.input(|i| i.key_pressed(egui::Key::F6) && i.modifiers.shift) {
-            self.launch_task("Scan ROMs (Quick)", |tx| {
-                let _ = tx.send("Scanning RustyVault directory (Headers Only)...".to_string());
-                GLOBAL_DB.with(|db_ref| {
-                    if let Some(db) = db_ref.borrow().as_ref() {
-                        if let Some(rv) = db.dir_root.borrow().children.iter().find(|c| c.borrow().name == "RustyVault") {
-                            let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
-                            root_scan.children = Scanner::scan_directory("RustyVault");
-                            FileScanning::scan_dir(Rc::clone(rv), &mut root_scan);
-                        }
-                    }
-                });
-            });
+            self.launch_scan_roms_task(
+                "Scan ROMs (Quick)",
+                "Scanning selected ROM roots (Headers Only)...",
+                rv_core::settings::EScanLevel::Level1,
+            );
         } else if ctx.input(|i| i.key_pressed(egui::Key::F6) && i.modifiers.ctrl) {
-            self.launch_task("Scan ROMs (Full)", |tx| {
-                let _ = tx.send("Scanning RustyVault directory (Full Rescan)...".to_string());
-                // Same logic for now, ideally would pass full rescan flag
-            });
+            self.launch_scan_roms_task(
+                "Scan ROMs (Full)",
+                "Scanning selected ROM roots (Full Rescan)...",
+                rv_core::settings::EScanLevel::Level3,
+            );
         } else if ctx.input(|i| i.key_pressed(egui::Key::F6)) {
-            self.launch_task("Scan ROMs", |tx| {
-                let _ = tx.send("Scanning RustyVault directory...".to_string());
-                GLOBAL_DB.with(|db_ref| {
-                    if let Some(db) = db_ref.borrow().as_ref() {
-                        if let Some(rv) = db.dir_root.borrow().children.iter().find(|c| c.borrow().name == "RustyVault") {
-                            let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
-                            root_scan.children = Scanner::scan_directory("RustyVault");
-                            FileScanning::scan_dir(Rc::clone(rv), &mut root_scan);
-                        }
-                    }
-                });
-            });
+            self.launch_scan_roms_task(
+                "Scan ROMs",
+                "Scanning selected ROM roots...",
+                rv_core::settings::EScanLevel::Level2,
+            );
         }
 
         if ctx.input(|i| i.key_pressed(egui::Key::F7)) {
@@ -535,14 +656,7 @@ impl eframe::App for RomVaultApp {
         }
 
         if ctx.input(|i| i.key_pressed(egui::Key::F8)) {
-            self.launch_task("Fix ROMs", |tx| {
-                let _ = tx.send("Performing physical fixes...".to_string());
-                GLOBAL_DB.with(|db_ref| {
-                    if let Some(db) = db_ref.borrow().as_ref() {
-                        Fix::perform_fixes(Rc::clone(&db.dir_root));
-                    }
-                });
-            });
+            self.launch_fix_roms_task();
         }
 
         if ctx.input(|i| i.key_pressed(egui::Key::F9) && i.modifiers.shift) {
@@ -651,111 +765,27 @@ impl eframe::App for RomVaultApp {
                 });
                 ui.menu_button("Scan ROMs", |ui| {
                     if ui.button("Scan Quick (Headers Only)").clicked() {
-                        self.launch_task("Scan ROMs (Quick)", |tx| {
-                            let _ = tx.send("Scanning RustyVault directory (Headers Only)...".to_string());
-                            GLOBAL_DB.with(|db_ref| {
-                                if let Some(db) = db_ref.borrow().as_ref() {
-                                    let mut rv_node = None;
-                                    let mut ts_node = None;
-                                    for child in db.dir_root.borrow().children.iter() {
-                                        let name = child.borrow().name.clone();
-                                        if name == "RustyVault" { rv_node = Some(Rc::clone(child)); }
-                                        if name == "ToSort" { ts_node = Some(Rc::clone(child)); }
-                                    }
-
-                                    if let Some(rv) = rv_node {
-                                        let files = Scanner::scan_directory("RustyVault");
-                                        let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
-                                        root_scan.children = files;
-                                        let _ = tx.send("Integrating RustyVault files into DB...".to_string());
-                                        FileScanning::scan_dir(Rc::clone(&rv), &mut root_scan);
-                                        rv.borrow_mut().rep_status_reset();
-                                    }
-                                    
-                                    if let Some(ts) = ts_node {
-                                        let files = Scanner::scan_directory("ToSort");
-                                        let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
-                                        root_scan.children = files;
-                                        let _ = tx.send("Integrating ToSort files into DB...".to_string());
-                                        FileScanning::scan_dir(Rc::clone(&ts), &mut root_scan);
-                                        ts.borrow_mut().rep_status_reset();
-                                    }
-                                    db.dir_root.borrow_mut().cached_stats = None;
-                                }
-                            });
-                        });
+                        self.launch_scan_roms_task(
+                            "Scan ROMs (Quick)",
+                            "Scanning selected ROM roots (Headers Only)...",
+                            rv_core::settings::EScanLevel::Level1,
+                        );
                         ui.close_menu();
                     }
                     if ui.button("Scan").clicked() {
-                        self.launch_task("Scan ROMs", |tx| {
-                            let _ = tx.send("Scanning RustyVault directory...".to_string());
-                            GLOBAL_DB.with(|db_ref| {
-                                if let Some(db) = db_ref.borrow().as_ref() {
-                                    let mut rv_node = None;
-                                    let mut ts_node = None;
-                                    for child in db.dir_root.borrow().children.iter() {
-                                        let name = child.borrow().name.clone();
-                                        if name == "RustyVault" { rv_node = Some(Rc::clone(child)); }
-                                        if name == "ToSort" { ts_node = Some(Rc::clone(child)); }
-                                    }
-
-                                    if let Some(rv) = rv_node {
-                                        let files = Scanner::scan_directory("RustyVault");
-                                        let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
-                                        root_scan.children = files;
-                                        let _ = tx.send("Integrating RustyVault files into DB...".to_string());
-                                        FileScanning::scan_dir(Rc::clone(&rv), &mut root_scan);
-                                        rv.borrow_mut().rep_status_reset();
-                                    }
-                                    
-                                    if let Some(ts) = ts_node {
-                                        let files = Scanner::scan_directory("ToSort");
-                                        let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
-                                        root_scan.children = files;
-                                        let _ = tx.send("Integrating ToSort files into DB...".to_string());
-                                        FileScanning::scan_dir(Rc::clone(&ts), &mut root_scan);
-                                        ts.borrow_mut().rep_status_reset();
-                                    }
-                                    db.dir_root.borrow_mut().cached_stats = None;
-                                }
-                            });
-                        });
+                        self.launch_scan_roms_task(
+                            "Scan ROMs",
+                            "Scanning selected ROM roots...",
+                            rv_core::settings::EScanLevel::Level2,
+                        );
                         ui.close_menu();
                     }
                     if ui.button("Scan Full (Complete Re-Scan)").clicked() {
-                        self.launch_task("Scan ROMs (Full)", |tx| {
-                            let _ = tx.send("Scanning RustyVault directory (Full Re-Scan)...".to_string());
-                            GLOBAL_DB.with(|db_ref| {
-                                if let Some(db) = db_ref.borrow().as_ref() {
-                                    let mut rv_node = None;
-                                    let mut ts_node = None;
-                                    for child in db.dir_root.borrow().children.iter() {
-                                        let name = child.borrow().name.clone();
-                                        if name == "RustyVault" { rv_node = Some(Rc::clone(child)); }
-                                        if name == "ToSort" { ts_node = Some(Rc::clone(child)); }
-                                    }
-
-                                    if let Some(rv) = rv_node {
-                                        let files = Scanner::scan_directory("RustyVault");
-                                        let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
-                                        root_scan.children = files;
-                                        let _ = tx.send("Integrating RustyVault files into DB...".to_string());
-                                        FileScanning::scan_dir(Rc::clone(&rv), &mut root_scan);
-                                        rv.borrow_mut().rep_status_reset();
-                                    }
-                                    
-                                    if let Some(ts) = ts_node {
-                                        let files = Scanner::scan_directory("ToSort");
-                                        let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
-                                        root_scan.children = files;
-                                        let _ = tx.send("Integrating ToSort files into DB...".to_string());
-                                        FileScanning::scan_dir(Rc::clone(&ts), &mut root_scan);
-                                        ts.borrow_mut().rep_status_reset();
-                                    }
-                                    db.dir_root.borrow_mut().cached_stats = None;
-                                }
-                            });
-                        });
+                        self.launch_scan_roms_task(
+                            "Scan ROMs (Full)",
+                            "Scanning selected ROM roots (Full Rescan)...",
+                            rv_core::settings::EScanLevel::Level3,
+                        );
                         ui.close_menu();
                     }
                 });
@@ -775,16 +805,11 @@ impl eframe::App for RomVaultApp {
                 });
                 ui.menu_button("Fix ROMs", |ui| {
                     if ui.button("Fix ROMs").clicked() {
-                        self.launch_task("Fix ROMs", |tx| {
-                            let _ = tx.send("Running Fix Engine...".to_string());
-                            GLOBAL_DB.with(|db_ref| {
-                                if let Some(db) = db_ref.borrow().as_ref() {
-                                    // Placeholder for fix engine
-                                    let _ = tx.send("Fix files is disabled for safety".to_string());
-                                    db.dir_root.borrow_mut().cached_stats = None;
-                                }
-                            });
-                        });
+                        self.launch_fix_roms_task();
+                        ui.close_menu();
+                    }
+                    if ui.button("Scan / Find Fix / Fix").clicked() {
+                        self.launch_scan_find_fix_fix_task();
                         ui.close_menu();
                     }
                 });

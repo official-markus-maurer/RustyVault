@@ -413,20 +413,36 @@ pub fn write_settings_to_file(settings: &Settings) -> Result<(), Box<dyn std::er
     Ok(())
 }
 
+fn normalize_dir_key(dir_key: &str) -> String {
+    dir_key.replace('/', "\\").trim_matches('\\').to_string()
+}
+
     /// Looks up a specific DatRule by its `dir_key`.
     pub fn find_rule(dir_key: &str) -> DatRule {
         GLOBAL_SETTINGS.with(|s| {
             let settings = s.borrow();
-            // In a real port, this would walk up the directory tree looking for the closest rule
-            // For now, return the exact match or default
-            settings.dat_rules.items.iter()
-                .find(|r| r.dir_key == dir_key)
-                .cloned()
-                .unwrap_or_else(|| {
-                    let mut rule = DatRule::default();
-                    rule.dir_key = dir_key.to_string();
-                    rule
-                })
+            let normalized_dir_key = normalize_dir_key(dir_key);
+            let mut current = normalized_dir_key.as_str();
+
+            loop {
+                if let Some(rule) = settings
+                    .dat_rules
+                    .items
+                    .iter()
+                    .find(|r| normalize_dir_key(&r.dir_key) == current)
+                {
+                    return rule.clone();
+                }
+
+                if let Some((parent, _)) = current.rsplit_once('\\') {
+                    current = parent;
+                    continue;
+                }
+
+                let mut rule = DatRule::default();
+                rule.dir_key = normalized_dir_key;
+                return rule;
+            }
         })
     }
 
@@ -434,10 +450,118 @@ pub fn write_settings_to_file(settings: &Settings) -> Result<(), Box<dyn std::er
     pub fn set_rule(rule: DatRule) {
         GLOBAL_SETTINGS.with(|s| {
             let mut settings = s.borrow_mut();
-            if let Some(pos) = settings.dat_rules.items.iter().position(|r| r.dir_key == rule.dir_key) {
-                settings.dat_rules.items[pos] = rule;
+            let normalized_dir_key = normalize_dir_key(&rule.dir_key);
+            let mut normalized_rule = rule;
+            normalized_rule.dir_key = normalized_dir_key.clone();
+
+            if let Some(pos) = settings
+                .dat_rules
+                .items
+                .iter()
+                .position(|r| normalize_dir_key(&r.dir_key) == normalized_dir_key)
+            {
+                settings.dat_rules.items[pos] = normalized_rule;
             } else {
-                settings.dat_rules.items.push(rule);
+                settings.dat_rules.items.push(normalized_rule);
             }
         });
     }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn with_settings_test_state(test: impl FnOnce()) {
+        let original = get_settings();
+        update_settings(Settings::default());
+        test();
+        update_settings(original);
+    }
+
+    #[test]
+    fn test_find_rule_returns_exact_match() {
+        with_settings_test_state(|| {
+            let mut rule = DatRule::default();
+            rule.dir_key = "DatRoot\\Arcade\\MAME".to_string();
+            rule.single_archive = true;
+            set_rule(rule);
+
+            let found = find_rule("DatRoot\\Arcade\\MAME");
+            assert!(found.single_archive);
+            assert_eq!(found.dir_key, "DatRoot\\Arcade\\MAME");
+        });
+    }
+
+    #[test]
+    fn test_find_rule_walks_up_to_closest_parent_rule() {
+        with_settings_test_state(|| {
+            let mut parent_rule = DatRule::default();
+            parent_rule.dir_key = "DatRoot\\Arcade".to_string();
+            parent_rule.use_description_as_dir_name = true;
+            set_rule(parent_rule);
+
+            let found = find_rule("DatRoot\\Arcade\\MAME\\Clones");
+            assert!(found.use_description_as_dir_name);
+            assert_eq!(found.dir_key, "DatRoot\\Arcade");
+        });
+    }
+
+    #[test]
+    fn test_find_rule_normalizes_path_separators_before_lookup() {
+        with_settings_test_state(|| {
+            let mut rule = DatRule::default();
+            rule.dir_key = "DatRoot\\Console".to_string();
+            rule.use_id_for_name = true;
+            set_rule(rule);
+
+            let found = find_rule("DatRoot/Console/GameBoy");
+            assert!(found.use_id_for_name);
+            assert_eq!(found.dir_key, "DatRoot\\Console");
+        });
+    }
+
+    #[test]
+    fn test_find_rule_returns_default_for_missing_path() {
+        with_settings_test_state(|| {
+            let found = find_rule("DatRoot\\Unknown");
+            assert_eq!(found.dir_key, "DatRoot\\Unknown");
+            assert_eq!(found.compression, dat_reader::enums::FileType::Zip);
+            assert!(!found.single_archive);
+        });
+    }
+
+    #[test]
+    fn test_set_rule_normalizes_dir_key_and_replaces_equivalent_path() {
+        with_settings_test_state(|| {
+            let mut first_rule = DatRule::default();
+            first_rule.dir_key = "DatRoot/Console".to_string();
+            first_rule.single_archive = true;
+            set_rule(first_rule);
+
+            let mut replacement_rule = DatRule::default();
+            replacement_rule.dir_key = "DatRoot\\Console".to_string();
+            replacement_rule.use_id_for_name = true;
+            set_rule(replacement_rule);
+
+            let settings = get_settings();
+            assert_eq!(settings.dat_rules.items.len(), 1);
+            assert_eq!(settings.dat_rules.items[0].dir_key, "DatRoot\\Console");
+            assert!(settings.dat_rules.items[0].use_id_for_name);
+            assert!(!settings.dat_rules.items[0].single_archive);
+        });
+    }
+
+    #[test]
+    fn test_find_rule_trims_trailing_separators() {
+        with_settings_test_state(|| {
+            let mut rule = DatRule::default();
+            rule.dir_key = "DatRoot\\Arcade".to_string();
+            rule.single_archive = true;
+            set_rule(rule);
+
+            let found = find_rule("\\DatRoot\\Arcade\\");
+            assert!(found.single_archive);
+            assert_eq!(found.dir_key, "DatRoot\\Arcade");
+        });
+    }
+}

@@ -311,6 +311,9 @@ impl RomVaultApp {
                     let mut stack = vec![Rc::clone(&node_rc)];
                     while let Some(current) = stack.pop() {
                         let mut n = current.borrow_mut();
+                        if n.to_sort_status_is(rv_core::enums::ToSortDirType::TO_SORT_PRIMARY) {
+                            continue;
+                        }
                         n.tree_checked = TreeSelect::Locked;
                         let children = n.children.clone();
                         drop(n);
@@ -573,11 +576,11 @@ impl RomVaultApp {
                             let target_rc = Rc::clone(&node_rc);
                             self.launch_task("Scan ROMs (Quick)", move |tx| {
                                 let _ = tx.send(format!("Scanning {} (Headers Only)...", np));
-                                let files = Scanner::scan_directory(&np);
+                                let files = Scanner::scan_directory_with_level(&np, rv_core::settings::EScanLevel::Level1);
                                 let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
                                 root_scan.children = files;
                                 let _ = tx.send("Integrating files into DB...".to_string());
-                                FileScanning::scan_dir(target_rc, &mut root_scan);
+                                FileScanning::scan_dir_with_level(target_rc, &mut root_scan, rv_core::settings::EScanLevel::Level1);
                             });
                         }
                         TreeAction::ScanNormal => {
@@ -585,11 +588,11 @@ impl RomVaultApp {
                             let target_rc = Rc::clone(&node_rc);
                             self.launch_task("Scan ROMs", move |tx| {
                                 let _ = tx.send(format!("Scanning {}...", np));
-                                let files = Scanner::scan_directory(&np);
+                                let files = Scanner::scan_directory_with_level(&np, rv_core::settings::EScanLevel::Level2);
                                 let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
                                 root_scan.children = files;
                                 let _ = tx.send("Integrating files into DB...".to_string());
-                                FileScanning::scan_dir(target_rc, &mut root_scan);
+                                FileScanning::scan_dir_with_level(target_rc, &mut root_scan, rv_core::settings::EScanLevel::Level2);
                             });
                         }
                         TreeAction::ScanFull => {
@@ -597,11 +600,11 @@ impl RomVaultApp {
                             let target_rc = Rc::clone(&node_rc);
                             self.launch_task("Scan ROMs (Full)", move |tx| {
                                 let _ = tx.send(format!("Scanning {} (Full Re-Scan)...", np));
-                                let files = Scanner::scan_directory(&np);
+                                let files = Scanner::scan_directory_with_level(&np, rv_core::settings::EScanLevel::Level3);
                                 let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
                                 root_scan.children = files;
                                 let _ = tx.send("Integrating files into DB...".to_string());
-                                FileScanning::scan_dir(target_rc, &mut root_scan);
+                                FileScanning::scan_dir_with_level(target_rc, &mut root_scan, rv_core::settings::EScanLevel::Level3);
                             });
                         }
                         TreeAction::UpdateDats => {
