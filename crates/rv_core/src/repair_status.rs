@@ -101,6 +101,36 @@ impl RepairStatus {
         self.roms_fixes + self.roms_unknown
     }
 
+    fn synthesized_report_status(&self) -> crate::enums::ReportStatus {
+        let merged_roms = self.roms_not_collected + self.roms_unneeded;
+        let correct_roms = self.count_correct();
+        let missing_roms = self.roms_missing + self.roms_missing_mia;
+
+        if self.total_roms == 0 {
+            crate::enums::ReportStatus::Unknown
+        } else if self.roms_unknown == self.total_roms {
+            crate::enums::ReportStatus::Unknown
+        } else if merged_roms == self.total_roms {
+            if self.roms_unneeded > 0 && self.roms_not_collected == 0 {
+                crate::enums::ReportStatus::UnNeeded
+            } else {
+                crate::enums::ReportStatus::NotCollected
+            }
+        } else if self.roms_fixes == self.total_roms {
+            crate::enums::ReportStatus::InToSort
+        } else if correct_roms == self.total_roms {
+            crate::enums::ReportStatus::Correct
+        } else if missing_roms > 0 {
+            crate::enums::ReportStatus::Missing
+        } else if self.roms_fixes > 0 {
+            crate::enums::ReportStatus::InToSort
+        } else if correct_roms > 0 {
+            crate::enums::ReportStatus::Correct
+        } else {
+            crate::enums::ReportStatus::Unknown
+        }
+    }
+
     /// Recursively traverses a tree branch and calculates its exact `RepairStatus` by 
     /// aggregating the status of all children. Automatically utilizes and updates `cached_stats`.
     pub fn report_status(&mut self, root: Rc<RefCell<RvFile>>) {
@@ -115,7 +145,12 @@ impl RepairStatus {
             // If we already have cached stats, just use them and return immediately!
             // BUT WE MUST ALSO ADD THEM TO `self` SO THE PARENT GETS THEM!
             if let Some(cached) = &node.cached_stats {
+                self.total_games += cached.total_games;
                 self.total_roms += cached.total_roms;
+                self.games_correct += cached.games_correct;
+                self.games_missing += cached.games_missing;
+                self.games_missing_mia += cached.games_missing_mia;
+                self.games_fixes += cached.games_fixes;
                 self.roms_correct += cached.roms_correct;
                 self.roms_correct_mia += cached.roms_correct_mia;
                 self.roms_missing += cached.roms_missing;
@@ -145,7 +180,12 @@ impl RepairStatus {
                 // Add the child's *aggregate* stats to our node's running total.
                 // Since child_status.report_status automatically adds to its `self`,
                 // child_status ALREADY contains the full aggregate of that branch!
+                node_stats.total_games += child_status.total_games;
                 node_stats.total_roms += child_status.total_roms;
+                node_stats.games_correct += child_status.games_correct;
+                node_stats.games_missing += child_status.games_missing;
+                node_stats.games_missing_mia += child_status.games_missing_mia;
+                node_stats.games_fixes += child_status.games_fixes;
                 node_stats.roms_correct += child_status.roms_correct;
                 node_stats.roms_correct_mia += child_status.roms_correct_mia;
                 node_stats.roms_missing += child_status.roms_missing;
@@ -162,25 +202,70 @@ impl RepairStatus {
         // In RomVault, Dir nodes that act as games but have no children are counted as files.
         let count_as_file = is_file || (is_game && children.is_empty());
 
+        use crate::enums::RepStatus;
+
+        if is_game {
+            node_stats.total_games += 1;
+            match rep_status {
+                RepStatus::Correct | RepStatus::DirCorrect => node_stats.games_correct += 1,
+                RepStatus::CorrectMIA => {
+                    node_stats.games_correct += 1;
+                    node_stats.games_missing_mia += 1;
+                },
+                RepStatus::Missing | RepStatus::DirMissing | RepStatus::Corrupt | RepStatus::DirCorrupt | RepStatus::Incomplete => {
+                    node_stats.games_missing += 1
+                }
+                RepStatus::MissingMIA => {
+                    node_stats.games_missing += 1;
+                    node_stats.games_missing_mia += 1;
+                },
+                RepStatus::CanBeFixed
+                | RepStatus::CanBeFixedMIA
+                | RepStatus::CorruptCanBeFixed
+                | RepStatus::InToSort
+                | RepStatus::DirInToSort
+                | RepStatus::MoveToSort
+                | RepStatus::MoveToCorrupt
+                | RepStatus::Delete
+                | RepStatus::Deleted
+                | RepStatus::NeededForFix
+                | RepStatus::Rename
+                | RepStatus::IncompleteRemove => node_stats.games_fixes += 1,
+                _ => {}
+            }
+        }
+
         if count_as_file {
             node_stats.total_roms += 1;
-            
-            use crate::enums::RepStatus;
+
             match rep_status {
                 RepStatus::Correct | RepStatus::DirCorrect => node_stats.roms_correct += 1,
                 RepStatus::CorrectMIA => {
                     node_stats.roms_correct += 1;
                     node_stats.roms_correct_mia += 1;
                 },
-                RepStatus::Missing | RepStatus::DirMissing => node_stats.roms_missing += 1,
+                RepStatus::Missing | RepStatus::DirMissing | RepStatus::Corrupt | RepStatus::DirCorrupt | RepStatus::Incomplete => {
+                    node_stats.roms_missing += 1
+                }
                 RepStatus::MissingMIA => {
                     node_stats.roms_missing += 1;
                     node_stats.roms_missing_mia += 1;
                 },
-                RepStatus::CanBeFixed | RepStatus::CanBeFixedMIA => node_stats.roms_fixes += 1,
+                RepStatus::CanBeFixed
+                | RepStatus::CanBeFixedMIA
+                | RepStatus::CorruptCanBeFixed
+                | RepStatus::InToSort
+                | RepStatus::DirInToSort
+                | RepStatus::MoveToSort
+                | RepStatus::MoveToCorrupt
+                | RepStatus::Delete
+                | RepStatus::Deleted
+                | RepStatus::NeededForFix
+                | RepStatus::Rename
+                | RepStatus::IncompleteRemove => node_stats.roms_fixes += 1,
                 RepStatus::NotCollected => node_stats.roms_not_collected += 1,
                 RepStatus::UnNeeded => node_stats.roms_unneeded += 1,
-                RepStatus::Unknown | RepStatus::MoveToSort | RepStatus::DirUnknown | RepStatus::DirInToSort => node_stats.roms_unknown += 1,
+                RepStatus::Unknown | RepStatus::DirUnknown | RepStatus::UnScanned => node_stats.roms_unknown += 1,
                 _ => {}
             }
         }
@@ -189,10 +274,18 @@ impl RepairStatus {
         {
             let mut node = root.borrow_mut();
             node.cached_stats = Some(node_stats.clone());
+            if node.dir_status.is_some() {
+                node.dir_status = Some(node_stats.synthesized_report_status());
+            }
         }
 
         // Add this node's stats to the parent's running total
+        self.total_games += node_stats.total_games;
         self.total_roms += node_stats.total_roms;
+        self.games_correct += node_stats.games_correct;
+        self.games_missing += node_stats.games_missing;
+        self.games_missing_mia += node_stats.games_missing_mia;
+        self.games_fixes += node_stats.games_fixes;
         self.roms_correct += node_stats.roms_correct;
         self.roms_correct_mia += node_stats.roms_correct_mia;
         self.roms_missing += node_stats.roms_missing;
@@ -208,6 +301,7 @@ impl RepairStatus {
 mod tests {
     use super::*;
     use dat_reader::enums::{FileType, GotStatus, DatStatus};
+    use crate::rv_game::RvGame;
 
     #[test]
     fn test_repair_status_counting() {
@@ -324,5 +418,109 @@ mod tests {
         assert_eq!(status.roms_missing, 1);
         assert_eq!(status.roms_unknown, 1);
         assert_eq!(status.count_missing(), 1);
+    }
+
+    #[test]
+    fn test_repair_status_buckets_runtime_status_families_consistently() {
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+
+        let missing_family = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        missing_family.borrow_mut().set_rep_status(crate::enums::RepStatus::Corrupt);
+
+        let fix_family = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        fix_family.borrow_mut().set_rep_status(crate::enums::RepStatus::NeededForFix);
+
+        let unknown_family = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        unknown_family.borrow_mut().set_rep_status(crate::enums::RepStatus::UnScanned);
+
+        root.borrow_mut().child_add(missing_family);
+        root.borrow_mut().child_add(fix_family);
+        root.borrow_mut().child_add(unknown_family);
+
+        let mut status = RepairStatus::new();
+        status.report_status(Rc::clone(&root));
+
+        assert_eq!(status.roms_missing, 1);
+        assert_eq!(status.roms_fixes, 1);
+        assert_eq!(status.roms_unknown, 1);
+        assert_eq!(status.count_missing(), 2);
+        assert_eq!(status.count_fixes_needed(), 2);
+    }
+
+    #[test]
+    fn test_repair_status_tracks_game_counters_for_game_nodes() {
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+
+        let game = Rc::new(RefCell::new(RvFile::new(FileType::Zip)));
+        {
+            let mut node = game.borrow_mut();
+            node.game = Some(Rc::new(RefCell::new(RvGame::from_description("Pac-Man"))));
+            node.set_rep_status(crate::enums::RepStatus::CanBeFixed);
+        }
+
+        let rom = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        rom.borrow_mut().set_rep_status(crate::enums::RepStatus::Correct);
+        game.borrow_mut().child_add(rom);
+        root.borrow_mut().child_add(Rc::clone(&game));
+
+        let mut status = RepairStatus::new();
+        status.report_status(Rc::clone(&root));
+
+        assert_eq!(status.total_games, 1);
+        assert_eq!(status.games_fixes, 1);
+        assert_eq!(status.games_correct, 0);
+        assert_eq!(status.total_roms, 1);
+        assert_eq!(status.roms_correct, 1);
+    }
+
+    #[test]
+    fn test_repair_status_uses_cached_game_counters() {
+        let game = Rc::new(RefCell::new(RvFile::new(FileType::Zip)));
+        {
+            let mut node = game.borrow_mut();
+            node.game = Some(Rc::new(RefCell::new(RvGame::from_description("Galaga"))));
+            node.set_rep_status(crate::enums::RepStatus::MissingMIA);
+        }
+
+        let mut first_pass = RepairStatus::new();
+        first_pass.report_status(Rc::clone(&game));
+
+        let mut second_pass = RepairStatus::new();
+        second_pass.report_status(Rc::clone(&game));
+
+        assert_eq!(first_pass.total_games, 1);
+        assert_eq!(first_pass.games_missing, 1);
+        assert_eq!(first_pass.games_missing_mia, 1);
+        assert_eq!(second_pass.total_games, 1);
+        assert_eq!(second_pass.games_missing, 1);
+        assert_eq!(second_pass.games_missing_mia, 1);
+    }
+
+    #[test]
+    fn test_repair_status_synthesizes_dir_status_for_fix_only_branch() {
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+
+        let fixable_rom = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        fixable_rom.borrow_mut().set_rep_status(crate::enums::RepStatus::NeededForFix);
+        root.borrow_mut().child_add(fixable_rom);
+
+        let mut status = RepairStatus::new();
+        status.report_status(Rc::clone(&root));
+
+        assert_eq!(root.borrow().dir_status, Some(crate::enums::ReportStatus::InToSort));
+    }
+
+    #[test]
+    fn test_repair_status_synthesizes_dir_status_for_merged_branch() {
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+
+        let merged_rom = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        merged_rom.borrow_mut().set_rep_status(crate::enums::RepStatus::UnNeeded);
+        root.borrow_mut().child_add(merged_rom);
+
+        let mut status = RepairStatus::new();
+        status.report_status(Rc::clone(&root));
+
+        assert_eq!(root.borrow().dir_status, Some(crate::enums::ReportStatus::UnNeeded));
     }
 }

@@ -111,17 +111,17 @@ impl ReportStatus {
 
     /// Returns true if this branch contains missing files.
     pub fn has_missing(&self, _b: bool) -> bool {
-        matches!(self, ReportStatus::Missing)
+        matches!(self, ReportStatus::Missing | ReportStatus::Corrupt)
     }
 
     /// Returns true if this branch contains files that can be fixed.
     pub fn has_fixes_needed(&self) -> bool {
-        false // Simplified in Rust port
+        matches!(self, ReportStatus::InToSort)
     }
 
     /// Returns true if this branch contains Missing-In-Action files.
     pub fn has_mia(&self) -> bool {
-        false // Simplified in Rust port
+        matches!(self, ReportStatus::InToSort)
     }
 
     /// Returns true if all files in this branch are merged.
@@ -160,7 +160,14 @@ mod tests {
         assert!(!ReportStatus::Missing.has_correct());
 
         assert!(ReportStatus::Missing.has_missing(false));
+        assert!(ReportStatus::Corrupt.has_missing(false));
         assert!(!ReportStatus::Correct.has_missing(false));
+
+        assert!(ReportStatus::InToSort.has_fixes_needed());
+        assert!(!ReportStatus::Correct.has_fixes_needed());
+
+        assert!(ReportStatus::InToSort.has_mia());
+        assert!(!ReportStatus::Correct.has_mia());
 
         assert!(ReportStatus::NotCollected.has_all_merged());
         assert!(ReportStatus::UnNeeded.has_all_merged());

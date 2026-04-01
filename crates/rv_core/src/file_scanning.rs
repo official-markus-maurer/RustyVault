@@ -188,7 +188,7 @@ impl FileScanning {
         let db_child = Rc::clone(&db_dir.borrow().children[db_index]);
         let max_offset = std::cmp::min(
             Self::PHASE2_LOOKAHEAD,
-            file_dir.children.len().saturating_sub(file_index),
+            file_dir.children.len().saturating_sub(file_index + 1),
         );
         let mut current_candidate = file_dir.children[file_index].clone();
         let (current_matched, current_alt) =
@@ -196,7 +196,7 @@ impl FileScanning {
         let current_quality = if current_matched { Some(current_alt) } else { None };
         let mut best_match: Option<(usize, bool, ScannedFile)> = None;
 
-        for offset in 1..max_offset {
+        for offset in 1..=max_offset {
             let mut candidate = file_dir.children[file_index + offset].clone();
             let (matched, matched_alt) =
                 FileCompare::phase_2_name_agnostic_test(&db_child.borrow(), &mut candidate);
@@ -239,7 +239,7 @@ impl FileScanning {
         }
 
         let db_len = db_dir.borrow().children.len();
-        let max_offset = std::cmp::min(Self::PHASE2_LOOKAHEAD, db_len.saturating_sub(db_index));
+        let max_offset = std::cmp::min(Self::PHASE2_LOOKAHEAD, db_len.saturating_sub(db_index + 1));
         let candidate = file_dir.children[file_index].clone();
         let mut current_trial = candidate.clone();
         let current_match_quality = {
@@ -253,7 +253,7 @@ impl FileScanning {
         };
         let mut best_match: Option<(usize, bool, ScannedFile)> = None;
 
-        for offset in 1..max_offset {
+        for offset in 1..=max_offset {
             let next_db_child = {
                 let dir = db_dir.borrow();
                 Rc::clone(&dir.children[db_index + offset])
@@ -842,6 +842,84 @@ mod tests {
 
         let dir = db_dir.borrow();
         assert_eq!(dir.children.len(), 3);
+        let target = dir.children.iter().find(|child| child.borrow().name == "target.bin").unwrap();
+        assert_eq!(target.borrow().got_status(), GotStatus::Got);
+    }
+
+    #[test]
+    fn test_three_step_file_candidate_window_is_realigned() {
+        let db_dir = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        db_dir.borrow_mut().name = "Root".to_string();
+
+        let mut expected = RvFile::new(FileType::File);
+        expected.name = "target.bin".to_string();
+        expected.size = Some(4);
+        expected.crc = Some(vec![0xAD, 0xF3, 0xF3, 0x63]);
+        expected.set_dat_got_status(dat_reader::enums::DatStatus::InDatCollect, GotStatus::NotGot);
+        db_dir.borrow_mut().child_add(Rc::new(RefCell::new(expected)));
+
+        let mut scanned_root = ScannedFile::new(FileType::Dir);
+        scanned_root.name = "Root".to_string();
+
+        for name in ["alpha.bin", "beta.bin", "gamma.bin"] {
+            let mut orphan = ScannedFile::new(FileType::File);
+            orphan.name = name.to_string();
+            orphan.size = Some(3);
+            orphan.crc = Some(vec![1, 2, 3, 4]);
+            orphan.deep_scanned = true;
+            scanned_root.children.push(orphan);
+        }
+
+        let mut renamed = ScannedFile::new(FileType::File);
+        renamed.name = "zzz.bin".to_string();
+        renamed.size = Some(4);
+        renamed.crc = Some(vec![0xAD, 0xF3, 0xF3, 0x63]);
+        renamed.deep_scanned = true;
+        scanned_root.children.push(renamed);
+
+        FileScanning::scan_dir(Rc::clone(&db_dir), &mut scanned_root);
+
+        let dir = db_dir.borrow();
+        assert_eq!(dir.children.len(), 4);
+        let target = dir.children.iter().find(|child| child.borrow().name == "target.bin").unwrap();
+        assert_eq!(target.borrow().got_status(), GotStatus::Got);
+    }
+
+    #[test]
+    fn test_three_step_db_candidate_window_is_realigned() {
+        let db_dir = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        db_dir.borrow_mut().name = "Root".to_string();
+
+        for name in ["alpha.bin", "beta.bin", "gamma.bin"] {
+            let mut missing = RvFile::new(FileType::File);
+            missing.name = name.to_string();
+            missing.size = Some(2);
+            missing.crc = Some(vec![9, 9, 9, 9]);
+            missing.set_dat_got_status(dat_reader::enums::DatStatus::InDatCollect, GotStatus::NotGot);
+            db_dir.borrow_mut().child_add(Rc::new(RefCell::new(missing)));
+        }
+
+        let mut expected = RvFile::new(FileType::File);
+        expected.name = "target.bin".to_string();
+        expected.size = Some(4);
+        expected.crc = Some(vec![0xAD, 0xF3, 0xF3, 0x63]);
+        expected.set_dat_got_status(dat_reader::enums::DatStatus::InDatCollect, GotStatus::NotGot);
+        db_dir.borrow_mut().child_add(Rc::new(RefCell::new(expected)));
+
+        let mut scanned_root = ScannedFile::new(FileType::Dir);
+        scanned_root.name = "Root".to_string();
+
+        let mut renamed = ScannedFile::new(FileType::File);
+        renamed.name = "renamed.bin".to_string();
+        renamed.size = Some(4);
+        renamed.crc = Some(vec![0xAD, 0xF3, 0xF3, 0x63]);
+        renamed.deep_scanned = true;
+        scanned_root.children.push(renamed);
+
+        FileScanning::scan_dir(Rc::clone(&db_dir), &mut scanned_root);
+
+        let dir = db_dir.borrow();
+        assert_eq!(dir.children.len(), 4);
         let target = dir.children.iter().find(|child| child.borrow().name == "target.bin").unwrap();
         assert_eq!(target.borrow().got_status(), GotStatus::Got);
     }

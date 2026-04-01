@@ -248,9 +248,9 @@ impl FindFixes {
                 got_ref.set_rep_status(RepStatus::CorrectMIA);
                 got_ref.cached_stats = None;
             } else if got_ref.dat_status() == DatStatus::InToSort {
-                // Keep in tosort unless needed, if it's unused in ToSort, mark it as UnNeeded so it gets skipped
-                // The C# RomVault just leaves them in ToSort unless they are fixed or deleted by double-check
-                got_ref.set_rep_status(RepStatus::UnScanned);
+                // The C# RomVault leaves unused ToSort files in their InToSort state
+                // until a later action consumes them.
+                got_ref.set_rep_status(RepStatus::InToSort);
                 got_ref.cached_stats = None;
             } else if got_ref.dat_status() == DatStatus::NotInDat {
                 got_ref.set_rep_status(RepStatus::MoveToSort);
@@ -787,6 +787,27 @@ mod tests {
         assert_eq!(first_missing.borrow().rep_status(), RepStatus::CanBeFixed);
         assert_eq!(second_missing.borrow().rep_status(), RepStatus::CanBeFixed);
     }
+
+    #[test]
+    fn test_find_fixes_leaves_unused_tosort_file_in_tosort() {
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+
+        let tosort_file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut f = tosort_file.borrow_mut();
+            f.name = "spare.bin".to_string();
+            f.size = Some(1024);
+            f.crc = Some(vec![0x10, 0x20, 0x30, 0x40]);
+            f.set_dat_got_status(DatStatus::InToSort, GotStatus::Got);
+            f.tree_checked = TreeSelect::Selected;
+        }
+        root.borrow_mut().child_add(Rc::clone(&tosort_file));
+
+        FindFixes::scan_files(Rc::clone(&root));
+
+        assert_eq!(tosort_file.borrow().rep_status(), RepStatus::InToSort);
+    }
+
 
     #[test]
     fn test_find_fixes_marks_indatmerged_got_file_as_unneeded() {
