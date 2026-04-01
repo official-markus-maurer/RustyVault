@@ -137,7 +137,7 @@ impl ExternalDatConverterTo {
             }
 
             match rv_file.rep_status() {
-                RepStatus::Correct | RepStatus::CorrectMIA | RepStatus::UnNeeded | 
+                RepStatus::Correct | RepStatus::CorrectMIA | 
                 RepStatus::Unknown | RepStatus::MoveToSort | RepStatus::Delete | 
                 RepStatus::NeededForFix | RepStatus::Rename => {
                     if !self.filter_got { return; }
@@ -148,7 +148,7 @@ impl ExternalDatConverterTo {
                 RepStatus::MissingMIA => {
                     if !self.filter_mia { return; }
                 },
-                RepStatus::NotCollected => {
+                RepStatus::NotCollected | RepStatus::UnNeeded => {
                     if !self.filter_merged { return; }
                 },
                 RepStatus::CanBeFixed | RepStatus::CanBeFixedMIA | RepStatus::CorruptCanBeFixed => {
@@ -499,5 +499,54 @@ mod tests {
         assert_eq!(external.compression, Some("zip".to_string()));
         assert_eq!(external.merge_type, Some("split".to_string()));
         assert_eq!(external.dir, Some("full".to_string()));
+    }
+
+    #[test]
+    fn test_convert_to_external_dat_filter_merged_includes_unneeded_entries() {
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        root.borrow_mut().name = "Root".to_string();
+
+        let merged = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut f = merged.borrow_mut();
+            f.name = "merged.bin".to_string();
+            f.size = Some(1);
+            f.crc = Some(vec![1, 2, 3, 4]);
+            f.set_rep_status(RepStatus::UnNeeded);
+            f.parent = Some(Rc::downgrade(&root));
+        }
+        root.borrow_mut().child_add(Rc::clone(&merged));
+
+        let mut converter = ExternalDatConverterTo::new();
+        converter.filter_got = false;
+        converter.filter_merged = true;
+        let dat = converter.convert_to_external_dat(Rc::clone(&root)).unwrap();
+
+        assert_eq!(dat.base_dir.children.len(), 1);
+        assert_eq!(dat.base_dir.children[0].name, "merged.bin");
+    }
+
+    #[test]
+    fn test_convert_to_external_dat_filter_got_excludes_unneeded_entries_when_merged_filter_disabled() {
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        root.borrow_mut().name = "Root".to_string();
+
+        let merged = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut f = merged.borrow_mut();
+            f.name = "merged.bin".to_string();
+            f.size = Some(1);
+            f.crc = Some(vec![1, 2, 3, 4]);
+            f.set_rep_status(RepStatus::UnNeeded);
+            f.parent = Some(Rc::downgrade(&root));
+        }
+        root.borrow_mut().child_add(Rc::clone(&merged));
+
+        let mut converter = ExternalDatConverterTo::new();
+        converter.filter_got = true;
+        converter.filter_merged = false;
+        let dat = converter.convert_to_external_dat(Rc::clone(&root)).unwrap();
+
+        assert!(dat.base_dir.children.is_empty());
     }
 }

@@ -294,17 +294,47 @@ impl RvFile {
         self.cached_stats = None;
         
         let new_status = match (self.file_type, self.dat_status, self.got_status) {
-            (FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly | FileType::Zip | FileType::SevenZip, dat_reader::enums::DatStatus::InDatCollect, dat_reader::enums::GotStatus::Got) => RepStatus::Correct,
-            (FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly | FileType::Zip | FileType::SevenZip, dat_reader::enums::DatStatus::InDatCollect, dat_reader::enums::GotStatus::NotGot) => RepStatus::Missing,
-            (FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly | FileType::Zip | FileType::SevenZip, dat_reader::enums::DatStatus::InDatCollect, dat_reader::enums::GotStatus::Corrupt) => RepStatus::Corrupt,
+            (
+                FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly | FileType::Zip | FileType::SevenZip,
+                dat_reader::enums::DatStatus::InDatCollect,
+                dat_reader::enums::GotStatus::Got
+            ) => RepStatus::Correct,
+            (
+                FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly | FileType::Zip | FileType::SevenZip,
+                dat_reader::enums::DatStatus::InDatCollect,
+                dat_reader::enums::GotStatus::NotGot
+            ) => RepStatus::Missing,
+            (
+                FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly | FileType::Zip | FileType::SevenZip,
+                dat_reader::enums::DatStatus::InDatCollect,
+                dat_reader::enums::GotStatus::Corrupt
+            ) => RepStatus::Corrupt,
+            (
+                FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly | FileType::Zip | FileType::SevenZip,
+                dat_reader::enums::DatStatus::InDatMerged | dat_reader::enums::DatStatus::InDatNoDump,
+                dat_reader::enums::GotStatus::NotGot
+            ) => RepStatus::NotCollected,
+            (
+                FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly | FileType::Zip | FileType::SevenZip,
+                dat_reader::enums::DatStatus::InDatMerged | dat_reader::enums::DatStatus::InDatNoDump,
+                dat_reader::enums::GotStatus::Got | dat_reader::enums::GotStatus::Corrupt
+            ) => RepStatus::UnNeeded,
             (FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly | FileType::Zip | FileType::SevenZip, dat_reader::enums::DatStatus::InDatMIA, dat_reader::enums::GotStatus::NotGot) => RepStatus::MissingMIA,
             (FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly | FileType::Zip | FileType::SevenZip, dat_reader::enums::DatStatus::InDatMIA, dat_reader::enums::GotStatus::Got) => RepStatus::CorrectMIA,
             (FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly | FileType::Zip | FileType::SevenZip, dat_reader::enums::DatStatus::InToSort, dat_reader::enums::GotStatus::Got) => RepStatus::InToSort,
             (FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly | FileType::Zip | FileType::SevenZip, dat_reader::enums::DatStatus::InToSort, dat_reader::enums::GotStatus::NotGot) => RepStatus::Deleted,
             (FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly | FileType::Zip | FileType::SevenZip, dat_reader::enums::DatStatus::NotInDat, dat_reader::enums::GotStatus::Got) => RepStatus::Unknown,
             (FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly | FileType::Zip | FileType::SevenZip, dat_reader::enums::DatStatus::NotInDat, dat_reader::enums::GotStatus::NotGot) => RepStatus::Deleted,
-            (FileType::Dir, dat_reader::enums::DatStatus::InDatCollect, dat_reader::enums::GotStatus::Got) => RepStatus::DirCorrect,
-            (FileType::Dir, dat_reader::enums::DatStatus::InDatCollect, dat_reader::enums::GotStatus::NotGot) => RepStatus::DirMissing,
+            (
+                FileType::Dir,
+                dat_reader::enums::DatStatus::InDatCollect | dat_reader::enums::DatStatus::InDatMerged | dat_reader::enums::DatStatus::InDatNoDump,
+                dat_reader::enums::GotStatus::Got
+            ) => RepStatus::DirCorrect,
+            (
+                FileType::Dir,
+                dat_reader::enums::DatStatus::InDatCollect | dat_reader::enums::DatStatus::InDatMerged | dat_reader::enums::DatStatus::InDatNoDump,
+                dat_reader::enums::GotStatus::NotGot
+            ) => RepStatus::DirMissing,
             (FileType::Dir, dat_reader::enums::DatStatus::NotInDat, dat_reader::enums::GotStatus::Got) => RepStatus::DirUnknown,
             (FileType::Dir, dat_reader::enums::DatStatus::InToSort, dat_reader::enums::GotStatus::Got) => RepStatus::DirInToSort,
             _ => RepStatus::UnScanned,
@@ -438,16 +468,23 @@ impl RvFile {
     /// Resolves the raw path metadata of this node into a fully absolute path string
     /// on the physical disk. This traverses `self.parent` recursively up to the root.
     pub fn get_full_name(&self) -> String {
-        let mut path = self.name.clone();
+        let mut path_parts = vec![self.name.clone()];
         let mut current_parent = self.parent.as_ref().and_then(|p| p.upgrade());
         while let Some(parent) = current_parent {
             let parent_borrow = parent.borrow();
             if !parent_borrow.name.is_empty() {
-                path = format!("{}/{}", parent_borrow.name, path);
+                path_parts.push(parent_borrow.name.clone());
             }
             current_parent = parent_borrow.parent.as_ref().and_then(|p| p.upgrade());
         }
-        path
+        path_parts.reverse();
+        let logical_path = path_parts.join("\\");
+        let path = std::path::PathBuf::from(&logical_path);
+        if path.is_absolute() {
+            return path.to_string_lossy().replace('\\', "/");
+        }
+        crate::settings::find_dir_mapping(&logical_path)
+            .unwrap_or_else(|| logical_path.replace('\\', "/"))
     }
 
     /// Converts a node's filename to lowercase, ensuring exact structural matching against 
@@ -485,6 +522,7 @@ impl RvFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::{get_settings, set_dir_mapping, update_settings, DirMapping, Settings};
     use std::rc::Rc;
     use std::cell::RefCell;
 
@@ -544,8 +582,77 @@ mod tests {
 
         root.mark_as_missing();
 
-        assert_eq!(root.children.len(), 2);
-        assert_eq!(root.children[0].borrow().rep_status(), RepStatus::Deleted);
-        assert_eq!(root.children[1].borrow().rep_status(), RepStatus::Missing);
+        assert_eq!(root.children.len(), 1);
+        assert_eq!(root.children[0].borrow().rep_status(), RepStatus::Missing);
+    }
+
+    #[test]
+    fn test_get_full_name_uses_dir_mappings() {
+        let original_settings = get_settings();
+        update_settings(Settings::default());
+        set_dir_mapping(DirMapping {
+            dir_key: "RustyVault".to_string(),
+            dir_path: r"C:\Mapped\Vault".to_string(),
+        });
+
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        root.borrow_mut().name = "RustyVault".to_string();
+
+        let folder = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        folder.borrow_mut().name = "Nintendo".to_string();
+        folder.borrow_mut().parent = Some(Rc::downgrade(&root));
+
+        let file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        file.borrow_mut().name = "game.zip".to_string();
+        file.borrow_mut().parent = Some(Rc::downgrade(&folder));
+
+        let full_name = file.borrow().get_full_name();
+        update_settings(original_settings);
+
+        assert_eq!(std::path::PathBuf::from(full_name), std::path::PathBuf::from(r"C:\Mapped\Vault\Nintendo\game.zip"));
+    }
+
+    #[test]
+    fn test_rep_status_reset_treats_indatmerged_missing_file_as_not_collected() {
+        let mut file = RvFile::new(FileType::File);
+        file.dat_status = DatStatus::InDatMerged;
+        file.got_status = dat_reader::enums::GotStatus::NotGot;
+
+        file.rep_status_reset();
+
+        assert_eq!(file.rep_status(), RepStatus::NotCollected);
+    }
+
+    #[test]
+    fn test_rep_status_reset_treats_indatnodump_corrupt_file_as_unneeded() {
+        let mut file = RvFile::new(FileType::File);
+        file.dat_status = DatStatus::InDatNoDump;
+        file.got_status = dat_reader::enums::GotStatus::Corrupt;
+
+        file.rep_status_reset();
+
+        assert_eq!(file.rep_status(), RepStatus::UnNeeded);
+    }
+
+    #[test]
+    fn test_rep_status_reset_treats_indatmerged_got_file_as_unneeded() {
+        let mut file = RvFile::new(FileType::File);
+        file.dat_status = DatStatus::InDatMerged;
+        file.got_status = dat_reader::enums::GotStatus::Got;
+
+        file.rep_status_reset();
+
+        assert_eq!(file.rep_status(), RepStatus::UnNeeded);
+    }
+
+    #[test]
+    fn test_rep_status_reset_treats_indatmerged_directory_like_other_indat_directories() {
+        let mut dir = RvFile::new(FileType::Dir);
+        dir.dat_status = DatStatus::InDatMerged;
+        dir.got_status = dat_reader::enums::GotStatus::Got;
+
+        dir.rep_status_reset();
+
+        assert_eq!(dir.rep_status(), RepStatus::DirCorrect);
     }
 }

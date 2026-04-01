@@ -34,6 +34,14 @@ mod tree;
 mod grids;
 use crate::utils::{get_full_node_path, extract_text_from_zip, extract_image_from_zip};
 
+fn ui_missing_count(stats: &rv_core::repair_status::RepairStatus) -> i32 {
+    stats.roms_missing + stats.roms_missing_mia + stats.roms_fixes
+}
+
+fn ui_fixable_count(stats: &rv_core::repair_status::RepairStatus) -> i32 {
+    stats.roms_fixes + stats.roms_unknown
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -78,6 +86,29 @@ mod tests {
         root.borrow_mut().child_add(Rc::clone(&child_dir));
 
         assert!(RomVaultApp::branch_has_selected_nodes(&root.borrow()));
+    }
+
+    #[test]
+    fn test_ui_missing_count_excludes_unknown_and_not_collected() {
+        let mut stats = rv_core::repair_status::RepairStatus::new();
+        stats.roms_missing = 1;
+        stats.roms_missing_mia = 1;
+        stats.roms_fixes = 1;
+        stats.roms_unknown = 2;
+        stats.roms_not_collected = 3;
+
+        assert_eq!(ui_missing_count(&stats), 3);
+    }
+
+    #[test]
+    fn test_ui_fixable_count_excludes_not_collected_and_unneeded() {
+        let mut stats = rv_core::repair_status::RepairStatus::new();
+        stats.roms_fixes = 1;
+        stats.roms_unknown = 2;
+        stats.roms_not_collected = 3;
+        stats.roms_unneeded = 4;
+
+        assert_eq!(ui_fixable_count(&stats), 3);
     }
 }
 
@@ -956,7 +987,7 @@ impl eframe::App for RomVaultApp {
                         if let Some(db) = db_ref.borrow().as_ref() {
                             if let Some(stats) = db.dir_root.borrow().cached_stats {
                                 total_roms = stats.total_roms;
-                                total_missing = stats.roms_missing + stats.roms_missing_mia + stats.roms_fixes + stats.roms_unknown;
+                                total_missing = ui_missing_count(&stats);
                             }
                         }
                     });
@@ -1128,8 +1159,8 @@ impl eframe::App for RomVaultApp {
                         let node = node_rc.borrow();
                         if let Some(stats) = &node.cached_stats {
                             got = stats.roms_correct + stats.roms_correct_mia;
-                            missing = stats.roms_missing + stats.roms_missing_mia + stats.roms_fixes + stats.roms_unknown;
-                            fixable = stats.roms_fixes + stats.roms_unneeded + stats.roms_unknown;
+                            missing = ui_missing_count(stats);
+                            fixable = ui_fixable_count(stats);
                             unknown = stats.roms_unknown;
                         } else {
                             // Only calculate once if not cached
@@ -1140,8 +1171,8 @@ impl eframe::App for RomVaultApp {
                             node_mut.cached_stats = Some(stats.clone());
                             
                             got = stats.roms_correct + stats.roms_correct_mia;
-                            missing = stats.roms_missing + stats.roms_missing_mia + stats.roms_fixes + stats.roms_unknown;
-                            fixable = stats.roms_fixes + stats.roms_unneeded + stats.roms_unknown;
+                            missing = ui_missing_count(&stats);
+                            fixable = ui_fixable_count(&stats);
                             unknown = stats.roms_unknown;
                         }
                     }

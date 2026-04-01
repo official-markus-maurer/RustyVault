@@ -10,6 +10,88 @@ use rv_core::file_scanning::FileScanning;
 use rv_core::rv_file::RvFile;
 use rv_core::scanner::Scanner;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RomStatusBucket {
+    Correct,
+    Missing,
+    Fixes,
+    Merged,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GridVisibilityFlags {
+    correct: bool,
+    missing: bool,
+    fixes: bool,
+    mia: bool,
+    merged: bool,
+    unknown: bool,
+}
+
+fn grid_visibility_flags_from_stats(stats: &rv_core::repair_status::RepairStatus) -> GridVisibilityFlags {
+    let total_roms = stats.total_roms;
+    let merged_roms = stats.roms_not_collected + stats.roms_unneeded;
+    let correct_roms = stats.count_correct();
+    GridVisibilityFlags {
+        correct: total_roms > 0 && correct_roms == total_roms,
+        missing: stats.count_missing() > 0,
+        fixes: stats.count_fixes_needed() > 0,
+        mia: stats.roms_missing_mia > 0 || stats.roms_correct_mia > 0,
+        merged: total_roms > 0 && merged_roms == total_roms,
+        unknown: stats.roms_unknown > 0,
+    }
+}
+
+fn grid_visibility_flags_from_report_status(report_status: rv_core::enums::ReportStatus) -> GridVisibilityFlags {
+    GridVisibilityFlags {
+        correct: report_status.has_correct(),
+        missing: report_status.has_missing(false),
+        fixes: report_status.has_fixes_needed(),
+        mia: report_status.has_mia(),
+        merged: report_status.has_all_merged(),
+        unknown: report_status.has_unknown(),
+    }
+}
+
+fn game_row_color(rep_status: RepStatus) -> egui::Color32 {
+    match rep_status {
+        RepStatus::Correct | RepStatus::CorrectMIA => egui::Color32::from_rgb(40, 80, 40),
+        RepStatus::Missing | RepStatus::MissingMIA | RepStatus::DirCorrupt | RepStatus::Corrupt | RepStatus::Incomplete => {
+            egui::Color32::from_rgb(80, 40, 40)
+        }
+        RepStatus::CanBeFixed | RepStatus::CanBeFixedMIA | RepStatus::CorruptCanBeFixed => {
+            egui::Color32::from_rgb(80, 80, 40)
+        }
+        RepStatus::MoveToSort | RepStatus::MoveToCorrupt | RepStatus::NeededForFix | RepStatus::Rename => {
+            egui::Color32::from_rgb(40, 80, 80)
+        }
+        RepStatus::NotCollected | RepStatus::UnNeeded | RepStatus::Unknown => egui::Color32::from_rgb(60, 60, 60),
+        RepStatus::Delete => egui::Color32::from_rgb(120, 0, 0),
+        _ => egui::Color32::TRANSPARENT,
+    }
+}
+
+fn game_summary_bucket(rep_status: RepStatus) -> Option<RomStatusBucket> {
+    match rep_status {
+        RepStatus::Correct | RepStatus::CorrectMIA => Some(RomStatusBucket::Correct),
+        RepStatus::Missing | RepStatus::MissingMIA | RepStatus::DirCorrupt | RepStatus::Corrupt | RepStatus::Incomplete => {
+            Some(RomStatusBucket::Missing)
+        }
+        RepStatus::CanBeFixed
+        | RepStatus::CanBeFixedMIA
+        | RepStatus::CorruptCanBeFixed
+        | RepStatus::MoveToSort
+        | RepStatus::Delete
+        | RepStatus::NeededForFix
+        | RepStatus::Rename
+        | RepStatus::MoveToCorrupt => Some(RomStatusBucket::Fixes),
+        RepStatus::NotCollected | RepStatus::UnNeeded => Some(RomStatusBucket::Merged),
+        RepStatus::Unknown => Some(RomStatusBucket::Unknown),
+        _ => None,
+    }
+}
+
 /// Logic for rendering the DataGridView component.
 /// 
 /// `grids.rs` contains the logic for rendering the right-hand panel of the main UI,
@@ -146,13 +228,19 @@ impl RomVaultApp {
 
                             let mut should_show = false;
 
-                            if let Some(dir_status) = child.dir_status {
-                                let g_correct = dir_status.has_correct();
-                                let g_missing = dir_status.has_missing(false);
-                                let g_fixes = dir_status.has_fixes_needed();
-                                let g_mia = dir_status.has_mia();
-                                let g_merged = dir_status.has_all_merged();
-                                let g_unknown = dir_status.has_unknown();
+                            let visibility_flags = if let Some(stats) = &child.cached_stats {
+                                Some(grid_visibility_flags_from_stats(stats))
+                            } else {
+                                child.dir_status.map(grid_visibility_flags_from_report_status)
+                            };
+
+                            if let Some(flags) = visibility_flags {
+                                let g_correct = flags.correct;
+                                let g_missing = flags.missing;
+                                let g_fixes = flags.fixes;
+                                let g_mia = flags.mia;
+                                let g_merged = flags.merged;
+                                let g_unknown = flags.unknown;
 
                                 should_show =
                                     should_show || (self.show_complete && g_correct && !g_missing && !g_fixes);
@@ -192,15 +280,7 @@ impl RomVaultApp {
                                 "".to_string()
                             };
 
-                            let mut row_color = match child.rep_status() {
-                                RepStatus::Correct | RepStatus::CorrectMIA => egui::Color32::from_rgb(40, 80, 40),
-                                RepStatus::Missing | RepStatus::MissingMIA => egui::Color32::from_rgb(80, 40, 40),
-                                RepStatus::CanBeFixed | RepStatus::CanBeFixedMIA => egui::Color32::from_rgb(80, 80, 40),
-                                RepStatus::MoveToSort | RepStatus::MoveToCorrupt => egui::Color32::from_rgb(40, 80, 80),
-                                RepStatus::UnNeeded | RepStatus::Unknown => egui::Color32::from_rgb(60, 60, 60),
-                                RepStatus::Delete => egui::Color32::from_rgb(120, 0, 0),
-                                _ => egui::Color32::TRANSPARENT,
-                            };
+                            let mut row_color = game_row_color(child.rep_status());
 
                             let is_selected =
                                 self.selected_game.as_ref().map_or(false, |s| Rc::ptr_eq(s, &child_rc));
@@ -332,26 +412,17 @@ impl RomVaultApp {
                                         let mut correct = 0;
                                         let mut missing = 0;
                                         let mut fixes = 0;
+                                        let mut merged = 0;
                                         let mut unknown = 0;
 
                                         for rom in &child.children {
-                                            match rom.borrow().rep_status() {
-                                                RepStatus::Correct | RepStatus::CorrectMIA => correct += 1,
-                                                RepStatus::Missing
-                                                | RepStatus::MissingMIA
-                                                | RepStatus::DirCorrupt
-                                                | RepStatus::Corrupt
-                                                | RepStatus::Incomplete => missing += 1,
-                                                RepStatus::CanBeFixed
-                                                | RepStatus::CanBeFixedMIA
-                                                | RepStatus::CorruptCanBeFixed
-                                                | RepStatus::MoveToSort
-                                                | RepStatus::Delete
-                                                | RepStatus::NeededForFix
-                                                | RepStatus::Rename
-                                                | RepStatus::MoveToCorrupt => fixes += 1,
-                                                RepStatus::Unknown | RepStatus::UnNeeded => unknown += 1,
-                                                _ => {}
+                                            match game_summary_bucket(rom.borrow().rep_status()) {
+                                                Some(RomStatusBucket::Correct) => correct += 1,
+                                                Some(RomStatusBucket::Missing) => missing += 1,
+                                                Some(RomStatusBucket::Fixes) => fixes += 1,
+                                                Some(RomStatusBucket::Merged) => merged += 1,
+                                                Some(RomStatusBucket::Unknown) => unknown += 1,
+                                                None => {}
                                             }
                                         }
 
@@ -378,6 +449,14 @@ impl RomVaultApp {
                                                     .max_width(16.0),
                                             );
                                             ui.label(fixes.to_string());
+                                        }
+                                        if merged > 0 {
+                                            ui.add(
+                                                egui::Image::new(include_asset!("G_UnNeeded.png"))
+                                                    .texture_options(egui::TextureOptions::NEAREST)
+                                                    .max_width(16.0),
+                                            );
+                                            ui.label(merged.to_string());
                                         }
                                         if unknown > 0 {
                                             ui.add(
@@ -563,8 +642,12 @@ impl RomVaultApp {
                                 RepStatus::CanBeFixed | RepStatus::CanBeFixedMIA | RepStatus::CorruptCanBeFixed => {
                                     egui::Color32::from_rgb(80, 80, 40)
                                 }
-                                RepStatus::MoveToSort | RepStatus::MoveToCorrupt => egui::Color32::from_rgb(40, 80, 80),
-                                RepStatus::UnNeeded | RepStatus::Unknown => egui::Color32::from_rgb(60, 60, 60),
+                                RepStatus::MoveToSort | RepStatus::MoveToCorrupt | RepStatus::NeededForFix | RepStatus::Rename => {
+                                    egui::Color32::from_rgb(40, 80, 80)
+                                }
+                                RepStatus::NotCollected | RepStatus::UnNeeded | RepStatus::Unknown => {
+                                    egui::Color32::from_rgb(60, 60, 60)
+                                }
                                 RepStatus::Delete => egui::Color32::from_rgb(120, 0, 0),
                                 _ => egui::Color32::TRANSPARENT,
                             };
@@ -579,7 +662,10 @@ impl RomVaultApp {
                                 RepStatus::CorruptCanBeFixed => include_asset!("G_CorruptCanBeFixed.png"),
                                 RepStatus::MoveToSort => include_asset!("G_MoveToSort.png"),
                                 RepStatus::MoveToCorrupt => include_asset!("G_MoveToCorrupt.png"),
+                                RepStatus::NeededForFix => include_asset!("G_MoveToSort.png"),
+                                RepStatus::Rename => include_asset!("G_MoveToSort.png"),
                                 RepStatus::Delete => include_asset!("G_Delete.png"),
+                                RepStatus::NotCollected => include_asset!("G_UnNeeded.png"),
                                 RepStatus::UnNeeded => include_asset!("G_UnNeeded.png"),
                                 RepStatus::Unknown => include_asset!("G_Unknown.png"),
                                 _ => include_asset!("G_Unknown.png"),
@@ -687,6 +773,74 @@ impl RomVaultApp {
 
         self.sort_col = new_sort_col_rom;
         self.sort_desc = new_sort_desc_rom;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_game_summary_bucket_treats_not_collected_as_merged() {
+        assert_eq!(game_summary_bucket(RepStatus::NotCollected), Some(RomStatusBucket::Merged));
+        assert_eq!(game_summary_bucket(RepStatus::UnNeeded), Some(RomStatusBucket::Merged));
+        assert_eq!(game_summary_bucket(RepStatus::Unknown), Some(RomStatusBucket::Unknown));
+    }
+
+    #[test]
+    fn test_game_row_color_treats_not_collected_like_merged_statuses() {
+        assert_eq!(game_row_color(RepStatus::NotCollected), egui::Color32::from_rgb(60, 60, 60));
+        assert_eq!(game_row_color(RepStatus::UnNeeded), egui::Color32::from_rgb(60, 60, 60));
+    }
+
+    #[test]
+    fn test_game_row_color_treats_corrupt_can_be_fixed_as_yellow() {
+        assert_eq!(game_row_color(RepStatus::CorruptCanBeFixed), egui::Color32::from_rgb(80, 80, 40));
+    }
+
+    #[test]
+    fn test_game_row_color_treats_missing_family_variants_as_red() {
+        assert_eq!(game_row_color(RepStatus::Corrupt), egui::Color32::from_rgb(80, 40, 40));
+        assert_eq!(game_row_color(RepStatus::DirCorrupt), egui::Color32::from_rgb(80, 40, 40));
+        assert_eq!(game_row_color(RepStatus::Incomplete), egui::Color32::from_rgb(80, 40, 40));
+    }
+
+    #[test]
+    fn test_game_row_color_treats_needed_for_fix_and_rename_as_cyan() {
+        assert_eq!(game_row_color(RepStatus::NeededForFix), egui::Color32::from_rgb(40, 80, 80));
+        assert_eq!(game_row_color(RepStatus::Rename), egui::Color32::from_rgb(40, 80, 80));
+    }
+
+    #[test]
+    fn test_grid_visibility_flags_from_stats_uses_cached_fix_and_merged_counts() {
+        let mut stats = rv_core::repair_status::RepairStatus::new();
+        stats.total_roms = 3;
+        stats.roms_correct = 1;
+        stats.roms_fixes = 1;
+        stats.roms_not_collected = 1;
+
+        let flags = grid_visibility_flags_from_stats(&stats);
+
+        assert!(!flags.correct);
+        assert!(flags.missing);
+        assert!(flags.fixes);
+        assert!(!flags.merged);
+        assert!(!flags.unknown);
+    }
+
+    #[test]
+    fn test_grid_visibility_flags_from_stats_marks_all_merged_branch_as_merged() {
+        let mut stats = rv_core::repair_status::RepairStatus::new();
+        stats.total_roms = 2;
+        stats.roms_not_collected = 1;
+        stats.roms_unneeded = 1;
+
+        let flags = grid_visibility_flags_from_stats(&stats);
+
+        assert!(flags.merged);
+        assert!(!flags.correct);
+        assert!(!flags.fixes);
+        assert!(!flags.unknown);
     }
 }
 

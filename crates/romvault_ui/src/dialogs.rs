@@ -2,6 +2,44 @@ use eframe::egui;
 
 use crate::RomVaultApp;
 
+fn color_key_entries() -> [(&'static str, egui::Color32); 6] {
+    [
+        ("Correct / CorrectMIA", egui::Color32::from_rgb(214, 255, 214)),
+        ("Missing / MissingMIA", egui::Color32::from_rgb(255, 214, 214)),
+        ("CanBeFixed / CanBeFixedMIA / CorruptCanBeFixed", egui::Color32::from_rgb(255, 255, 214)),
+        ("MoveToSort / MoveToCorrupt", egui::Color32::from_rgb(214, 255, 255)),
+        ("NotCollected / UnNeeded / Unknown", egui::Color32::from_rgb(214, 214, 214)),
+        ("Delete", egui::Color32::from_rgb(255, 0, 0)),
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_color_key_entries_include_not_collected_in_grey_legend() {
+        let grey_entry = color_key_entries()
+            .into_iter()
+            .find(|(_, color)| *color == egui::Color32::from_rgb(214, 214, 214))
+            .map(|(label, _)| label)
+            .unwrap();
+
+        assert_eq!(grey_entry, "NotCollected / UnNeeded / Unknown");
+    }
+
+    #[test]
+    fn test_color_key_entries_include_can_be_fixed_mia_in_yellow_legend() {
+        let yellow_entry = color_key_entries()
+            .into_iter()
+            .find(|(_, color)| *color == egui::Color32::from_rgb(255, 255, 214))
+            .map(|(label, _)| label)
+            .unwrap();
+
+        assert_eq!(yellow_entry, "CanBeFixed / CanBeFixedMIA / CorruptCanBeFixed");
+    }
+}
+
 /// Logic for drawing all popup dialog windows in the application.
 /// 
 /// `dialogs.rs` handles rendering the Global Settings, Directory Settings, Directory Mappings,
@@ -163,15 +201,7 @@ pub fn draw_dialogs(app: &mut RomVaultApp, ctx: &egui::Context) {
             .show(ctx, |ui| {
                 ui.heading("Grid Status Colors");
                 ui.separator();
-                let keys = [
-                    ("Correct / CorrectMIA", egui::Color32::from_rgb(214, 255, 214)),
-                    ("Missing / MissingMIA", egui::Color32::from_rgb(255, 214, 214)),
-                    ("CanBeFixed / CorruptCanBeFixed", egui::Color32::from_rgb(255, 255, 214)),
-                    ("MoveToSort / MoveToCorrupt", egui::Color32::from_rgb(214, 255, 255)),
-                    ("UnNeeded / Unknown", egui::Color32::from_rgb(214, 214, 214)),
-                    ("Delete", egui::Color32::from_rgb(255, 0, 0)),
-                ];
-                for (label, color) in keys {
+                for (label, color) in color_key_entries() {
                     ui.horizontal(|ui| {
                         let (rect, _response) =
                             ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
@@ -357,7 +387,6 @@ pub fn draw_dialogs(app: &mut RomVaultApp, ctx: &egui::Context) {
                             }
                         }
                     }
-
                     ui.separator();
                     ui.add_enabled_ui(app.active_dat_rule.add_category_sub_dirs, |ui| {
                         ui.label("Category Order (one per line):");

@@ -18,12 +18,38 @@ use std::fs::File;
 /// 
 /// Differences from C#:
 /// - The C# reference calls out to `DatClean.ArchiveDirectoryFlattern` and `DatClean.RemoveUnNeededDirectories`
-///   to highly optimize the output structure of the Fix DATs.
-/// - The Rust version currently exports the exact structural hierarchy of the missing files without 
-///   the advanced flattening passes.
+///   to optimize the output structure of the Fix DATs.
+/// - The Rust version now mirrors those cleanup passes with DAT-AST transformations, while still
+///   using Rust-native tree traversal and XML serialization infrastructure.
 pub struct FixDatReport;
 
 impl FixDatReport {
+    fn logical_name_eq(left: &str, right: &str) -> bool {
+        #[cfg(windows)]
+        {
+            left.eq_ignore_ascii_case(right)
+        }
+        #[cfg(not(windows))]
+        {
+            left == right
+        }
+    }
+
+    fn dat_relative_parent_for_output(dat_root_full_name: &str) -> String {
+        let dat_root = crate::settings::get_settings().dat_root;
+        let dat_root_path = Path::new(if dat_root.is_empty() { "DatRoot" } else { &dat_root });
+        let dat_full_path = Path::new(dat_root_full_name);
+
+        crate::settings::strip_physical_prefix(dat_full_path, dat_root_path)
+            .and_then(|relative| {
+                relative
+                    .parent()
+                    .map(|parent| parent.to_string_lossy().replace('\\', "_").replace('/', "_"))
+            })
+            .filter(|parent| !parent.is_empty())
+            .unwrap_or_else(|| "Unknown".to_string())
+    }
+
     /// Recursively traverses a directory tree, looking for bound DATs to export as Fix DATs.
     pub fn recursive_dat_tree(out_directory: &str, t_dir_rc: Rc<RefCell<RvFile>>, red_only: bool) {
         let t_dir = t_dir_rc.borrow();
@@ -107,6 +133,7 @@ impl FixDatReport {
         // Align with C# `DatClean.ArchiveDirectoryFlattern` behavior
         // The Fix DAT export shouldn't contain deeply nested virtual folders unless they are games.
         Self::archive_directory_flatten(&mut dh.base_dir);
+        Self::remove_unneeded_directories(&mut dh.base_dir);
 
         let old_name = dh.name.clone().unwrap_or_default();
         let old_desc = dh.description.clone().unwrap_or_default();
@@ -121,14 +148,7 @@ impl FixDatReport {
             d.get_data(DatData::DatRootFullName).unwrap_or_else(|| "Unknown".to_string())
         };
 
-        let mut dat_dir = "Unknown".to_string();
-        if dat_root_full_name.len() > 8 {
-            let sub = &dat_root_full_name[8..];
-            let p = Path::new(sub);
-            if let Some(parent) = p.parent() {
-                dat_dir = parent.to_string_lossy().replace("\\", "_").replace("/", "_");
-            }
-        }
+        let dat_dir = Self::dat_relative_parent_for_output(&dat_root_full_name);
         let p2 = Path::new(&dat_root_full_name);
         let dat_name = p2.file_stem().unwrap_or_default().to_string_lossy().to_string();
 
@@ -181,7 +201,10 @@ impl FixDatReport {
                 continue;
             }
 
-            let include = (child.dat_status() == DatStatus::InDatCollect || child.dat_status() == DatStatus::InDatMIA) &&
+            let include = matches!(
+                child.dat_status(),
+                DatStatus::InDatCollect | DatStatus::InDatMerged | DatStatus::InDatNoDump | DatStatus::InDatMIA
+            ) &&
                 child.got_status() != GotStatus::Got &&
                 (!red_only || !(child.rep_status() == RepStatus::CanBeFixed || child.rep_status() == RepStatus::CanBeFixedMIA || child.rep_status() == RepStatus::CorruptCanBeFixed));
 
@@ -253,7 +276,7 @@ impl FixDatReport {
             let mut t_dir = t_dir_rc.borrow_mut();
             let mut found_index = None;
             for (idx, c) in t_dir.children.iter().enumerate() {
-                if c.borrow().name == new_parent_name {
+                if Self::logical_name_eq(&c.borrow().name, &new_parent_name) {
                     found_index = Some(idx);
                     break;
                 }
@@ -322,11 +345,33 @@ impl FixDatReport {
             }
         }
     }
+
+    fn remove_unneeded_directories(d_dir: &mut dat_reader::dat_store::DatDir) {
+        let mut kept_children = Vec::new();
+
+        for mut node in d_dir.children.drain(..) {
+            let keep = if let Some(child_dir) = node.dir_mut() {
+                Self::remove_unneeded_directories(child_dir);
+                !child_dir.children.is_empty()
+            } else {
+                true
+            };
+
+            if keep {
+                kept_children.push(node);
+            }
+        }
+
+        d_dir.children = kept_children;
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::{get_settings, update_settings, Settings};
+    use dat_reader::dat_store::{DatDir, DatNode};
+    use tempfile::tempdir;
 
     #[test]
     fn test_recursive_dat_tree_finding_dat() {
@@ -372,5 +417,179 @@ mod tests {
         
         assert_eq!(found_all, 2);
         assert_eq!(out_dir_all.borrow().children.len(), 2);
+    }
+
+    #[test]
+    fn test_recursive_dat_tree_finding_dat_includes_indatmerged_and_indatnodump_entries() {
+        let mut dat = RvDat::new();
+        dat.set_data(DatData::DatName, Some("TestDat".to_string()));
+        let rv_dat = Rc::new(RefCell::new(dat));
+
+        let t_dir = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+
+        let merged_file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut mf = merged_file.borrow_mut();
+            mf.name = "merged.rom".to_string();
+            mf.dat = Some(Rc::clone(&rv_dat));
+            mf.set_dat_got_status(DatStatus::InDatMerged, GotStatus::NotGot);
+            mf.set_rep_status(RepStatus::Missing);
+        }
+
+        let nodump_file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut nf = nodump_file.borrow_mut();
+            nf.name = "nodump.rom".to_string();
+            nf.dat = Some(Rc::clone(&rv_dat));
+            nf.set_dat_got_status(DatStatus::InDatNoDump, GotStatus::Corrupt);
+            nf.set_rep_status(RepStatus::Corrupt);
+        }
+
+        t_dir.borrow_mut().child_add(Rc::clone(&merged_file));
+        t_dir.borrow_mut().child_add(Rc::clone(&nodump_file));
+
+        let out_dir = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        let found = FixDatReport::recursive_dat_tree_finding_dat(
+            Rc::clone(&rv_dat),
+            Rc::clone(&t_dir),
+            Rc::clone(&out_dir),
+            false,
+        );
+
+        assert_eq!(found, 2);
+        let names: Vec<String> = out_dir
+            .borrow()
+            .children
+            .iter()
+            .map(|child| child.borrow().name.clone())
+            .collect();
+        assert!(names.contains(&"merged.rom".to_string()));
+        assert!(names.contains(&"nodump.rom".to_string()));
+    }
+
+    #[test]
+    fn test_fix_single_level_dat_reuses_case_only_matching_parent_directory() {
+        let t_dir = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+
+        let existing_parent = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        {
+            let mut parent = existing_parent.borrow_mut();
+            parent.name = "MYDAT".to_string();
+            parent.game = Some(Rc::new(RefCell::new(RvGame::from_description("MYDAT"))));
+        }
+        t_dir.borrow_mut().child_add(Rc::clone(&existing_parent));
+
+        let loose_file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        loose_file.borrow_mut().name = "mydat.rom".to_string();
+        t_dir.borrow_mut().child_add(Rc::clone(&loose_file));
+
+        FixDatReport::fix_single_level_dat(Rc::clone(&t_dir));
+
+        let t_dir_ref = t_dir.borrow();
+        assert_eq!(t_dir_ref.children.len(), 1);
+        let parent = t_dir_ref.children[0].borrow();
+        assert_eq!(parent.name, "MYDAT");
+        assert_eq!(parent.children.len(), 1);
+        assert_eq!(parent.children[0].borrow().name, "mydat.rom");
+    }
+
+    #[test]
+    fn test_remove_unneeded_directories_drops_empty_branches() {
+        let mut root = DatDir::new();
+        let mut keep_dir = DatNode::new_dir("Keep".to_string(), FileType::Dir);
+        if let Some(d) = keep_dir.dir_mut() {
+            d.add_child(DatNode::new_file("present.bin".to_string(), FileType::File));
+        }
+
+        let empty_dir = DatNode::new_dir("Empty".to_string(), FileType::Dir);
+
+        root.add_child(keep_dir);
+        root.add_child(empty_dir);
+
+        FixDatReport::remove_unneeded_directories(&mut root);
+
+        assert_eq!(root.children.len(), 1);
+        assert_eq!(root.children[0].name, "Keep");
+    }
+
+    #[test]
+    fn test_archive_directory_flatten_and_remove_unneeded_directories_keep_flattened_entries() {
+        let mut root = DatDir::new();
+        let mut game = DatNode::new_dir("game".to_string(), FileType::Dir);
+        if let Some(game_dir) = game.dir_mut() {
+            game_dir.d_game = Some(Box::default());
+
+            let empty_dir = DatNode::new_dir("empty".to_string(), FileType::Dir);
+            game_dir.add_child(empty_dir);
+
+            let mut nested_dir = DatNode::new_dir("sub".to_string(), FileType::Dir);
+            if let Some(nested_child) = nested_dir.dir_mut() {
+                nested_child.add_child(DatNode::new_file("missing.bin".to_string(), FileType::File));
+            }
+            game_dir.add_child(nested_dir);
+        }
+        root.add_child(game);
+
+        FixDatReport::archive_directory_flatten(&mut root);
+        FixDatReport::remove_unneeded_directories(&mut root);
+
+        let game_dir = root.children[0].dir().unwrap();
+        let child_names: Vec<_> = game_dir.children.iter().map(|child| child.name.clone()).collect();
+        assert_eq!(child_names, vec!["empty/".to_string(), "sub/".to_string(), "sub/missing.bin".to_string()]);
+    }
+
+    #[test]
+    fn test_dat_relative_parent_for_output_uses_configured_dat_root() {
+        let original_settings = get_settings();
+        let temp = tempdir().unwrap();
+        let mut settings = Settings::default();
+        settings.dat_root = temp.path().join("CustomDatRoot").to_string_lossy().into_owned();
+        update_settings(settings);
+
+        let dat_path = temp
+            .path()
+            .join("CustomDatRoot")
+            .join("Arcade")
+            .join("MAME")
+            .join("mame.dat");
+
+        let relative = FixDatReport::dat_relative_parent_for_output(&dat_path.to_string_lossy());
+        update_settings(original_settings);
+
+        assert_eq!(relative, "Arcade_MAME");
+    }
+
+    #[test]
+    fn test_dat_relative_parent_for_output_falls_back_when_not_under_dat_root() {
+        let original_settings = get_settings();
+        update_settings(Settings::default());
+
+        let relative = FixDatReport::dat_relative_parent_for_output(r"C:\Elsewhere\mame.dat");
+        update_settings(original_settings);
+
+        assert_eq!(relative, "Unknown");
+    }
+
+    #[test]
+    fn test_dat_relative_parent_for_output_matches_dat_root_case_insensitively_on_windows() {
+        let original_settings = get_settings();
+        let temp = tempdir().unwrap();
+        let mut settings = Settings::default();
+        settings.dat_root = temp.path().join("CustomDatRoot").to_string_lossy().into_owned();
+        update_settings(settings);
+
+        let dat_path = temp
+            .path()
+            .join("customdatroot")
+            .join("Arcade")
+            .join("MAME")
+            .join("mame.dat")
+            .to_string_lossy()
+            .into_owned();
+
+        let relative = FixDatReport::dat_relative_parent_for_output(&dat_path);
+        update_settings(original_settings);
+
+        assert_eq!(relative, "Arcade_MAME");
     }
 }

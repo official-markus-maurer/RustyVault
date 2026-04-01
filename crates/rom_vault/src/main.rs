@@ -7,6 +7,20 @@ use rv_core::read_dat::DatUpdate;
 use rv_core::repair_status::RepairStatus;
 use dat_reader::enums::FileType;
 
+fn render_repair_report(report: &RepairStatus) -> Vec<String> {
+    vec![
+        "--- Repair Report ---".to_string(),
+        format!("Total ROMs: {}", report.total_roms),
+        format!("Correct:    {}", report.count_correct()),
+        format!("Missing:    {}", report.count_missing()),
+        format!("Can Fix:    {}", report.count_fixes_needed()),
+        format!("Not Collected: {}", report.roms_not_collected),
+        format!("Unneeded:   {}", report.roms_unneeded),
+        format!("Unknown:    {}", report.roms_unknown),
+        "---------------------".to_string(),
+    ]
+}
+
 /// Headless CLI binary for the RomVault engine.
 /// 
 /// `rom_vault` provides a fully text-based command line interface to interact with the
@@ -136,14 +150,9 @@ fn main() {
                     "report" => {
                         let mut report = RepairStatus::new();
                         report.report_status(root.clone());
-                        println!("--- Repair Report ---");
-                        println!("Total ROMs: {}", report.total_roms);
-                        println!("Correct:    {}", report.roms_correct);
-                        println!("Missing:    {}", report.roms_missing);
-                        println!("Can Fix:    {}", report.roms_fixes);
-                        println!("Unneeded:   {}", report.roms_unneeded);
-                        println!("Unknown:    {}", report.roms_unknown);
-                        println!("---------------------");
+                        for line in render_repair_report(&report) {
+                            println!("{line}");
+                        }
                     },
                     "fixdat" => {
                         if parts.len() < 2 {
@@ -181,4 +190,30 @@ fn main() {
     });
 
     println!("Shutting down RustyRoms.");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_render_repair_report_includes_not_collected_line() {
+        let mut report = RepairStatus::new();
+        report.total_roms = 7;
+        report.roms_correct = 2;
+        report.roms_correct_mia = 1;
+        report.roms_missing = 1;
+        report.roms_fixes = 1;
+        report.roms_unknown = 2;
+        report.roms_not_collected = 2;
+        report.roms_unneeded = 1;
+
+        let lines = render_repair_report(&report);
+
+        assert!(lines.iter().any(|line| line == "Correct:    3"));
+        assert!(lines.iter().any(|line| line == "Missing:    2"));
+        assert!(lines.iter().any(|line| line == "Can Fix:    3"));
+        assert!(lines.iter().any(|line| line == "Not Collected: 2"));
+        assert!(lines.iter().any(|line| line == "Unneeded:   1"));
+    }
 }

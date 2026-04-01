@@ -36,6 +36,41 @@ impl DatUpdate {
         .union(FileStatus::ALT_MD5_FROM_HEADER)
         .union(FileStatus::HEADER_FILE_TYPE_FROM_HEADER);
 
+    fn normalize_dat_path(path: &str) -> String {
+        path.replace('/', "\\").trim_matches('\\').to_string()
+    }
+
+    fn normalized_path_eq(left: &str, right: &str) -> bool {
+        #[cfg(windows)]
+        {
+            left.eq_ignore_ascii_case(right)
+        }
+        #[cfg(not(windows))]
+        {
+            left == right
+        }
+    }
+
+    fn normalized_path_has_prefix(full: &str, prefix: &str) -> bool {
+        if Self::normalized_path_eq(full, prefix) {
+            return true;
+        }
+
+        #[cfg(windows)]
+        {
+            let full_lower = full.to_ascii_lowercase();
+            let prefix_lower = prefix.to_ascii_lowercase();
+            full_lower
+                .strip_prefix(&prefix_lower)
+                .is_some_and(|suffix| suffix.starts_with('\\'))
+        }
+        #[cfg(not(windows))]
+        {
+            full.strip_prefix(prefix)
+                .is_some_and(|suffix| suffix.starts_with('\\'))
+        }
+    }
+
     fn populate_rv_dat_from_header(rv_dat: &mut RvDat, dat_header: &DatHeader, dat_path: &str) {
         rv_dat.game_meta_data.clear();
         rv_dat.set_data(DatData::Id, dat_header.id.clone());
@@ -69,7 +104,7 @@ impl DatUpdate {
     ) -> Option<Rc<RefCell<RvFile>>> {
         let match_index = existing_children.iter().position(|child| {
             let child_ref = child.borrow();
-            child_ref.name == name && child_ref.file_type == file_type
+            Self::normalized_path_eq(&child_ref.name, name) && child_ref.file_type == file_type
         })?;
         Some(existing_children.remove(match_index))
     }
@@ -168,7 +203,13 @@ impl DatUpdate {
     }
 
     fn dat_path_matches_filter(dat_full_name: &str, dat_path: &str) -> bool {
-        dat_path.len() <= dat_full_name.len() && &dat_full_name[0..dat_path.len()] == dat_path
+        let normalized_full_name = Self::normalize_dat_path(dat_full_name);
+        let normalized_filter = Self::normalize_dat_path(dat_path);
+
+        if normalized_filter.is_empty() {
+            return true;
+        }
+        Self::normalized_path_has_prefix(&normalized_full_name, &normalized_filter)
     }
 
     /// Recursively scans `dat_dir_path`, parses all found DATs in parallel, and merges them into `root`.
@@ -182,7 +223,11 @@ impl DatUpdate {
 
         let romvault_dir = {
             let root_ref = root.borrow();
-            root_ref.children.iter().find(|c| c.borrow().name == "RustyVault").cloned()
+            root_ref
+                .children
+                .iter()
+                .find(|c| Self::normalized_path_eq(&c.borrow().name, "RustyVault"))
+                .cloned()
         };
 
         if let Some(rv_dir) = romvault_dir {
@@ -222,7 +267,7 @@ impl DatUpdate {
                                     let mut cp_mut = current_parent.borrow_mut();
                                     cp_mut.cached_stats = None;
                                     for child in &cp_mut.children {
-                                        if child.borrow().name == part {
+                                        if Self::normalized_path_eq(&child.borrow().name, part) {
                                             found = Some(Rc::clone(child));
                                             break;
                                         }
@@ -253,7 +298,7 @@ impl DatUpdate {
                         let mut target_dir = None;
                         
                         for child in &rv_dir_mut.children {
-                            if child.borrow().name == dir_name {
+                            if Self::normalized_path_eq(&child.borrow().name, &dir_name) {
                                 target_dir = Some(Rc::clone(child));
                                 break;
                             }
@@ -429,35 +474,37 @@ impl DatUpdate {
     }
 
     fn scan_dat_dir(path: &str, dats_found: &mut Vec<(String, String)>) {
-        let root_path = Path::new(path);
-        let base_len = if path == "DatRoot" { 8 } else { path.len() + 1 };
-        Self::recursive_scan(root_path, root_path, base_len, dats_found);
+        let scan_path = Path::new(path);
+        let dat_root = crate::settings::get_settings().dat_root;
+        let dat_root_path = Path::new(if dat_root.is_empty() { "DatRoot" } else { &dat_root });
+        let base_path = if crate::settings::strip_physical_prefix(scan_path, dat_root_path).is_some() {
+            dat_root_path
+        } else {
+            scan_path
+        };
+
+        Self::recursive_scan(base_path, scan_path, dats_found);
     }
 
-    fn recursive_scan(base_path: &Path, current_path: &Path, base_len: usize, dats_found: &mut Vec<(String, String)>) {
+    fn recursive_scan(base_path: &Path, current_path: &Path, dats_found: &mut Vec<(String, String)>) {
         if let Ok(entries) = fs::read_dir(current_path) {
             for entry in entries.filter_map(Result::ok) {
                 let path = entry.path();
                 if path.is_dir() {
-                    Self::recursive_scan(base_path, &path, base_len, dats_found);
+                    Self::recursive_scan(base_path, &path, dats_found);
                 } else if let Some(ext) = path.extension() {
                     let ext_str = ext.to_string_lossy().to_lowercase();
                     if ext_str == "dat" || ext_str == "xml" || ext_str == "datz" {
                         let full_path = path.to_string_lossy().into_owned();
-                        
-                        // Calculate the virtual directory path relative to DatRoot
-                        // e.g. DatRoot\Archive\EmulatorArchived\foo.dat -> "Archive\EmulatorArchived"
-                        let mut virtual_dir = String::new();
-                        if full_path.len() > base_len {
-                            let rel_path = &full_path[base_len..];
-                            if let Some(parent) = Path::new(rel_path).parent() {
-                                let parent_str = parent.to_string_lossy().into_owned();
-                                if !parent_str.is_empty() {
-                                    virtual_dir = parent_str;
-                                }
-                            }
-                        }
-                        
+
+                        let virtual_dir = path
+                            .strip_prefix(base_path)
+                            .ok()
+                            .and_then(|relative| relative.parent())
+                            .map(|parent| parent.to_string_lossy().replace('/', "\\"))
+                            .filter(|parent| !parent.is_empty())
+                            .unwrap_or_default();
+
                         dats_found.push((full_path, virtual_dir));
                     }
                 }
@@ -498,6 +545,7 @@ impl DatUpdate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::{get_settings, update_settings, Settings};
     use tempfile::tempdir;
 
     #[test]
@@ -606,6 +654,83 @@ mod tests {
         assert_eq!(mapped.tree_checked, crate::rv_file::TreeSelect::Locked);
         assert_eq!(mapped.size, Some(4096));
         assert_eq!(mapped.crc, Some(vec![1, 2, 3, 4]));
+    }
+
+    #[test]
+    fn test_map_dat_node_to_rv_file_preserves_existing_state_for_case_only_name_difference() {
+        let parent = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        let dat_rc = Rc::new(RefCell::new(RvDat::new()));
+
+        let existing_child = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut existing = existing_child.borrow_mut();
+            existing.name = "ROM.BIN".to_string();
+            existing.set_dat_got_status(DatStatus::InDatCollect, dat_reader::enums::GotStatus::Got);
+            existing.tree_expanded = true;
+        }
+
+        let mut existing_children = vec![Rc::clone(&existing_child)];
+
+        let mut dat_node = DatNode::new_file("rom.bin".to_string(), FileType::File);
+        dat_node.file_mut().unwrap().size = Some(4096);
+
+        DatUpdate::map_dat_node_to_rv_file(
+            Rc::clone(&parent),
+            &dat_node,
+            Rc::clone(&dat_rc),
+            &mut existing_children,
+        );
+
+        let mapped_child = {
+            let parent_ref = parent.borrow();
+            Rc::clone(&parent_ref.children[0])
+        };
+        let mapped = mapped_child.borrow();
+        assert_eq!(mapped.name, "rom.bin");
+        assert_eq!(mapped.got_status(), dat_reader::enums::GotStatus::Got);
+        assert!(mapped.tree_expanded);
+    }
+
+    #[test]
+    fn test_update_dat_reuses_existing_dat_directory_for_case_only_name_difference() {
+        let original_settings = get_settings();
+        let temp = tempdir().unwrap();
+        let dat_root = temp.path().join("DatRoot");
+        fs::create_dir_all(&dat_root).unwrap();
+        fs::write(
+            dat_root.join("sample.dat"),
+            r#"<?xml version="1.0"?>
+<datafile>
+  <header>
+    <name>mydat</name>
+  </header>
+</datafile>"#,
+        )
+        .unwrap();
+
+        let mut settings = Settings::default();
+        settings.dat_root = dat_root.to_string_lossy().into_owned();
+        update_settings(settings);
+
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        let rustyvault = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        rustyvault.borrow_mut().name = "RustyVault".to_string();
+        rustyvault.borrow_mut().parent = Some(Rc::downgrade(&root));
+        root.borrow_mut().child_add(Rc::clone(&rustyvault));
+
+        let existing_dir = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        existing_dir.borrow_mut().name = "MYDAT".to_string();
+        existing_dir.borrow_mut().parent = Some(Rc::downgrade(&rustyvault));
+        rustyvault.borrow_mut().child_add(Rc::clone(&existing_dir));
+
+        DatUpdate::update_dat(Rc::clone(&root), &dat_root.to_string_lossy());
+        update_settings(original_settings);
+
+        let rustyvault_ref = rustyvault.borrow();
+        assert_eq!(rustyvault_ref.children.len(), 1);
+        let dat_dir = rustyvault_ref.children[0].borrow();
+        assert_eq!(dat_dir.name, "MYDAT");
+        assert_eq!(dat_dir.dir_dats.len(), 1);
     }
 
     #[test]
@@ -768,5 +893,82 @@ mod tests {
         DatUpdate::check_all_dats(Rc::clone(&root), "DatRoot\\Console");
 
         assert_eq!(dat.borrow().time_stamp, i64::MAX);
+    }
+
+    #[test]
+    fn test_check_all_dats_normalizes_filter_separators() {
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+
+        let dat = Rc::new(RefCell::new(RvDat::new()));
+        dat.borrow_mut().set_data(DatData::DatRootFullName, Some("DatRoot\\Console\\game.dat".to_string()));
+        root.borrow_mut().dir_dats.push(Rc::clone(&dat));
+
+        DatUpdate::check_all_dats(Rc::clone(&root), "DatRoot/Console");
+
+        assert_eq!(dat.borrow().time_stamp, i64::MAX);
+    }
+
+    #[test]
+    fn test_check_all_dats_matches_case_insensitively_on_windows_style_paths() {
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+
+        let dat = Rc::new(RefCell::new(RvDat::new()));
+        dat.borrow_mut().set_data(DatData::DatRootFullName, Some("DatRoot\\Console\\game.dat".to_string()));
+        root.borrow_mut().dir_dats.push(Rc::clone(&dat));
+
+        DatUpdate::check_all_dats(Rc::clone(&root), "datroot\\console");
+
+        assert_eq!(dat.borrow().time_stamp, i64::MAX);
+    }
+
+    #[test]
+    fn test_check_all_dats_respects_path_segment_boundaries() {
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+
+        let dat = Rc::new(RefCell::new(RvDat::new()));
+        dat.borrow_mut().set_data(DatData::DatRootFullName, Some("DatRoot\\Arcade\\game.dat".to_string()));
+        root.borrow_mut().dir_dats.push(Rc::clone(&dat));
+
+        DatUpdate::check_all_dats(Rc::clone(&root), "DatRoot\\Arc");
+
+        assert_ne!(dat.borrow().time_stamp, i64::MAX);
+    }
+
+    #[test]
+    fn test_scan_dat_dir_uses_path_relative_parent_without_string_slicing() {
+        let temp = tempdir().unwrap();
+        let dat_root = temp.path().join("DatRoot");
+        let nested = dat_root.join("Arcade").join("MAME");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("set.dat"), "test").unwrap();
+
+        let mut dats_found = Vec::new();
+        DatUpdate::scan_dat_dir(&dat_root.to_string_lossy(), &mut dats_found);
+
+        assert_eq!(dats_found.len(), 1);
+        assert_eq!(Path::new(&dats_found[0].0), nested.join("set.dat").as_path());
+        assert_eq!(dats_found[0].1.replace('/', "\\"), "Arcade\\MAME");
+    }
+
+    #[test]
+    fn test_scan_dat_dir_keeps_paths_relative_to_configured_dat_root_when_scanning_subdirectory() {
+        let original_settings = get_settings();
+        let temp = tempdir().unwrap();
+        let dat_root = temp.path().join("DatRoot");
+        let nested = dat_root.join("Arcade").join("MAME");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("set.dat"), "test").unwrap();
+
+        let mut settings = Settings::default();
+        settings.dat_root = dat_root.to_string_lossy().into_owned();
+        update_settings(settings);
+
+        let mut dats_found = Vec::new();
+        DatUpdate::scan_dat_dir(&dat_root.join("Arcade").to_string_lossy(), &mut dats_found);
+        update_settings(original_settings);
+
+        assert_eq!(dats_found.len(), 1);
+        assert_eq!(Path::new(&dats_found[0].0), nested.join("set.dat").as_path());
+        assert_eq!(dats_found[0].1.replace('/', "\\"), "Arcade\\MAME");
     }
 }

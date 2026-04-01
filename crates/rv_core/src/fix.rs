@@ -103,6 +103,54 @@ impl Fix {
     const TORRENTZIP_DOS_TIME: u16 = 48128;
     const TORRENTZIP_DOS_DATE: u16 = 8600;
 
+    fn logical_name_eq(left: &str, right: &str) -> bool {
+        #[cfg(windows)]
+        {
+            left.eq_ignore_ascii_case(right)
+        }
+        #[cfg(not(windows))]
+        {
+            left == right
+        }
+    }
+
+    fn physical_path_eq_for_rename(left: &Path, right: &Path) -> bool {
+        #[cfg(windows)]
+        {
+            left.to_string_lossy().eq_ignore_ascii_case(&right.to_string_lossy())
+        }
+        #[cfg(not(windows))]
+        {
+            left == right
+        }
+    }
+
+    fn rename_path_if_needed(current_path: &Path, target_path: &Path, temp_suffix: &str) -> std::io::Result<()> {
+        if current_path == target_path || !current_path.exists() {
+            return Ok(());
+        }
+
+        if Self::physical_path_eq_for_rename(current_path, target_path) {
+            let mut temp_path = current_path.to_path_buf();
+            let temp_name = format!(
+                "{}.{}-{}",
+                target_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("tmp"),
+                temp_suffix,
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or_default()
+            );
+            temp_path.set_file_name(temp_name);
+            fs::rename(current_path, &temp_path).and_then(|_| fs::rename(&temp_path, target_path))
+        } else {
+            fs::rename(current_path, target_path)
+        }
+    }
+
     fn torrentzip_datetime() -> Option<ZipDateTime> {
         ZipDateTime::from_date_and_time(1996, 12, 24, 23, 32, 0).ok()
     }
@@ -382,6 +430,10 @@ impl Fix {
         Self::build_physical_path(file, false).to_string_lossy().replace('\\', "/")
     }
 
+    fn get_existing_physical_path(file: Rc<RefCell<RvFile>>) -> String {
+        Self::build_physical_path(file, true).to_string_lossy().replace('\\', "/")
+    }
+
     fn build_physical_path(file: Rc<RefCell<RvFile>>, use_existing_names: bool) -> PathBuf {
         let mut path_parts = Vec::new();
         let mut current = Some(file);
@@ -400,6 +452,14 @@ impl Fix {
         }
         
         path_parts.reverse();
+        let logical_path = path_parts.join("\\");
+        if Path::new(&logical_path).is_absolute() {
+            return PathBuf::from(logical_path);
+        }
+        if let Some(mapped_path) = crate::settings::find_dir_mapping(&logical_path) {
+            return PathBuf::from(mapped_path);
+        }
+
         let mut path = PathBuf::new();
         for part in path_parts {
             if path.as_os_str().is_empty() {
@@ -415,31 +475,7 @@ impl Fix {
         let current_path = Self::build_physical_path(Rc::clone(&dir), true);
         let target_path = Self::build_physical_path(Rc::clone(&dir), false);
 
-        if current_path == target_path || !current_path.exists() {
-            return;
-        }
-
-        let rename_result = if current_path
-            .to_string_lossy()
-            .eq_ignore_ascii_case(&target_path.to_string_lossy())
-        {
-            let mut temp_path = current_path.clone();
-            let temp_name = format!(
-                "{}.tmpdir-{}",
-                target_path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("tmp"),
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map(|d| d.as_nanos())
-                    .unwrap_or_default()
-            );
-            temp_path.set_file_name(temp_name);
-            fs::rename(&current_path, &temp_path).and_then(|_| fs::rename(&temp_path, &target_path))
-        } else {
-            fs::rename(&current_path, &target_path)
-        };
+        let rename_result = Self::rename_path_if_needed(&current_path, &target_path, "tmpdir");
 
         if rename_result.is_ok() {
             let mut dir_mut = dir.borrow_mut();
@@ -450,6 +486,67 @@ impl Fix {
     fn get_tosort_path(file_path: &str, base_dir: &str) -> String {
         let path = Path::new(file_path);
         let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+
+        let mapped_base_dir = base_dir.replace('/', "\\");
+        let mapped_base_path =
+            crate::settings::find_dir_mapping(&mapped_base_dir).unwrap_or_else(|| mapped_base_dir.clone());
+        if let Some((source_logical_key, source_root_path)) =
+            crate::settings::find_mapping_for_physical_path(path)
+        {
+            if let Some(relative_path) = crate::settings::strip_physical_prefix(path, &source_root_path) {
+                let mut relative_dirs: Vec<String> = relative_path
+                    .parent()
+                    .map(|parent| {
+                        parent
+                            .components()
+                            .filter_map(|component| match component {
+                                std::path::Component::Normal(part) => Some(part.to_string_lossy().to_string()),
+                                _ => None,
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                if Self::logical_name_eq(&source_logical_key, "ToSort")
+                    && Self::logical_name_eq(&mapped_base_dir, "ToSort\\Corrupt")
+                    && relative_dirs
+                        .first()
+                        .is_some_and(|s| Self::logical_name_eq(s, "Corrupt"))
+                {
+                    relative_dirs.remove(0);
+                }
+
+                let mut dir_path = PathBuf::from(&mapped_base_path);
+                for part in &relative_dirs {
+                    dir_path.push(part);
+                }
+                let _ = fs::create_dir_all(&dir_path);
+
+                let mut target_path_buf = dir_path.join(file_name);
+                if target_path_buf == path {
+                    return target_path_buf.to_string_lossy().replace('\\', "/");
+                }
+
+                let mut target_path = target_path_buf.to_string_lossy().replace('\\', "/");
+                let mut counter = 0;
+                while Path::new(&target_path).exists() {
+                    let file_stem = path.file_stem().unwrap().to_str().unwrap();
+                    let ext = path.extension().map(|e| e.to_str().unwrap()).unwrap_or("");
+
+                    let new_name = if ext.is_empty() {
+                        format!("{}_{}", file_stem, counter)
+                    } else {
+                        format!("{}_{}.{}", file_stem, counter, ext)
+                    };
+                    target_path_buf = dir_path.join(new_name);
+                    target_path = target_path_buf.to_string_lossy().replace('\\', "/");
+                    counter += 1;
+                }
+
+                return target_path;
+            }
+        }
+
         let mut root_base = PathBuf::new();
         let mut normal_components = Vec::new();
 
@@ -475,17 +572,30 @@ impl Fix {
             Vec::new()
         };
 
-        let base_parts: Vec<String> = base_dir
-            .split('/')
+        let normalized_base_dir = base_dir.replace('/', "\\");
+        let base_parts: Vec<String> = normalized_base_dir
+            .split('\\')
             .filter(|part| !part.is_empty())
             .map(|part| part.to_string())
             .collect();
 
-        if relative_dirs.first().map(|s| s.as_str()) == Some("ToSort") {
-            if base_parts == ["ToSort".to_string(), "Corrupt".to_string()]
-                && relative_dirs.get(1).map(|s| s.as_str()) != Some("Corrupt")
-            {
-                relative_dirs.insert(1, "Corrupt".to_string());
+        let shares_root = normal_components
+            .first()
+            .zip(base_parts.first())
+            .is_some_and(|(path_root, base_root)| Self::logical_name_eq(path_root, base_root));
+
+        if shares_root {
+            let base_suffix: Vec<String> = base_parts.iter().skip(1).cloned().collect();
+            let already_prefixed = relative_dirs.len() >= base_suffix.len()
+                && base_suffix
+                    .iter()
+                    .zip(relative_dirs.iter())
+                    .all(|(base_part, relative_part)| Self::logical_name_eq(base_part, relative_part));
+
+            if !base_suffix.is_empty() && !already_prefixed {
+                let mut prefixed = base_suffix;
+                prefixed.extend(relative_dirs);
+                relative_dirs = prefixed;
             }
         } else {
             let mut prefixed = base_parts.clone();
@@ -525,11 +635,115 @@ impl Fix {
     }
 
     fn get_archive_member_tosort_path(archive_path: &Path, child_name: &str, base_dir: &str) -> PathBuf {
+        let mapped_base_dir = base_dir.replace('/', "\\");
+        let mapped_base_path =
+            crate::settings::find_dir_mapping(&mapped_base_dir).unwrap_or_else(|| mapped_base_dir.clone());
+        if let Some((source_logical_key, source_root_path)) =
+            crate::settings::find_mapping_for_physical_path(archive_path)
+        {
+            if let Some(relative_archive_path) = crate::settings::strip_physical_prefix(archive_path, &source_root_path) {
+                let archive_name = relative_archive_path.file_name().unwrap_or_default();
+                let mut target_path = PathBuf::from(&mapped_base_path);
+                let mut relative_dirs: Vec<String> = relative_archive_path
+                    .parent()
+                    .map(|parent| {
+                        parent
+                            .components()
+                            .filter_map(|component| match component {
+                                std::path::Component::Normal(part) => Some(part.to_string_lossy().to_string()),
+                                _ => None,
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                if Self::logical_name_eq(&source_logical_key, "ToSort")
+                    && Self::logical_name_eq(&mapped_base_dir, "ToSort\\Corrupt")
+                    && relative_dirs
+                        .first()
+                        .is_some_and(|s| Self::logical_name_eq(s, "Corrupt"))
+                {
+                    relative_dirs.remove(0);
+                }
+
+                for part in &relative_dirs {
+                    target_path.push(part);
+                }
+                target_path.push(archive_name);
+
+                for part in child_name.split(['/', '\\']).filter(|part| !part.is_empty()) {
+                    target_path.push(part);
+                }
+
+                if let Some(parent) = target_path.parent() {
+                    let _ = fs::create_dir_all(parent);
+                }
+
+                return target_path;
+            }
+        }
+
         let archive_parent = archive_path.parent().unwrap_or_else(|| Path::new(""));
         let archive_name = archive_path.file_name().unwrap_or_default();
 
-        let mut target_path = archive_parent.to_path_buf();
-        for part in base_dir.split('/').filter(|part| !part.is_empty()) {
+        let mut root_base = PathBuf::new();
+        let mut normal_components = Vec::new();
+
+        for component in archive_parent.components() {
+            match component {
+                std::path::Component::Prefix(_) | std::path::Component::RootDir => {
+                    root_base.push(component.as_os_str());
+                }
+                std::path::Component::Normal(part) => {
+                    normal_components.push(part.to_string_lossy().to_string());
+                }
+                _ => {}
+            }
+        }
+
+        if let Some(first_normal) = normal_components.first() {
+            root_base.push(first_normal);
+        }
+
+        let mut relative_dirs = if normal_components.len() > 1 {
+            normal_components[1..].to_vec()
+        } else {
+            Vec::new()
+        };
+
+        let normalized_base_dir = base_dir.replace('/', "\\");
+        let base_parts: Vec<String> = normalized_base_dir
+            .split('\\')
+            .filter(|part| !part.is_empty())
+            .map(|part| part.to_string())
+            .collect();
+
+        let shares_root = normal_components
+            .first()
+            .zip(base_parts.first())
+            .is_some_and(|(path_root, base_root)| Self::logical_name_eq(path_root, base_root));
+
+        if shares_root {
+            let base_suffix: Vec<String> = base_parts.iter().skip(1).cloned().collect();
+            let already_prefixed = relative_dirs.len() >= base_suffix.len()
+                && base_suffix
+                    .iter()
+                    .zip(relative_dirs.iter())
+                    .all(|(base_part, relative_part)| Self::logical_name_eq(base_part, relative_part));
+
+            if !base_suffix.is_empty() && !already_prefixed {
+                let mut prefixed = base_suffix;
+                prefixed.extend(relative_dirs);
+                relative_dirs = prefixed;
+            }
+        } else {
+            let mut prefixed = base_parts;
+            prefixed.extend(relative_dirs);
+            relative_dirs = prefixed;
+        }
+
+        let mut target_path = root_base;
+        for part in &relative_dirs {
             target_path.push(part);
         }
         target_path.push(archive_name);
@@ -730,23 +944,23 @@ impl Fix {
             RepStatus::MoveToSort => {
                 let current_path_str = current_path.to_string_lossy();
                 let tosort_path = Self::get_tosort_path(&current_path_str, "ToSort");
-                if PathBuf::from(&tosort_path) != current_path && current_path.exists() {
-                    let _ = fs::rename(&current_path, &tosort_path);
+                let tosort_path = PathBuf::from(tosort_path);
+                if current_path.exists() {
+                    let _ = Self::rename_path_if_needed(&current_path, &tosort_path, "tmptosort");
                 }
                 archive.borrow_mut().set_rep_status(RepStatus::InToSort);
             }
             RepStatus::MoveToCorrupt => {
                 let current_path_str = current_path.to_string_lossy();
                 let tosort_path = Self::get_tosort_path(&current_path_str, "ToSort/Corrupt");
-                if PathBuf::from(&tosort_path) != current_path && current_path.exists() {
-                    let _ = fs::rename(&current_path, &tosort_path);
+                let tosort_path = PathBuf::from(tosort_path);
+                if current_path.exists() {
+                    let _ = Self::rename_path_if_needed(&current_path, &tosort_path, "tmptosort");
                 }
                 archive.borrow_mut().set_rep_status(RepStatus::Deleted);
             }
             RepStatus::Rename => {
-                if current_path != target_path && current_path.exists() {
-                    let _ = fs::rename(&current_path, &target_path);
-                }
+                let _ = Self::rename_path_if_needed(&current_path, &target_path, "tmpfile");
                 {
                     let mut archive_mut = archive.borrow_mut();
                     archive_mut.file_name = archive_mut.name.clone();
@@ -760,7 +974,23 @@ impl Fix {
     fn read_zip_entry_bytes(zip_path: &str, entry_name: &str) -> Option<Vec<u8>> {
         let file = File::open(zip_path).ok()?;
         let mut archive = ZipArchive::new(file).ok()?;
-        let mut entry = archive.by_name(entry_name).ok()?;
+        let mut exact_match = None;
+        let mut logical_match = None;
+
+        for index in 0..archive.len() {
+            let Ok(entry) = archive.by_index(index) else {
+                continue;
+            };
+            if entry.name() == entry_name {
+                exact_match = Some(index);
+                break;
+            }
+            if logical_match.is_none() && Self::logical_name_eq(entry.name(), entry_name) {
+                logical_match = Some(index);
+            }
+        }
+
+        let mut entry = archive.by_index(exact_match.or(logical_match)?).ok()?;
         let mut buffer = Vec::new();
         entry.read_to_end(&mut buffer).ok()?;
         Some(buffer)
@@ -847,7 +1077,7 @@ impl Fix {
             }
 
             let current_name = String::from_utf8_lossy(&zip_bytes[name_start..name_end]);
-            if current_name == entry_name {
+            if Self::logical_name_eq(&current_name, entry_name) {
                 if compression_method != 8 {
                     return None;
                 }
@@ -938,7 +1168,7 @@ impl Fix {
             archive_path,
             &temp_dir,
             |entry, reader, _dest| {
-                if entry.name() == entry_name {
+                if Self::logical_name_eq(entry.name(), entry_name) {
                     found = true;
                     std::io::copy(reader, &mut buffer)?;
                     Ok(true)
@@ -956,10 +1186,10 @@ impl Fix {
     }
 
     fn read_source_file_bytes(source_file: Rc<RefCell<RvFile>>) -> Option<Vec<u8>> {
-        let source_path = Self::get_physical_path(Rc::clone(&source_file));
+        let source_path = Self::get_existing_physical_path(Rc::clone(&source_file));
 
         if let Some((parent_archive, source_name, parent_type)) = Self::find_containing_archive(Rc::clone(&source_file)) {
-            let archive_path = Self::get_physical_path(parent_archive);
+            let archive_path = Self::get_existing_physical_path(parent_archive);
             return match parent_type {
                 FileType::Zip => Self::read_zip_entry_bytes(&archive_path, &source_name),
                 FileType::SevenZip => Self::read_seven_zip_entry_bytes(&archive_path, &source_name),
@@ -982,6 +1212,15 @@ impl Fix {
             source_file.borrow_mut().set_rep_status(RepStatus::Delete);
             queue.push(source_file);
         }
+    }
+
+    fn source_uses_same_archive_path(source_file: Rc<RefCell<RvFile>>, target_archive_path: &Path) -> bool {
+        Self::find_containing_archive(source_file)
+            .map(|(archive, _, _)| {
+                let source_archive_path = Self::get_existing_physical_path(archive);
+                Self::physical_path_eq_for_rename(Path::new(&source_archive_path), target_archive_path)
+            })
+            .unwrap_or(false)
     }
 
     fn torrentzip_flags(name: &str) -> u16 {
@@ -1105,7 +1344,7 @@ impl Fix {
             return None;
         }
 
-        let archive_path = Self::get_physical_path(Rc::clone(&parent_archive));
+        let archive_path = Self::get_existing_physical_path(Rc::clone(&parent_archive));
         let stored = Self::read_raw_zip_entry(&archive_path, &entry_name)?;
 
         Some(TorrentZipBuiltEntry {
@@ -1226,7 +1465,7 @@ impl Fix {
         md5_map: &HashMap<(u64, Vec<u8>), Rc<RefCell<RvFile>>>,
     ) -> bool {
         let desired_zip_struct = zip_file.borrow().new_zip_struct();
-        let zip_path = Self::get_physical_path(Rc::clone(&zip_file));
+        let zip_path = Self::get_existing_physical_path(Rc::clone(&zip_file));
         let temp_zip_path = format!("{}.rvfix.tmp", zip_path);
         let current_exists = Path::new(&zip_path).exists();
         let write_exact_torrentzip = matches!(desired_zip_struct, ZipStructure::ZipTrrnt);
@@ -1369,6 +1608,9 @@ impl Fix {
                         let source_ref = source_file.borrow();
                         Self::is_fix_read_only(&source_ref)
                     };
+                    let source_is_same_node = Rc::ptr_eq(&source_file, &entry.node);
+                    let source_is_same_archive =
+                        Self::source_uses_same_archive_path(Rc::clone(&source_file), Path::new(&zip_path));
 
                     if write_exact_torrentzip {
                         let built_entry = Self::maybe_reuse_torrentzip_stream_from_source(Rc::clone(&source_file))
@@ -1377,7 +1619,7 @@ impl Fix {
                             let _ = fs::remove_file(&temp_zip_path);
                             return false;
                         };
-                        if !source_is_read_only {
+                        if !source_is_read_only && !source_is_same_node && !source_is_same_archive {
                             Self::queue_source_cleanup(source_file, queue);
                         }
                         any_changes = true;
@@ -1386,7 +1628,7 @@ impl Fix {
                         continue;
                     }
 
-                    if !source_is_read_only {
+                    if !source_is_read_only && !source_is_same_node && !source_is_same_archive {
                         Self::queue_source_cleanup(source_file, queue);
                     }
 
@@ -1586,7 +1828,7 @@ impl Fix {
         md5_map: &HashMap<(u64, Vec<u8>), Rc<RefCell<RvFile>>>,
     ) -> bool {
         let desired_zip_struct = archive_file.borrow().new_zip_struct();
-        let archive_path = Self::get_physical_path(Rc::clone(&archive_file));
+        let archive_path = Self::get_existing_physical_path(Rc::clone(&archive_file));
         let temp_archive_path = format!("{}.rvfix.tmp", archive_path);
         let staging_dir = PathBuf::from(format!("{}.rvfix.dir", archive_path));
         let current_exists = Path::new(&archive_path).exists();
@@ -1673,8 +1915,11 @@ impl Fix {
                         let source_ref = source_file.borrow();
                         Self::is_fix_read_only(&source_ref)
                     };
+                    let source_is_same_node = Rc::ptr_eq(&source_file, &entry.node);
+                    let source_is_same_archive =
+                        Self::source_uses_same_archive_path(Rc::clone(&source_file), Path::new(&archive_path));
 
-                    if !source_is_read_only {
+                    if !source_is_read_only && !source_is_same_node && !source_is_same_archive {
                         Self::queue_source_cleanup(source_file, queue);
                     }
 
@@ -1871,7 +2116,10 @@ impl Fix {
             let target_child_ref = target_entry.node.borrow();
             if !matches!(
                 target_child_ref.dat_status(),
-                dat_reader::enums::DatStatus::InDatCollect | dat_reader::enums::DatStatus::InDatMIA
+                dat_reader::enums::DatStatus::InDatCollect
+                    | dat_reader::enums::DatStatus::InDatMerged
+                    | dat_reader::enums::DatStatus::InDatNoDump
+                    | dat_reader::enums::DatStatus::InDatMIA
             ) {
                 continue;
             }
@@ -1890,9 +2138,9 @@ impl Fix {
             }
         }
 
-        let source_archive_path = Self::get_physical_path(Rc::clone(&source_archive));
+        let source_archive_path = Self::get_existing_physical_path(Rc::clone(&source_archive));
         let target_archive_path = Self::get_physical_path(Rc::clone(&zip_file));
-        if source_archive_path == target_archive_path {
+        if Self::physical_path_eq_for_rename(Path::new(&source_archive_path), Path::new(&target_archive_path)) {
             return false;
         }
 
@@ -2026,22 +2274,24 @@ impl Fix {
             RepStatus::MoveToSort => {
                 let current_path_str = current_path.to_string_lossy();
                 let tosort_path = Self::get_tosort_path(&current_path_str, "ToSort");
-                if PathBuf::from(&tosort_path) != current_path {
-                    debug!("Moving to ToSort: {} -> {}", current_path.display(), tosort_path);
-                    if current_path.exists() {
-                        let _ = fs::rename(&current_path, &tosort_path);
-                    }
+                let tosort_path = PathBuf::from(tosort_path);
+                debug!("Moving to ToSort: {} -> {}", current_path.display(), tosort_path.display());
+                if current_path.exists() {
+                    let _ = Self::rename_path_if_needed(&current_path, &tosort_path, "tmptosort");
                 }
                 file.borrow_mut().set_rep_status(RepStatus::InToSort);
             },
             RepStatus::MoveToCorrupt => {
                 let current_path_str = current_path.to_string_lossy();
                 let tosort_path = Self::get_tosort_path(&current_path_str, "ToSort/Corrupt");
-                if PathBuf::from(&tosort_path) != current_path {
-                    debug!("Moving corrupt file to ToSort/Corrupt: {} -> {}", current_path.display(), tosort_path);
-                    if current_path.exists() {
-                        let _ = fs::rename(&current_path, &tosort_path);
-                    }
+                let tosort_path = PathBuf::from(tosort_path);
+                debug!(
+                    "Moving corrupt file to ToSort/Corrupt: {} -> {}",
+                    current_path.display(),
+                    tosort_path.display()
+                );
+                if current_path.exists() {
+                    let _ = Self::rename_path_if_needed(&current_path, &tosort_path, "tmptosort");
                 }
                 file.borrow_mut().set_rep_status(RepStatus::Deleted);
             },
@@ -2068,7 +2318,9 @@ impl Fix {
                 if let Some(src) = source_file {
                     let src_path = Self::build_physical_path(Rc::clone(&src), true);
                     
-                    if src_path != target_path {
+                    if Self::physical_path_eq_for_rename(&src_path, &target_path) {
+                        let _ = Self::rename_path_if_needed(&src_path, &target_path, "tmpfix");
+                    } else {
                         debug!("Fixing file from source: {} -> {}", src_path.display(), target_path.display());
                         
                         if let Some(parent) = target_path.parent() {
@@ -2097,9 +2349,7 @@ impl Fix {
             },
             RepStatus::Rename => {
                 debug!("Renaming file: {} -> {}", current_path.display(), target_path.display());
-                if current_path != target_path && current_path.exists() {
-                    let _ = fs::rename(&current_path, &target_path);
-                }
+                let _ = Self::rename_path_if_needed(&current_path, &target_path, "tmpfile");
                 {
                     let mut file_mut = file.borrow_mut();
                     file_mut.file_name = file_mut.name.clone();
@@ -2114,6 +2364,7 @@ impl Fix {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::{get_settings, set_dir_mapping, update_settings, DirMapping, Settings};
     use dat_reader::enums::FileType;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -2136,7 +2387,225 @@ mod tests {
         root.borrow_mut().child_add(Rc::clone(&folder));
 
         let path = Fix::get_physical_path(Rc::clone(&file));
-        assert_eq!(path, "RustyVault/Nintendo/game.zip");
+        assert_eq!(path, "RomRoot/Nintendo/game.zip");
+    }
+
+    #[test]
+    fn test_get_physical_path_prefers_longest_dir_mapping_prefix() {
+        let original_settings = get_settings();
+        update_settings(Settings::default());
+        set_dir_mapping(DirMapping {
+            dir_key: "RustyVault\\Nintendo".to_string(),
+            dir_path: r"C:\Mapped\Nintendo".to_string(),
+        });
+
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        root.borrow_mut().name = "RustyVault".to_string();
+
+        let folder = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        folder.borrow_mut().name = "Nintendo".to_string();
+        folder.borrow_mut().parent = Some(Rc::downgrade(&root));
+
+        let file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        file.borrow_mut().name = "game.zip".to_string();
+        file.borrow_mut().parent = Some(Rc::downgrade(&folder));
+
+        folder.borrow_mut().child_add(Rc::clone(&file));
+        root.borrow_mut().child_add(Rc::clone(&folder));
+
+        let path = Fix::get_physical_path(Rc::clone(&file));
+        update_settings(original_settings);
+
+        assert_eq!(std::path::PathBuf::from(path), std::path::PathBuf::from(r"C:\Mapped\Nintendo\game.zip"));
+    }
+
+    #[test]
+    fn test_get_tosort_path_uses_mapped_tosort_root_for_mapped_source_path() {
+        let temp = tempdir().unwrap();
+        let vault_path = temp.path().join("MappedVault");
+        let tosort_root = temp.path().join("Sorted");
+        let original_settings = get_settings();
+        update_settings(Settings::default());
+        set_dir_mapping(DirMapping {
+            dir_key: "RustyVault".to_string(),
+            dir_path: vault_path.to_string_lossy().into_owned(),
+        });
+        set_dir_mapping(DirMapping {
+            dir_key: "ToSort".to_string(),
+            dir_path: tosort_root.to_string_lossy().into_owned(),
+        });
+
+        let source_path = vault_path.join("Nintendo").join("game.zip");
+        let tosort_path = Fix::get_tosort_path(&source_path.to_string_lossy(), "ToSort");
+        update_settings(original_settings);
+
+        assert_eq!(std::path::PathBuf::from(tosort_path), tosort_root.join("Nintendo").join("game.zip"));
+    }
+
+    #[test]
+    fn test_get_archive_member_tosort_path_uses_mapped_tosort_root_for_mapped_archive() {
+        let temp = tempdir().unwrap();
+        let vault_path = temp.path().join("MappedVault");
+        let tosort_root = temp.path().join("Sorted");
+        let original_settings = get_settings();
+        update_settings(Settings::default());
+        set_dir_mapping(DirMapping {
+            dir_key: "RustyVault".to_string(),
+            dir_path: vault_path.to_string_lossy().into_owned(),
+        });
+        set_dir_mapping(DirMapping {
+            dir_key: "ToSort".to_string(),
+            dir_path: tosort_root.to_string_lossy().into_owned(),
+        });
+
+        let archive_path = vault_path.join("Nintendo").join("game.zip");
+        let tosort_path = Fix::get_archive_member_tosort_path(
+            &archive_path,
+            "sub/rom.bin",
+            "ToSort",
+        );
+        update_settings(original_settings);
+
+        assert_eq!(tosort_path, tosort_root.join("Nintendo").join("game.zip").join("sub").join("rom.bin"));
+    }
+
+    #[test]
+    fn test_get_tosort_path_uses_unmapped_logical_target_root_when_source_is_mapped() {
+        let original_settings = get_settings();
+        update_settings(Settings::default());
+
+        let source_path = PathBuf::from("RomRoot")
+            .join("Nintendo")
+            .join("unmapped_target_root_when_source_mapped_unique.zip");
+        let tosort_path = Fix::get_tosort_path(&source_path.to_string_lossy(), "UniqueToSortRoot");
+        update_settings(original_settings);
+
+        let tosort_path = std::path::PathBuf::from(tosort_path);
+        assert_eq!(tosort_path.parent().unwrap(), PathBuf::from("UniqueToSortRoot").join("Nintendo").as_path());
+        let file_name = tosort_path.file_name().unwrap().to_string_lossy();
+        assert!(file_name.starts_with("unmapped_target_root_when_source_mapped_unique"));
+        assert!(file_name.ends_with(".zip"));
+    }
+
+    #[test]
+    fn test_get_archive_member_tosort_path_uses_unmapped_logical_target_root_when_source_is_mapped() {
+        let original_settings = get_settings();
+        update_settings(Settings::default());
+
+        let archive_path = PathBuf::from("RomRoot")
+            .join("Nintendo")
+            .join("unmapped_target_root_when_source_mapped_archive_unique.zip");
+        let tosort_path =
+            Fix::get_archive_member_tosort_path(&archive_path, "sub/rom.bin", "UniqueToSortRoot");
+        update_settings(original_settings);
+
+        assert_eq!(
+            tosort_path,
+            PathBuf::from("UniqueToSortRoot")
+                .join("Nintendo")
+                .join("unmapped_target_root_when_source_mapped_archive_unique.zip")
+                .join("sub")
+                .join("rom.bin")
+        );
+    }
+
+    #[test]
+    fn test_get_tosort_path_handles_case_mismatched_windows_source_root() {
+        let temp = tempdir().unwrap();
+        let vault_path = temp.path().join("MappedVault");
+        let tosort_root = temp.path().join("Sorted");
+        let original_settings = get_settings();
+        update_settings(Settings::default());
+        set_dir_mapping(DirMapping {
+            dir_key: "RustyVault".to_string(),
+            dir_path: vault_path.to_string_lossy().into_owned(),
+        });
+        set_dir_mapping(DirMapping {
+            dir_key: "ToSort".to_string(),
+            dir_path: tosort_root.to_string_lossy().into_owned(),
+        });
+
+        let source_path = vault_path
+            .join("Nintendo")
+            .join("game.zip")
+            .to_string_lossy()
+            .to_lowercase();
+        let tosort_path = Fix::get_tosort_path(&source_path, "ToSort");
+        update_settings(original_settings);
+
+        assert_eq!(std::path::PathBuf::from(tosort_path), tosort_root.join("nintendo").join("game.zip"));
+    }
+
+    #[test]
+    fn test_get_tosort_path_avoids_duplicate_corrupt_segment_with_case_mismatched_keys() {
+        let temp = tempdir().unwrap();
+        let tosort_root = temp.path().join("Sorted");
+        let original_settings = get_settings();
+        update_settings(Settings::default());
+        set_dir_mapping(DirMapping {
+            dir_key: "tosort".to_string(),
+            dir_path: tosort_root.to_string_lossy().into_owned(),
+        });
+
+        let source_path = tosort_root
+            .join("Corrupt")
+            .join("game.zip")
+            .to_string_lossy()
+            .to_lowercase();
+        let tosort_path = Fix::get_tosort_path(&source_path, "tosort/corrupt");
+        update_settings(original_settings);
+
+        let result_path = std::path::PathBuf::from(tosort_path);
+        let corrupt_count = result_path
+            .components()
+            .filter(|component| component.as_os_str().to_string_lossy().eq_ignore_ascii_case("Corrupt"))
+            .count();
+        assert_eq!(corrupt_count, 1);
+        assert_eq!(result_path, tosort_root.join("corrupt").join("game.zip"));
+    }
+
+    #[test]
+    fn test_get_tosort_path_normalizes_unmapped_base_dir_separators_and_case() {
+        let source_path = PathBuf::from("ToSort")
+            .join("Corrupt")
+            .join("unmapped_corrupt_case_unique.zip");
+
+        let tosort_path = Fix::get_tosort_path(&source_path.to_string_lossy(), "tosort\\corrupt");
+
+        let result_path = PathBuf::from(tosort_path);
+        let corrupt_count = result_path
+            .components()
+            .filter(|component| component.as_os_str().to_string_lossy().eq_ignore_ascii_case("Corrupt"))
+            .count();
+        assert_eq!(corrupt_count, 1);
+        assert_eq!(result_path.parent().unwrap(), PathBuf::from("ToSort").join("Corrupt").as_path());
+        let file_name = result_path.file_name().unwrap().to_string_lossy();
+        assert!(file_name.starts_with("unmapped_corrupt_case_unique"));
+        assert!(file_name.ends_with(".zip"));
+    }
+
+    #[test]
+    fn test_get_archive_member_tosort_path_normalizes_unmapped_base_dir_separators_and_case() {
+        let archive_path = PathBuf::from("ToSort")
+            .join("Corrupt")
+            .join("unmapped_archive_corrupt_case_unique.zip");
+
+        let tosort_path =
+            Fix::get_archive_member_tosort_path(&archive_path, "sub/rom.bin", "tosort\\corrupt");
+
+        let corrupt_count = tosort_path
+            .components()
+            .filter(|component| component.as_os_str().to_string_lossy().eq_ignore_ascii_case("Corrupt"))
+            .count();
+        assert_eq!(corrupt_count, 1);
+        assert_eq!(
+            tosort_path,
+            PathBuf::from("ToSort")
+                .join("Corrupt")
+                .join("unmapped_archive_corrupt_case_unique.zip")
+                .join("sub")
+                .join("rom.bin")
+        );
     }
 
     #[test]
@@ -2373,6 +2842,59 @@ mod tests {
     }
 
     #[test]
+    fn test_fix_can_be_fixed_avoids_self_cleanup_when_source_and_target_differ_only_by_case() {
+        let temp = tempdir().unwrap();
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        root.borrow_mut().name = temp.path().to_string_lossy().to_string();
+
+        let src_file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut f = src_file.borrow_mut();
+            f.name = "new.bin".to_string();
+            f.file_name = "new.bin".to_string();
+            f.size = Some(4);
+            f.crc = Some(vec![0xAD, 0xF3, 0xF3, 0x63]);
+            f.tree_checked = TreeSelect::Selected;
+            f.set_rep_status(RepStatus::NeededForFix);
+            f.parent = Some(Rc::downgrade(&root));
+        }
+
+        let dst_file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut f = dst_file.borrow_mut();
+            f.name = "New.bin".to_string();
+            f.size = Some(4);
+            f.crc = Some(vec![0xAD, 0xF3, 0xF3, 0x63]);
+            f.tree_checked = TreeSelect::Selected;
+            f.set_rep_status(RepStatus::CanBeFixed);
+            f.parent = Some(Rc::downgrade(&root));
+        }
+
+        root.borrow_mut().child_add(Rc::clone(&src_file));
+        root.borrow_mut().child_add(Rc::clone(&dst_file));
+        fs::write(temp.path().join("new.bin"), b"data").unwrap();
+
+        let mut queue = Vec::new();
+        let mut total_fixed = 0;
+        let mut crc_map = HashMap::new();
+        crc_map.insert((4, vec![0xAD, 0xF3, 0xF3, 0x63]), Rc::clone(&src_file));
+        let sha1_map = HashMap::new();
+        let md5_map = HashMap::new();
+
+        Fix::fix_a_file(Rc::clone(&dst_file), &mut queue, &mut total_fixed, &crc_map, &sha1_map, &md5_map);
+
+        let entry_names: Vec<String> = fs::read_dir(temp.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(entry_names, vec!["New.bin".to_string()]);
+        assert!(queue.is_empty());
+        assert_eq!(dst_file.borrow().rep_status(), RepStatus::Correct);
+        assert_eq!(src_file.borrow().rep_status(), RepStatus::NeededForFix);
+        assert_eq!(total_fixed, 1);
+    }
+
+    #[test]
     fn test_fix_skips_locked_targets() {
         let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
 
@@ -2425,6 +2947,42 @@ mod tests {
     }
 
     #[test]
+    fn test_fix_rename_physically_renames_file_when_name_differs_only_by_case() {
+        let temp = tempdir().unwrap();
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        root.borrow_mut().name = temp.path().to_string_lossy().to_string();
+
+        let file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut f = file.borrow_mut();
+            f.name = "New.bin".to_string();
+            f.file_name = "new.bin".to_string();
+            f.tree_checked = TreeSelect::Selected;
+            f.set_rep_status(RepStatus::Rename);
+            f.parent = Some(Rc::downgrade(&root));
+        }
+        root.borrow_mut().child_add(Rc::clone(&file));
+
+        fs::write(temp.path().join("new.bin"), b"rename-me").unwrap();
+
+        let mut queue = Vec::new();
+        let mut total_fixed = 0;
+        let crc_map = HashMap::new();
+        let sha1_map = HashMap::new();
+        let md5_map = HashMap::new();
+        Fix::fix_a_file(Rc::clone(&file), &mut queue, &mut total_fixed, &crc_map, &sha1_map, &md5_map);
+
+        assert!(temp.path().join("New.bin").exists());
+        let entry_names: Vec<String> = fs::read_dir(temp.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(entry_names, vec!["New.bin".to_string()]);
+        assert_eq!(file.borrow().rep_status(), RepStatus::Correct);
+        assert_eq!(file.borrow().file_name, "New.bin");
+    }
+
+    #[test]
     fn test_fix_rename_physically_renames_archive_node_using_file_name_as_source() {
         let temp = tempdir().unwrap();
         let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
@@ -2452,6 +3010,37 @@ mod tests {
     }
 
     #[test]
+    fn test_fix_rename_physically_renames_archive_node_when_name_differs_only_by_case() {
+        let temp = tempdir().unwrap();
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        root.borrow_mut().name = temp.path().to_string_lossy().to_string();
+
+        let archive = Rc::new(RefCell::new(RvFile::new(FileType::Zip)));
+        {
+            let mut a = archive.borrow_mut();
+            a.name = "New.zip".to_string();
+            a.file_name = "new.zip".to_string();
+            a.tree_checked = TreeSelect::Selected;
+            a.set_rep_status(RepStatus::Rename);
+            a.parent = Some(Rc::downgrade(&root));
+        }
+        root.borrow_mut().child_add(Rc::clone(&archive));
+
+        fs::write(temp.path().join("new.zip"), b"zip-bytes").unwrap();
+
+        Fix::fix_archive_node(Rc::clone(&archive));
+
+        assert!(temp.path().join("New.zip").exists());
+        let entry_names: Vec<String> = fs::read_dir(temp.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(entry_names, vec!["New.zip".to_string()]);
+        assert_eq!(archive.borrow().rep_status(), RepStatus::Correct);
+        assert_eq!(archive.borrow().file_name, "New.zip");
+    }
+
+    #[test]
     fn test_fix_selected_directory_renames_case_using_existing_file_name() {
         let temp = tempdir().unwrap();
         let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
@@ -2474,6 +3063,17 @@ mod tests {
         assert!(!temp.path().join("olddir").exists());
         assert!(temp.path().join("NewDir").exists());
         assert_eq!(dir.borrow().file_name, "NewDir");
+    }
+
+    #[test]
+    fn test_physical_path_eq_for_rename_matches_platform_semantics() {
+        let left = Path::new("C:\\Root\\Folder");
+        let right = Path::new("c:\\root\\folder");
+
+        #[cfg(windows)]
+        assert!(Fix::physical_path_eq_for_rename(left, right));
+        #[cfg(not(windows))]
+        assert!(!Fix::physical_path_eq_for_rename(left, right));
     }
 
     #[test]
@@ -2537,6 +3137,172 @@ mod tests {
         let md5_map = HashMap::new();
 
         assert!(Fix::find_source_file(&target_child.borrow(), &crc_map, &sha1_map, &md5_map).is_some());
+        Fix::fix_a_zip(Rc::clone(&target_archive), &mut queue, &mut total_fixed, &crc_map, &sha1_map, &md5_map);
+
+        assert_eq!(queue.len(), 1);
+        Fix::fix_archive_node(Rc::clone(&queue.remove(0)));
+
+        let target_path = temp.path().join("target.zip");
+        assert!(target_path.exists());
+        assert!(!source_path.exists());
+        assert_eq!(std::fs::read(&target_path).unwrap(), b"ZIPDATA");
+        assert_eq!(target_child.borrow().rep_status(), RepStatus::Correct);
+        assert_eq!(source_archive.borrow().rep_status(), RepStatus::Deleted);
+        assert_eq!(total_fixed, 1);
+    }
+
+    #[test]
+    fn test_fix_zip_move_does_not_treat_case_only_archive_path_difference_as_distinct_source() {
+        let temp = tempdir().unwrap();
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        root.borrow_mut().name = temp.path().to_string_lossy().to_string();
+
+        let source_archive = Rc::new(RefCell::new(RvFile::new(FileType::Zip)));
+        {
+            let mut archive = source_archive.borrow_mut();
+            archive.name = "source.zip".to_string();
+            archive.tree_checked = TreeSelect::Selected;
+            archive.parent = Some(Rc::downgrade(&root));
+        }
+
+        let source_child = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut file = source_child.borrow_mut();
+            file.name = "game.bin".to_string();
+            file.file_name = "game.bin".to_string();
+            file.size = Some(4);
+            file.crc = Some(vec![0x12, 0x34, 0x56, 0x78]);
+            file.tree_checked = TreeSelect::Selected;
+            file.set_rep_status(RepStatus::NeededForFix);
+            file.parent = Some(Rc::downgrade(&source_archive));
+        }
+        source_archive.borrow_mut().child_add(Rc::clone(&source_child));
+
+        let target_archive = Rc::new(RefCell::new(RvFile::new(FileType::Zip)));
+        {
+            let mut archive = target_archive.borrow_mut();
+            archive.name = "Source.zip".to_string();
+            archive.tree_checked = TreeSelect::Selected;
+            archive.parent = Some(Rc::downgrade(&root));
+        }
+
+        let target_child = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut file = target_child.borrow_mut();
+            file.name = "game.bin".to_string();
+            file.file_name = "game.bin".to_string();
+            file.size = Some(4);
+            file.crc = Some(vec![0x12, 0x34, 0x56, 0x78]);
+            file.tree_checked = TreeSelect::Selected;
+            file.set_dat_got_status(dat_reader::enums::DatStatus::InDatCollect, dat_reader::enums::GotStatus::NotGot);
+            file.set_rep_status(RepStatus::CanBeFixed);
+            file.parent = Some(Rc::downgrade(&target_archive));
+        }
+        target_archive.borrow_mut().child_add(Rc::clone(&target_child));
+
+        root.borrow_mut().child_add(Rc::clone(&source_archive));
+        root.borrow_mut().child_add(Rc::clone(&target_archive));
+
+        let source_path = temp.path().join("source.zip");
+        {
+            let file = File::create(&source_path).unwrap();
+            let mut writer = ZipWriter::new(file);
+            writer.start_file("game.bin", SimpleFileOptions::default()).unwrap();
+            writer.write_all(b"data").unwrap();
+            writer.finish().unwrap();
+        }
+
+        let mut queue = Vec::new();
+        let mut total_fixed = 0;
+        let mut crc_map = HashMap::new();
+        crc_map.insert((4, vec![0x12, 0x34, 0x56, 0x78]), Rc::clone(&source_child));
+        let sha1_map = HashMap::new();
+        let md5_map = HashMap::new();
+
+        assert!(Fix::rebuild_zip_archive(
+            Rc::clone(&target_archive),
+            &mut queue,
+            &mut total_fixed,
+            &crc_map,
+            &sha1_map,
+            &md5_map,
+        ));
+
+        let target_path = temp.path().join("Source.zip");
+        let mut data = Vec::new();
+        ZipArchive::new(File::open(&target_path).unwrap())
+            .unwrap()
+            .by_name("game.bin")
+            .unwrap()
+            .read_to_end(&mut data)
+            .unwrap();
+        assert_eq!(data, b"data");
+        assert!(queue.is_empty());
+        assert_eq!(target_child.borrow().rep_status(), RepStatus::Correct);
+        assert_eq!(target_child.borrow().got_status(), GotStatus::Got);
+        assert_eq!(total_fixed, 1);
+    }
+
+    #[test]
+    fn test_fix_zip_move_moves_whole_archive_for_indatmerged_target_entry() {
+        let temp = tempdir().unwrap();
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        root.borrow_mut().name = temp.path().to_string_lossy().to_string();
+
+        let source_archive = Rc::new(RefCell::new(RvFile::new(FileType::Zip)));
+        {
+            let mut archive = source_archive.borrow_mut();
+            archive.name = "source.zip".to_string();
+            archive.tree_checked = TreeSelect::Selected;
+            archive.parent = Some(Rc::downgrade(&root));
+        }
+
+        let source_child = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut file = source_child.borrow_mut();
+            file.name = "game.bin".to_string();
+            file.size = Some(4);
+            file.crc = Some(vec![0x12, 0x34, 0x56, 0x78]);
+            file.tree_checked = TreeSelect::Selected;
+            file.set_rep_status(RepStatus::NeededForFix);
+            file.parent = Some(Rc::downgrade(&source_archive));
+        }
+        source_archive.borrow_mut().child_add(Rc::clone(&source_child));
+
+        let target_archive = Rc::new(RefCell::new(RvFile::new(FileType::Zip)));
+        {
+            let mut archive = target_archive.borrow_mut();
+            archive.name = "target.zip".to_string();
+            archive.tree_checked = TreeSelect::Selected;
+            archive.parent = Some(Rc::downgrade(&root));
+        }
+
+        let target_child = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut file = target_child.borrow_mut();
+            file.name = "game.bin".to_string();
+            file.size = Some(4);
+            file.crc = Some(vec![0x12, 0x34, 0x56, 0x78]);
+            file.tree_checked = TreeSelect::Selected;
+            file.set_dat_got_status(dat_reader::enums::DatStatus::InDatMerged, dat_reader::enums::GotStatus::NotGot);
+            file.set_rep_status(RepStatus::CanBeFixed);
+            file.parent = Some(Rc::downgrade(&target_archive));
+        }
+        target_archive.borrow_mut().child_add(Rc::clone(&target_child));
+
+        root.borrow_mut().child_add(Rc::clone(&source_archive));
+        root.borrow_mut().child_add(Rc::clone(&target_archive));
+
+        let source_path = temp.path().join("source.zip");
+        std::fs::write(&source_path, b"ZIPDATA").unwrap();
+
+        let mut queue = Vec::new();
+        let mut total_fixed = 0;
+        let mut crc_map = HashMap::new();
+        crc_map.insert((4, vec![0x12, 0x34, 0x56, 0x78]), Rc::clone(&source_child));
+        let sha1_map = HashMap::new();
+        let md5_map = HashMap::new();
+
         Fix::fix_a_zip(Rc::clone(&target_archive), &mut queue, &mut total_fixed, &crc_map, &sha1_map, &md5_map);
 
         assert_eq!(queue.len(), 1);
@@ -3960,6 +4726,77 @@ mod tests {
     }
 
     #[test]
+    fn test_fix_zip_partial_rebuild_does_not_queue_cleanup_when_source_is_same_member() {
+        let temp = tempdir().unwrap();
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        root.borrow_mut().name = temp.path().to_string_lossy().to_string();
+
+        let target_archive = Rc::new(RefCell::new(RvFile::new(FileType::Zip)));
+        {
+            let mut archive = target_archive.borrow_mut();
+            archive.name = "target.zip".to_string();
+            archive.tree_checked = TreeSelect::Selected;
+            archive.set_dat_status(dat_reader::enums::DatStatus::InDatCollect);
+            archive.set_zip_dat_struct(ZipStructure::ZipTrrnt, true);
+            archive.parent = Some(Rc::downgrade(&root));
+        }
+
+        let child = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut file = child.borrow_mut();
+            file.name = "keep.bin".to_string();
+            file.file_name = "keep.bin".to_string();
+            file.size = Some(4);
+            file.crc = Some(vec![0xAD, 0xF3, 0xF3, 0x63]);
+            file.tree_checked = TreeSelect::Selected;
+            file.set_dat_got_status(dat_reader::enums::DatStatus::InDatCollect, GotStatus::NotGot);
+            file.set_rep_status(RepStatus::CanBeFixed);
+            file.parent = Some(Rc::downgrade(&target_archive));
+        }
+
+        target_archive.borrow_mut().child_add(Rc::clone(&child));
+        root.borrow_mut().child_add(Rc::clone(&target_archive));
+
+        let target_path = temp.path().join("target.zip");
+        {
+            let file = File::create(&target_path).unwrap();
+            let mut writer = ZipWriter::new(file);
+            writer.start_file("keep.bin", SimpleFileOptions::default()).unwrap();
+            writer.write_all(b"data").unwrap();
+            writer.finish().unwrap();
+        }
+
+        let mut queue = Vec::new();
+        let mut total_fixed = 0;
+        let mut crc_map = HashMap::new();
+        crc_map.insert((4, vec![0xAD, 0xF3, 0xF3, 0x63]), Rc::clone(&child));
+        let sha1_map = HashMap::new();
+        let md5_map = HashMap::new();
+
+        assert!(Fix::rebuild_zip_archive(
+            Rc::clone(&target_archive),
+            &mut queue,
+            &mut total_fixed,
+            &crc_map,
+            &sha1_map,
+            &md5_map,
+        ));
+
+        let mut data = Vec::new();
+        ZipArchive::new(File::open(&target_path).unwrap())
+            .unwrap()
+            .by_name("keep.bin")
+            .unwrap()
+            .read_to_end(&mut data)
+            .unwrap();
+        assert_eq!(data, b"data");
+        assert!(queue.is_empty());
+        assert_eq!(child.borrow().rep_status(), RepStatus::Correct);
+        assert_eq!(child.borrow().got_status(), GotStatus::Got);
+        assert_eq!(total_fixed, 1);
+    }
+
+    #[test]
     fn test_fix_sevenzip_partial_rebuild_renames_existing_entry() {
         let temp = tempdir().unwrap();
         let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
@@ -4015,6 +4852,151 @@ mod tests {
         assert!(Fix::read_seven_zip_entry_bytes(&target_path.to_string_lossy(), "old.bin").is_none());
         assert_eq!(renamed_child.borrow().rep_status(), RepStatus::Correct);
         assert_eq!(renamed_child.borrow().file_name, "new.bin");
+    }
+
+    #[test]
+    fn test_fix_sevenzip_rebuild_does_not_queue_cleanup_when_source_archive_path_differs_only_by_case() {
+        let temp = tempdir().unwrap();
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        root.borrow_mut().name = temp.path().to_string_lossy().to_string();
+
+        let source_archive = Rc::new(RefCell::new(RvFile::new(FileType::SevenZip)));
+        {
+            let mut archive = source_archive.borrow_mut();
+            archive.name = "source.7z".to_string();
+            archive.tree_checked = TreeSelect::Selected;
+            archive.parent = Some(Rc::downgrade(&root));
+        }
+
+        let source_child = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut file = source_child.borrow_mut();
+            file.name = "game.bin".to_string();
+            file.file_name = "game.bin".to_string();
+            file.size = Some(4);
+            file.crc = Some(vec![0x12, 0x34, 0x56, 0x78]);
+            file.tree_checked = TreeSelect::Selected;
+            file.set_rep_status(RepStatus::NeededForFix);
+            file.parent = Some(Rc::downgrade(&source_archive));
+        }
+        source_archive.borrow_mut().child_add(Rc::clone(&source_child));
+
+        let target_archive = Rc::new(RefCell::new(RvFile::new(FileType::SevenZip)));
+        {
+            let mut archive = target_archive.borrow_mut();
+            archive.name = "Source.7z".to_string();
+            archive.tree_checked = TreeSelect::Selected;
+            archive.set_dat_status(dat_reader::enums::DatStatus::InDatCollect);
+            archive.set_zip_dat_struct(ZipStructure::SevenZipSLZMA, true);
+            archive.parent = Some(Rc::downgrade(&root));
+        }
+
+        let target_child = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut file = target_child.borrow_mut();
+            file.name = "game.bin".to_string();
+            file.file_name = "game.bin".to_string();
+            file.size = Some(4);
+            file.crc = Some(vec![0x12, 0x34, 0x56, 0x78]);
+            file.tree_checked = TreeSelect::Selected;
+            file.set_dat_got_status(dat_reader::enums::DatStatus::InDatCollect, GotStatus::NotGot);
+            file.set_rep_status(RepStatus::CanBeFixed);
+            file.parent = Some(Rc::downgrade(&target_archive));
+        }
+        target_archive.borrow_mut().child_add(Rc::clone(&target_child));
+
+        root.borrow_mut().child_add(Rc::clone(&source_archive));
+        root.borrow_mut().child_add(Rc::clone(&target_archive));
+
+        let stage_dir = temp.path().join("stage_same_archive_case_7z");
+        fs::create_dir_all(&stage_dir).unwrap();
+        fs::write(stage_dir.join("game.bin"), b"data").unwrap();
+        let source_path = temp.path().join("source.7z");
+        sevenz_rust::compress_to_path(&stage_dir, &source_path).unwrap();
+
+        let mut queue = Vec::new();
+        let mut total_fixed = 0;
+        let mut crc_map = HashMap::new();
+        crc_map.insert((4, vec![0x12, 0x34, 0x56, 0x78]), Rc::clone(&source_child));
+        let sha1_map = HashMap::new();
+        let md5_map = HashMap::new();
+
+        assert!(Fix::rebuild_seven_zip_archive(
+            Rc::clone(&target_archive),
+            &mut queue,
+            &mut total_fixed,
+            &crc_map,
+            &sha1_map,
+            &md5_map,
+        ));
+
+        let target_path = temp.path().join("Source.7z");
+        assert_eq!(Fix::read_seven_zip_entry_bytes(&target_path.to_string_lossy(), "game.bin").unwrap(), b"data");
+        assert!(queue.is_empty());
+        assert_eq!(target_child.borrow().rep_status(), RepStatus::Correct);
+        assert_eq!(target_child.borrow().got_status(), GotStatus::Got);
+        assert_eq!(total_fixed, 1);
+    }
+
+    #[test]
+    fn test_fix_sevenzip_partial_rebuild_does_not_queue_cleanup_when_source_is_same_member() {
+        let temp = tempdir().unwrap();
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        root.borrow_mut().name = temp.path().to_string_lossy().to_string();
+
+        let target_archive = Rc::new(RefCell::new(RvFile::new(FileType::SevenZip)));
+        {
+            let mut archive = target_archive.borrow_mut();
+            archive.name = "target.7z".to_string();
+            archive.tree_checked = TreeSelect::Selected;
+            archive.set_dat_status(dat_reader::enums::DatStatus::InDatCollect);
+            archive.set_zip_dat_struct(ZipStructure::SevenZipSLZMA, true);
+            archive.parent = Some(Rc::downgrade(&root));
+        }
+
+        let child = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut file = child.borrow_mut();
+            file.name = "keep.bin".to_string();
+            file.file_name = "keep.bin".to_string();
+            file.size = Some(4);
+            file.crc = Some(vec![0xAD, 0xF3, 0xF3, 0x63]);
+            file.tree_checked = TreeSelect::Selected;
+            file.set_dat_got_status(dat_reader::enums::DatStatus::InDatCollect, GotStatus::NotGot);
+            file.set_rep_status(RepStatus::CanBeFixed);
+            file.parent = Some(Rc::downgrade(&target_archive));
+        }
+
+        target_archive.borrow_mut().child_add(Rc::clone(&child));
+        root.borrow_mut().child_add(Rc::clone(&target_archive));
+
+        let stage_dir = temp.path().join("stage_same_member_7z");
+        fs::create_dir_all(&stage_dir).unwrap();
+        fs::write(stage_dir.join("keep.bin"), b"data").unwrap();
+        let target_path = temp.path().join("target.7z");
+        sevenz_rust::compress_to_path(&stage_dir, &target_path).unwrap();
+
+        let mut queue = Vec::new();
+        let mut total_fixed = 0;
+        let mut crc_map = HashMap::new();
+        crc_map.insert((4, vec![0xAD, 0xF3, 0xF3, 0x63]), Rc::clone(&child));
+        let sha1_map = HashMap::new();
+        let md5_map = HashMap::new();
+
+        assert!(Fix::rebuild_seven_zip_archive(
+            Rc::clone(&target_archive),
+            &mut queue,
+            &mut total_fixed,
+            &crc_map,
+            &sha1_map,
+            &md5_map,
+        ));
+
+        assert_eq!(Fix::read_seven_zip_entry_bytes(&target_path.to_string_lossy(), "keep.bin").unwrap(), b"data");
+        assert!(queue.is_empty());
+        assert_eq!(child.borrow().rep_status(), RepStatus::Correct);
+        assert_eq!(child.borrow().got_status(), GotStatus::Got);
+        assert_eq!(total_fixed, 1);
     }
 
     #[test]
@@ -4076,6 +5058,210 @@ mod tests {
         assert_eq!(moved_child.borrow().got_status(), GotStatus::Got);
         assert_eq!(target_archive.borrow().rep_status(), RepStatus::Deleted);
         assert_eq!(target_archive.borrow().got_status(), GotStatus::NotGot);
+    }
+
+    #[test]
+    fn test_fix_loose_file_from_zip_source_with_existing_archive_name_and_rebuilds_source_archive() {
+        let temp = tempdir().unwrap();
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        root.borrow_mut().name = temp.path().to_string_lossy().to_string();
+
+        let source_archive = Rc::new(RefCell::new(RvFile::new(FileType::Zip)));
+        {
+            let mut archive = source_archive.borrow_mut();
+            archive.name = "source.zip".to_string();
+            archive.file_name = "oldsource.zip".to_string();
+            archive.tree_checked = TreeSelect::Selected;
+            archive.parent = Some(Rc::downgrade(&root));
+        }
+
+        let source_keep = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut file = source_keep.borrow_mut();
+            file.name = "keep.bin".to_string();
+            file.size = Some(4);
+            file.tree_checked = TreeSelect::Selected;
+            file.set_dat_got_status(dat_reader::enums::DatStatus::InDatCollect, GotStatus::Got);
+            file.set_rep_status(RepStatus::Correct);
+            file.parent = Some(Rc::downgrade(&source_archive));
+        }
+
+        let source_move = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut file = source_move.borrow_mut();
+            file.name = "move.bin".to_string();
+            file.size = Some(4);
+            file.crc = Some(vec![0x00, 0x00, 0x00, 0x04]);
+            file.tree_checked = TreeSelect::Selected;
+            file.set_rep_status(RepStatus::NeededForFix);
+            file.parent = Some(Rc::downgrade(&source_archive));
+        }
+
+        source_archive.borrow_mut().child_add(Rc::clone(&source_keep));
+        source_archive.borrow_mut().child_add(Rc::clone(&source_move));
+
+        let target_file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut file = target_file.borrow_mut();
+            file.name = "move.bin".to_string();
+            file.size = Some(4);
+            file.crc = Some(vec![0x00, 0x00, 0x00, 0x04]);
+            file.tree_checked = TreeSelect::Selected;
+            file.set_dat_got_status(dat_reader::enums::DatStatus::InDatCollect, GotStatus::NotGot);
+            file.set_rep_status(RepStatus::CanBeFixed);
+            file.parent = Some(Rc::downgrade(&root));
+        }
+
+        root.borrow_mut().child_add(Rc::clone(&source_archive));
+        root.borrow_mut().child_add(Rc::clone(&target_file));
+
+        let source_path = temp.path().join("oldsource.zip");
+        {
+            let file = File::create(&source_path).unwrap();
+            let mut writer = ZipWriter::new(file);
+            writer.start_file("keep.bin", SimpleFileOptions::default()).unwrap();
+            writer.write_all(b"keep").unwrap();
+            writer.start_file("move.bin", SimpleFileOptions::default()).unwrap();
+            writer.write_all(b"move").unwrap();
+            writer.finish().unwrap();
+        }
+
+        let mut queue = Vec::new();
+        let mut total_fixed = 0;
+        let mut crc_map = HashMap::new();
+        crc_map.insert((4, vec![0x00, 0x00, 0x00, 0x04]), Rc::clone(&source_move));
+        let sha1_map = HashMap::new();
+        let md5_map = HashMap::new();
+
+        Fix::fix_a_file(
+            Rc::clone(&target_file),
+            &mut queue,
+            &mut total_fixed,
+            &crc_map,
+            &sha1_map,
+            &md5_map,
+        );
+
+        assert_eq!(fs::read(temp.path().join("move.bin")).unwrap(), b"move");
+        assert_eq!(queue.len(), 1);
+
+        let mut cleanup_queue = Vec::new();
+        let mut cleanup_total_fixed = 0;
+        Fix::fix_a_zip(
+            queue.remove(0),
+            &mut cleanup_queue,
+            &mut cleanup_total_fixed,
+            &crc_map,
+            &sha1_map,
+            &md5_map,
+        );
+
+        assert!(Fix::read_zip_entry_bytes(&source_path.to_string_lossy(), "move.bin").is_none());
+        assert_eq!(Fix::read_zip_entry_bytes(&source_path.to_string_lossy(), "keep.bin").unwrap(), b"keep");
+        assert_eq!(target_file.borrow().rep_status(), RepStatus::Correct);
+        assert_eq!(source_move.borrow().rep_status(), RepStatus::Deleted);
+        assert_eq!(total_fixed, 1);
+    }
+
+    #[test]
+    fn test_fix_loose_file_from_sevenzip_source_with_existing_archive_name_and_rebuilds_source_archive() {
+        let temp = tempdir().unwrap();
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        root.borrow_mut().name = temp.path().to_string_lossy().to_string();
+
+        let source_archive = Rc::new(RefCell::new(RvFile::new(FileType::SevenZip)));
+        {
+            let mut archive = source_archive.borrow_mut();
+            archive.name = "source.7z".to_string();
+            archive.file_name = "oldsource.7z".to_string();
+            archive.tree_checked = TreeSelect::Selected;
+            archive.set_dat_status(dat_reader::enums::DatStatus::InDatCollect);
+            archive.set_zip_dat_struct(ZipStructure::SevenZipSLZMA, true);
+            archive.parent = Some(Rc::downgrade(&root));
+        }
+
+        let source_keep = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut file = source_keep.borrow_mut();
+            file.name = "keep.bin".to_string();
+            file.size = Some(4);
+            file.tree_checked = TreeSelect::Selected;
+            file.set_dat_got_status(dat_reader::enums::DatStatus::InDatCollect, GotStatus::Got);
+            file.set_rep_status(RepStatus::Correct);
+            file.parent = Some(Rc::downgrade(&source_archive));
+        }
+
+        let source_move = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut file = source_move.borrow_mut();
+            file.name = "move.bin".to_string();
+            file.size = Some(4);
+            file.crc = Some(vec![0x00, 0x00, 0x00, 0x04]);
+            file.tree_checked = TreeSelect::Selected;
+            file.set_rep_status(RepStatus::NeededForFix);
+            file.parent = Some(Rc::downgrade(&source_archive));
+        }
+
+        source_archive.borrow_mut().child_add(Rc::clone(&source_keep));
+        source_archive.borrow_mut().child_add(Rc::clone(&source_move));
+
+        let target_file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut file = target_file.borrow_mut();
+            file.name = "move.bin".to_string();
+            file.size = Some(4);
+            file.crc = Some(vec![0x00, 0x00, 0x00, 0x04]);
+            file.tree_checked = TreeSelect::Selected;
+            file.set_dat_got_status(dat_reader::enums::DatStatus::InDatCollect, GotStatus::NotGot);
+            file.set_rep_status(RepStatus::CanBeFixed);
+            file.parent = Some(Rc::downgrade(&root));
+        }
+
+        root.borrow_mut().child_add(Rc::clone(&source_archive));
+        root.borrow_mut().child_add(Rc::clone(&target_file));
+
+        let source_stage = temp.path().join("source_stage_existing_name");
+        fs::create_dir_all(&source_stage).unwrap();
+        fs::write(source_stage.join("keep.bin"), b"keep").unwrap();
+        fs::write(source_stage.join("move.bin"), b"move").unwrap();
+        let source_path = temp.path().join("oldsource.7z");
+        sevenz_rust::compress_to_path(&source_stage, &source_path).unwrap();
+
+        let mut queue = Vec::new();
+        let mut total_fixed = 0;
+        let mut crc_map = HashMap::new();
+        crc_map.insert((4, vec![0x00, 0x00, 0x00, 0x04]), Rc::clone(&source_move));
+        let sha1_map = HashMap::new();
+        let md5_map = HashMap::new();
+
+        Fix::fix_a_file(
+            Rc::clone(&target_file),
+            &mut queue,
+            &mut total_fixed,
+            &crc_map,
+            &sha1_map,
+            &md5_map,
+        );
+
+        assert_eq!(fs::read(temp.path().join("move.bin")).unwrap(), b"move");
+        assert_eq!(queue.len(), 1);
+
+        let mut cleanup_queue = Vec::new();
+        let mut cleanup_total_fixed = 0;
+        Fix::fix_a_zip(
+            queue.remove(0),
+            &mut cleanup_queue,
+            &mut cleanup_total_fixed,
+            &crc_map,
+            &sha1_map,
+            &md5_map,
+        );
+
+        assert!(Fix::read_seven_zip_entry_bytes(&source_path.to_string_lossy(), "move.bin").is_none());
+        assert_eq!(Fix::read_seven_zip_entry_bytes(&source_path.to_string_lossy(), "keep.bin").unwrap(), b"keep");
+        assert_eq!(target_file.borrow().rep_status(), RepStatus::Correct);
+        assert_eq!(source_move.borrow().rep_status(), RepStatus::Deleted);
+        assert_eq!(total_fixed, 1);
     }
 
     #[test]
@@ -4176,5 +5362,33 @@ mod tests {
         assert_eq!(target_file.borrow().rep_status(), RepStatus::Correct);
         assert_eq!(source_move.borrow().rep_status(), RepStatus::Deleted);
         assert_eq!(total_fixed, 1);
+    }
+
+    #[test]
+    fn test_read_zip_entry_bytes_matches_case_insensitively_on_windows_style_names() {
+        let temp = tempdir().unwrap();
+        let zip_path = temp.path().join("source.zip");
+        {
+            let file = File::create(&zip_path).unwrap();
+            let mut writer = ZipWriter::new(file);
+            writer.start_file("MOVE.BIN", SimpleFileOptions::default()).unwrap();
+            writer.write_all(b"move").unwrap();
+            writer.finish().unwrap();
+        }
+
+        assert_eq!(Fix::read_zip_entry_bytes(&zip_path.to_string_lossy(), "move.bin").unwrap(), b"move");
+        assert!(Fix::read_raw_zip_entry(&zip_path.to_string_lossy(), "move.bin").is_some());
+    }
+
+    #[test]
+    fn test_read_seven_zip_entry_bytes_matches_case_insensitively_on_windows_style_names() {
+        let temp = tempdir().unwrap();
+        let stage_dir = temp.path().join("source_7z_case");
+        fs::create_dir_all(&stage_dir).unwrap();
+        fs::write(stage_dir.join("MOVE.BIN"), b"move").unwrap();
+        let source_path = temp.path().join("source.7z");
+        sevenz_rust::compress_to_path(&stage_dir, &source_path).unwrap();
+
+        assert_eq!(Fix::read_seven_zip_entry_bytes(&source_path.to_string_lossy(), "move.bin").unwrap(), b"move");
     }
 }

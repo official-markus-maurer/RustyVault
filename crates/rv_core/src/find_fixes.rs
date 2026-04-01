@@ -1,6 +1,6 @@
 use std::rc::Rc;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tracing::{info, trace};
 use dat_reader::enums::{DatStatus, GotStatus};
 use crate::enums::RepStatus;
@@ -23,6 +23,39 @@ pub struct FindFixes;
 impl FindFixes {
     fn is_tree_selected(node: &RvFile) -> bool {
         matches!(node.tree_checked, TreeSelect::Selected | TreeSelect::Locked)
+    }
+
+    fn source_is_consumable(node: &RvFile) -> bool {
+        !matches!(node.tree_checked, TreeSelect::Locked)
+    }
+
+    fn got_source_priority(node: &RvFile) -> (u8, u8) {
+        let location_priority = match node.dat_status() {
+            DatStatus::InToSort | DatStatus::NotInDat | DatStatus::InDatMerged | DatStatus::InDatNoDump => 0,
+            DatStatus::InDatMIA => 1,
+            DatStatus::InDatCollect => 2,
+        };
+        let corruption_priority = match node.got_status() {
+            GotStatus::Got => 0,
+            GotStatus::Corrupt => 1,
+            _ => 2,
+        };
+        (location_priority, corruption_priority)
+    }
+
+    fn preferred_got_idx(
+        got_list: &[usize],
+        files_got: &[Rc<RefCell<RvFile>>],
+        used_got_indices: &HashSet<usize>,
+    ) -> Option<usize> {
+        got_list
+            .iter()
+            .copied()
+            .filter(|idx| !used_got_indices.contains(idx))
+            .min_by_key(|idx| {
+                let got = files_got[*idx].borrow();
+                Self::got_source_priority(&got)
+            })
     }
 
     /// Recursively scans the tree to pair `Missing` files with unassigned `Got` files.
@@ -87,19 +120,25 @@ impl FindFixes {
             }
         );
 
+        let mut used_got_indices = HashSet::new();
+
         // Step 4: Match Missing files against Got indexes
         for missing in &files_missing {
             let mut missing_ref = missing.borrow_mut();
             let size = missing_ref.size.unwrap_or(0);
+
+            if matches!(missing_ref.dat_status(), DatStatus::InDatMerged | DatStatus::InDatNoDump) {
+                missing_ref.set_rep_status(RepStatus::NotCollected);
+                missing_ref.cached_stats = None;
+                continue;
+            }
 
             let mut found_got_idx = None;
 
             // Try to find a match by CRC first
             if let Some(ref crc) = missing_ref.crc {
                 if let Some(got_list) = crc_map.get(&(size, crc.clone())) {
-                    if let Some(first_got) = got_list.first() {
-                        found_got_idx = Some(*first_got);
-                    }
+                    found_got_idx = Self::preferred_got_idx(got_list, &files_got, &used_got_indices);
                 }
             }
 
@@ -107,9 +146,7 @@ impl FindFixes {
             if found_got_idx.is_none() {
                 if let Some(ref sha1) = missing_ref.sha1 {
                     if let Some(got_list) = sha1_map.get(&(size, sha1.clone())) {
-                        if let Some(first_got) = got_list.first() {
-                            found_got_idx = Some(*first_got);
-                        }
+                        found_got_idx = Self::preferred_got_idx(got_list, &files_got, &used_got_indices);
                     }
                 }
             }
@@ -118,9 +155,7 @@ impl FindFixes {
             if found_got_idx.is_none() {
                 if let Some(ref md5) = missing_ref.md5 {
                     if let Some(got_list) = md5_map.get(&(size, md5.clone())) {
-                        if let Some(first_got) = got_list.first() {
-                            found_got_idx = Some(*first_got);
-                        }
+                        found_got_idx = Self::preferred_got_idx(got_list, &files_got, &used_got_indices);
                     }
                 }
             }
@@ -146,8 +181,16 @@ impl FindFixes {
                 // Mark the got file so it knows it is needed
                 let mut got_mut = got.borrow_mut();
                 let current_rep = got_mut.rep_status();
-                if current_rep == RepStatus::UnScanned || current_rep == RepStatus::InToSort || current_rep == RepStatus::Unknown || current_rep == RepStatus::Deleted {
+                if current_rep == RepStatus::UnScanned
+                    || current_rep == RepStatus::InToSort
+                    || current_rep == RepStatus::Unknown
+                    || current_rep == RepStatus::Deleted
+                    || current_rep == RepStatus::UnNeeded
+                {
                     got_mut.set_rep_status(RepStatus::NeededForFix);
+                }
+                if Self::source_is_consumable(&got_mut) {
+                    used_got_indices.insert(got_idx);
                 }
                 
                 missing_ref.cached_stats = None;
@@ -176,6 +219,9 @@ impl FindFixes {
                 } else if got_ref.dat_status() == DatStatus::InDatCollect {
                     got_ref.set_rep_status(RepStatus::MoveToCorrupt);
                     got_ref.cached_stats = None;
+                } else if matches!(got_ref.dat_status(), DatStatus::InDatMerged | DatStatus::InDatNoDump) {
+                    got_ref.set_rep_status(RepStatus::UnNeeded);
+                    got_ref.cached_stats = None;
                 } else {
                     got_ref.set_rep_status(RepStatus::Delete);
                     got_ref.cached_stats = None;
@@ -194,6 +240,9 @@ impl FindFixes {
             // If the file is exactly where it needs to be and matches a Dat, it's correct
             if got_ref.dat_status() == DatStatus::InDatCollect {
                 got_ref.set_rep_status(RepStatus::Correct);
+                got_ref.cached_stats = None;
+            } else if matches!(got_ref.dat_status(), DatStatus::InDatMerged | DatStatus::InDatNoDump) {
+                got_ref.set_rep_status(RepStatus::UnNeeded);
                 got_ref.cached_stats = None;
             } else if got_ref.dat_status() == DatStatus::InDatMIA {
                 got_ref.set_rep_status(RepStatus::CorrectMIA);
@@ -477,7 +526,7 @@ mod tests {
         let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
 
         let source_dir = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
-        source_dir.borrow_mut().tree_checked = TreeSelect::Locked;
+        source_dir.borrow_mut().tree_checked = TreeSelect::Selected;
 
         let source_file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
         {
@@ -511,5 +560,291 @@ mod tests {
 
         assert_eq!(missing_file.borrow().rep_status(), RepStatus::CanBeFixed);
         assert_eq!(source_file.borrow().rep_status(), RepStatus::NeededForFix);
+    }
+
+    #[test]
+    fn test_find_fixes_prefers_tosort_source_over_already_correct_dat_file() {
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+
+        let correct_dir = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        correct_dir.borrow_mut().tree_checked = TreeSelect::Selected;
+
+        let correct_file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut f = correct_file.borrow_mut();
+            f.name = "correct.bin".to_string();
+            f.size = Some(1024);
+            f.crc = Some(vec![0x10, 0x20, 0x30, 0x40]);
+            f.set_dat_got_status(DatStatus::InDatCollect, GotStatus::Got);
+            f.tree_checked = TreeSelect::Selected;
+        }
+        correct_dir.borrow_mut().child_add(Rc::clone(&correct_file));
+
+        let tosort_dir = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        tosort_dir.borrow_mut().tree_checked = TreeSelect::Selected;
+
+        let tosort_file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut f = tosort_file.borrow_mut();
+            f.name = "spare.bin".to_string();
+            f.size = Some(1024);
+            f.crc = Some(vec![0x10, 0x20, 0x30, 0x40]);
+            f.set_dat_got_status(DatStatus::InToSort, GotStatus::Got);
+            f.tree_checked = TreeSelect::Selected;
+        }
+        tosort_dir.borrow_mut().child_add(Rc::clone(&tosort_file));
+
+        let target_dir = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        target_dir.borrow_mut().tree_checked = TreeSelect::Selected;
+
+        let missing_file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut f = missing_file.borrow_mut();
+            f.name = "missing.bin".to_string();
+            f.size = Some(1024);
+            f.crc = Some(vec![0x10, 0x20, 0x30, 0x40]);
+            f.set_dat_got_status(DatStatus::InDatCollect, GotStatus::NotGot);
+            f.tree_checked = TreeSelect::Selected;
+        }
+        target_dir.borrow_mut().child_add(Rc::clone(&missing_file));
+
+        root.borrow_mut().child_add(correct_dir);
+        root.borrow_mut().child_add(tosort_dir);
+        root.borrow_mut().child_add(target_dir);
+
+        FindFixes::scan_files(Rc::clone(&root));
+
+        assert_eq!(missing_file.borrow().rep_status(), RepStatus::CanBeFixed);
+        assert_eq!(tosort_file.borrow().rep_status(), RepStatus::NeededForFix);
+        assert_eq!(correct_file.borrow().rep_status(), RepStatus::Correct);
+    }
+
+    #[test]
+    fn test_find_fixes_prefers_merged_source_over_already_correct_dat_file() {
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+
+        let correct_dir = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        correct_dir.borrow_mut().tree_checked = TreeSelect::Selected;
+
+        let correct_file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut f = correct_file.borrow_mut();
+            f.name = "correct.bin".to_string();
+            f.size = Some(1024);
+            f.crc = Some(vec![0x10, 0x20, 0x30, 0x40]);
+            f.set_dat_got_status(DatStatus::InDatCollect, GotStatus::Got);
+            f.tree_checked = TreeSelect::Selected;
+        }
+        correct_dir.borrow_mut().child_add(Rc::clone(&correct_file));
+
+        let merged_dir = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        merged_dir.borrow_mut().tree_checked = TreeSelect::Selected;
+
+        let merged_file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut f = merged_file.borrow_mut();
+            f.name = "merged.bin".to_string();
+            f.size = Some(1024);
+            f.crc = Some(vec![0x10, 0x20, 0x30, 0x40]);
+            f.set_dat_got_status(DatStatus::InDatMerged, GotStatus::Got);
+            f.tree_checked = TreeSelect::Selected;
+        }
+        merged_dir.borrow_mut().child_add(Rc::clone(&merged_file));
+
+        let target_dir = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        target_dir.borrow_mut().tree_checked = TreeSelect::Selected;
+
+        let missing_file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut f = missing_file.borrow_mut();
+            f.name = "missing.bin".to_string();
+            f.size = Some(1024);
+            f.crc = Some(vec![0x10, 0x20, 0x30, 0x40]);
+            f.set_dat_got_status(DatStatus::InDatCollect, GotStatus::NotGot);
+            f.tree_checked = TreeSelect::Selected;
+        }
+        target_dir.borrow_mut().child_add(Rc::clone(&missing_file));
+
+        root.borrow_mut().child_add(correct_dir);
+        root.borrow_mut().child_add(merged_dir);
+        root.borrow_mut().child_add(target_dir);
+
+        FindFixes::scan_files(Rc::clone(&root));
+
+        assert_eq!(missing_file.borrow().rep_status(), RepStatus::CanBeFixed);
+        assert_eq!(merged_file.borrow().rep_status(), RepStatus::NeededForFix);
+        assert_eq!(correct_file.borrow().rep_status(), RepStatus::Correct);
+    }
+
+    #[test]
+    fn test_find_fixes_does_not_reuse_one_source_for_two_missing_files() {
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+
+        let source_dir = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        source_dir.borrow_mut().tree_checked = TreeSelect::Selected;
+
+        let source_file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut f = source_file.borrow_mut();
+            f.name = "spare.bin".to_string();
+            f.size = Some(1024);
+            f.crc = Some(vec![0x10, 0x20, 0x30, 0x40]);
+            f.set_dat_got_status(DatStatus::InToSort, GotStatus::Got);
+            f.tree_checked = TreeSelect::Selected;
+        }
+        source_dir.borrow_mut().child_add(Rc::clone(&source_file));
+
+        let target_dir = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        target_dir.borrow_mut().tree_checked = TreeSelect::Selected;
+
+        let first_missing = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut f = first_missing.borrow_mut();
+            f.name = "missing1.bin".to_string();
+            f.size = Some(1024);
+            f.crc = Some(vec![0x10, 0x20, 0x30, 0x40]);
+            f.set_dat_got_status(DatStatus::InDatCollect, GotStatus::NotGot);
+            f.tree_checked = TreeSelect::Selected;
+        }
+        target_dir.borrow_mut().child_add(Rc::clone(&first_missing));
+
+        let second_missing = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut f = second_missing.borrow_mut();
+            f.name = "missing2.bin".to_string();
+            f.size = Some(1024);
+            f.crc = Some(vec![0x10, 0x20, 0x30, 0x40]);
+            f.set_dat_got_status(DatStatus::InDatCollect, GotStatus::NotGot);
+            f.tree_checked = TreeSelect::Selected;
+        }
+        target_dir.borrow_mut().child_add(Rc::clone(&second_missing));
+
+        root.borrow_mut().child_add(source_dir);
+        root.borrow_mut().child_add(target_dir);
+
+        FindFixes::scan_files(Rc::clone(&root));
+
+        assert_eq!(source_file.borrow().rep_status(), RepStatus::NeededForFix);
+        let first_rep = first_missing.borrow().rep_status();
+        let second_rep = second_missing.borrow().rep_status();
+        let fixable_count =
+            usize::from(first_rep == RepStatus::CanBeFixed) + usize::from(second_rep == RepStatus::CanBeFixed);
+        let missing_count =
+            usize::from(first_rep == RepStatus::Missing) + usize::from(second_rep == RepStatus::Missing);
+        assert_eq!(fixable_count, 1);
+        assert_eq!(missing_count, 1);
+    }
+
+    #[test]
+    fn test_find_fixes_allows_locked_source_to_fix_multiple_missing_files() {
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+
+        let source_dir = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        source_dir.borrow_mut().tree_checked = TreeSelect::Locked;
+
+        let source_file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut f = source_file.borrow_mut();
+            f.name = "locked_source.bin".to_string();
+            f.size = Some(1024);
+            f.crc = Some(vec![0x10, 0x20, 0x30, 0x40]);
+            f.set_dat_got_status(DatStatus::NotInDat, GotStatus::Got);
+            f.tree_checked = TreeSelect::Locked;
+        }
+        source_dir.borrow_mut().child_add(Rc::clone(&source_file));
+
+        let target_dir = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        target_dir.borrow_mut().tree_checked = TreeSelect::Selected;
+
+        let first_missing = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut f = first_missing.borrow_mut();
+            f.name = "missing1.bin".to_string();
+            f.size = Some(1024);
+            f.crc = Some(vec![0x10, 0x20, 0x30, 0x40]);
+            f.set_dat_got_status(DatStatus::InDatCollect, GotStatus::NotGot);
+            f.tree_checked = TreeSelect::Selected;
+        }
+        target_dir.borrow_mut().child_add(Rc::clone(&first_missing));
+
+        let second_missing = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut f = second_missing.borrow_mut();
+            f.name = "missing2.bin".to_string();
+            f.size = Some(1024);
+            f.crc = Some(vec![0x10, 0x20, 0x30, 0x40]);
+            f.set_dat_got_status(DatStatus::InDatCollect, GotStatus::NotGot);
+            f.tree_checked = TreeSelect::Selected;
+        }
+        target_dir.borrow_mut().child_add(Rc::clone(&second_missing));
+
+        root.borrow_mut().child_add(source_dir);
+        root.borrow_mut().child_add(target_dir);
+
+        FindFixes::scan_files(Rc::clone(&root));
+
+        assert_eq!(source_file.borrow().rep_status(), RepStatus::NeededForFix);
+        assert_eq!(first_missing.borrow().rep_status(), RepStatus::CanBeFixed);
+        assert_eq!(second_missing.borrow().rep_status(), RepStatus::CanBeFixed);
+    }
+
+    #[test]
+    fn test_find_fixes_marks_indatmerged_got_file_as_unneeded() {
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+
+        let merged_file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut f = merged_file.borrow_mut();
+            f.name = "merged.bin".to_string();
+            f.size = Some(1024);
+            f.crc = Some(vec![0x01, 0x02, 0x03, 0x04]);
+            f.set_dat_got_status(DatStatus::InDatMerged, GotStatus::Got);
+            f.tree_checked = TreeSelect::Selected;
+        }
+        root.borrow_mut().child_add(Rc::clone(&merged_file));
+
+        FindFixes::scan_files(Rc::clone(&root));
+
+        assert_eq!(merged_file.borrow().rep_status(), RepStatus::UnNeeded);
+    }
+
+    #[test]
+    fn test_find_fixes_marks_indatnodump_missing_file_as_not_collected() {
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+
+        let nodump_file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut f = nodump_file.borrow_mut();
+            f.name = "nodump_missing.bin".to_string();
+            f.size = Some(1024);
+            f.crc = Some(vec![0x01, 0x02, 0x03, 0x04]);
+            f.set_dat_got_status(DatStatus::InDatNoDump, GotStatus::NotGot);
+            f.tree_checked = TreeSelect::Selected;
+        }
+        root.borrow_mut().child_add(Rc::clone(&nodump_file));
+
+        FindFixes::scan_files(Rc::clone(&root));
+
+        assert_eq!(nodump_file.borrow().rep_status(), RepStatus::NotCollected);
+    }
+
+    #[test]
+    fn test_find_fixes_marks_indatnodump_corrupt_file_as_unneeded() {
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+
+        let nodump_file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut f = nodump_file.borrow_mut();
+            f.name = "nodump.bin".to_string();
+            f.size = Some(1024);
+            f.crc = Some(vec![0x01, 0x02, 0x03, 0x04]);
+            f.set_dat_got_status(DatStatus::InDatNoDump, GotStatus::Corrupt);
+            f.tree_checked = TreeSelect::Selected;
+        }
+        root.borrow_mut().child_add(Rc::clone(&nodump_file));
+
+        FindFixes::scan_files(Rc::clone(&root));
+
+        assert_eq!(nodump_file.borrow().rep_status(), RepStatus::UnNeeded);
     }
 }

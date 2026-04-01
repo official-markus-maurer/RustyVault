@@ -417,6 +417,124 @@ fn normalize_dir_key(dir_key: &str) -> String {
     dir_key.replace('/', "\\").trim_matches('\\').to_string()
 }
 
+fn logical_dir_key_eq(left: &str, right: &str) -> bool {
+    #[cfg(windows)]
+    {
+        left.eq_ignore_ascii_case(right)
+    }
+    #[cfg(not(windows))]
+    {
+        left == right
+    }
+}
+
+fn physical_path_starts_with(path: &std::path::Path, base: &std::path::Path) -> bool {
+    #[cfg(windows)]
+    {
+        let path_components: Vec<String> = path
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy().to_string())
+            .collect();
+        let base_components: Vec<String> = base
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy().to_string())
+            .collect();
+
+        base_components.len() <= path_components.len()
+            && base_components
+                .iter()
+                .zip(path_components.iter())
+                .all(|(base_part, path_part)| base_part.eq_ignore_ascii_case(path_part))
+    }
+    #[cfg(not(windows))]
+    {
+        path.starts_with(base)
+    }
+}
+
+pub fn strip_physical_prefix(path: &std::path::Path, base: &std::path::Path) -> Option<std::path::PathBuf> {
+    #[cfg(windows)]
+    {
+        let path_components: Vec<_> = path.components().collect();
+        let base_components: Vec<_> = base.components().collect();
+
+        if base_components.len() > path_components.len()
+            || !base_components
+                .iter()
+                .zip(path_components.iter())
+                .all(|(base_part, path_part)| {
+                    base_part
+                        .as_os_str()
+                        .to_string_lossy()
+                        .eq_ignore_ascii_case(&path_part.as_os_str().to_string_lossy())
+                })
+        {
+            return None;
+        }
+
+        let mut relative = std::path::PathBuf::new();
+        for component in path_components.into_iter().skip(base_components.len()) {
+            relative.push(component.as_os_str());
+        }
+        Some(relative)
+    }
+    #[cfg(not(windows))]
+    {
+        path.strip_prefix(base).ok().map(std::path::PathBuf::from)
+    }
+}
+
+    /// Finds the longest configured physical directory mapping that prefixes the provided path.
+    pub fn find_mapping_for_physical_path(path: &std::path::Path) -> Option<(String, std::path::PathBuf)> {
+        GLOBAL_SETTINGS.with(|s| {
+            let settings = s.borrow();
+            settings
+                .dir_mappings
+                .items
+                .iter()
+                .filter_map(|mapping| {
+                    let mapping_path = std::path::PathBuf::from(&mapping.dir_path);
+                    if physical_path_starts_with(path, &mapping_path) {
+                        Some((normalize_dir_key(&mapping.dir_key), mapping_path))
+                    } else {
+                        None
+                    }
+                })
+                .max_by_key(|(_, mapping_path)| mapping_path.components().count())
+        })
+    }
+
+    /// Resolves a logical directory key to a physical path, walking up to the closest parent
+    /// mapping and appending any unmatched suffix segments.
+    pub fn find_dir_mapping(dir_key: &str) -> Option<String> {
+        GLOBAL_SETTINGS.with(|s| {
+            let settings = s.borrow();
+            let normalized_dir_key = normalize_dir_key(dir_key);
+            let requested_parts: Vec<&str> = normalized_dir_key
+                .split('\\')
+                .filter(|part| !part.is_empty())
+                .collect();
+
+            for prefix_len in (1..=requested_parts.len()).rev() {
+                let candidate_key = requested_parts[..prefix_len].join("\\");
+                if let Some(mapping) = settings
+                    .dir_mappings
+                    .items
+                    .iter()
+                    .find(|m| logical_dir_key_eq(&normalize_dir_key(&m.dir_key), &candidate_key))
+                {
+                    let mut resolved = std::path::PathBuf::from(&mapping.dir_path);
+                    for suffix in &requested_parts[prefix_len..] {
+                        resolved.push(suffix);
+                    }
+                    return Some(resolved.to_string_lossy().into_owned());
+                }
+            }
+
+            None
+        })
+    }
+
     /// Looks up a specific DatRule by its `dir_key`.
     pub fn find_rule(dir_key: &str) -> DatRule {
         GLOBAL_SETTINGS.with(|s| {
@@ -429,7 +547,7 @@ fn normalize_dir_key(dir_key: &str) -> String {
                     .dat_rules
                     .items
                     .iter()
-                    .find(|r| normalize_dir_key(&r.dir_key) == current)
+                    .find(|r| logical_dir_key_eq(&normalize_dir_key(&r.dir_key), current))
                 {
                     return rule.clone();
                 }
@@ -446,6 +564,27 @@ fn normalize_dir_key(dir_key: &str) -> String {
         })
     }
 
+    /// Updates or inserts a specific physical `DirMapping` by its `dir_key`.
+    pub fn set_dir_mapping(mapping: DirMapping) {
+        GLOBAL_SETTINGS.with(|s| {
+            let mut settings = s.borrow_mut();
+            let normalized_dir_key = normalize_dir_key(&mapping.dir_key);
+            let mut normalized_mapping = mapping;
+            normalized_mapping.dir_key = normalized_dir_key.clone();
+
+            if let Some(pos) = settings
+                .dir_mappings
+                .items
+                .iter()
+                .position(|m| logical_dir_key_eq(&normalize_dir_key(&m.dir_key), &normalized_dir_key))
+            {
+                settings.dir_mappings.items[pos] = normalized_mapping;
+            } else {
+                settings.dir_mappings.items.push(normalized_mapping);
+            }
+        });
+    }
+
     /// Updates or inserts a specific DatRule by its `dir_key`.
     pub fn set_rule(rule: DatRule) {
         GLOBAL_SETTINGS.with(|s| {
@@ -458,7 +597,7 @@ fn normalize_dir_key(dir_key: &str) -> String {
                 .dat_rules
                 .items
                 .iter()
-                .position(|r| normalize_dir_key(&r.dir_key) == normalized_dir_key)
+                .position(|r| logical_dir_key_eq(&normalize_dir_key(&r.dir_key), &normalized_dir_key))
             {
                 settings.dat_rules.items[pos] = normalized_rule;
             } else {
@@ -563,5 +702,149 @@ mod tests {
             assert!(found.single_archive);
             assert_eq!(found.dir_key, "DatRoot\\Arcade");
         });
+    }
+
+    #[test]
+    fn test_find_rule_is_case_insensitive_on_windows_style_keys() {
+        with_settings_test_state(|| {
+            let mut rule = DatRule::default();
+            rule.dir_key = "DatRoot\\Arcade".to_string();
+            rule.single_archive = true;
+            set_rule(rule);
+
+            let found = find_rule("datroot\\arcade\\mame");
+            assert!(found.single_archive);
+            assert_eq!(found.dir_key, "DatRoot\\Arcade");
+        });
+    }
+
+    #[test]
+    fn test_find_dir_mapping_returns_exact_match() {
+        with_settings_test_state(|| {
+            set_dir_mapping(DirMapping {
+                dir_key: "DatRoot\\Arcade".to_string(),
+                dir_path: r"C:\Roms\Arcade".to_string(),
+            });
+
+            let found = find_dir_mapping("DatRoot\\Arcade").unwrap();
+            assert_eq!(std::path::PathBuf::from(found), std::path::PathBuf::from(r"C:\Roms\Arcade"));
+        });
+    }
+
+    #[test]
+    fn test_find_dir_mapping_walks_up_to_parent_and_appends_suffix() {
+        with_settings_test_state(|| {
+            set_dir_mapping(DirMapping {
+                dir_key: "DatRoot".to_string(),
+                dir_path: r"C:\Roms".to_string(),
+            });
+
+            let found = find_dir_mapping("DatRoot\\Arcade\\MAME").unwrap();
+            assert_eq!(std::path::PathBuf::from(found), std::path::PathBuf::from(r"C:\Roms\Arcade\MAME"));
+        });
+    }
+
+    #[test]
+    fn test_find_dir_mapping_normalizes_separators_and_trims_edges() {
+        with_settings_test_state(|| {
+            set_dir_mapping(DirMapping {
+                dir_key: "DatRoot\\Console".to_string(),
+                dir_path: r"D:\Sets\Console".to_string(),
+            });
+
+            let found = find_dir_mapping("\\DatRoot/Console/GameBoy\\").unwrap();
+            assert_eq!(std::path::PathBuf::from(found), std::path::PathBuf::from(r"D:\Sets\Console\GameBoy"));
+        });
+    }
+
+    #[test]
+    fn test_set_dir_mapping_replaces_equivalent_normalized_key() {
+        with_settings_test_state(|| {
+            set_dir_mapping(DirMapping {
+                dir_key: "DatRoot/Console".to_string(),
+                dir_path: r"C:\Old".to_string(),
+            });
+            set_dir_mapping(DirMapping {
+                dir_key: "DatRoot\\Console".to_string(),
+                dir_path: r"C:\New".to_string(),
+            });
+
+            let settings = get_settings();
+            let matching: Vec<_> = settings
+                .dir_mappings
+                .items
+                .iter()
+                .filter(|m| normalize_dir_key(&m.dir_key) == "DatRoot\\Console")
+                .collect();
+            assert_eq!(matching.len(), 1);
+            assert_eq!(matching[0].dir_key, "DatRoot\\Console");
+            assert_eq!(std::path::PathBuf::from(&matching[0].dir_path), std::path::PathBuf::from(r"C:\New"));
+        });
+    }
+
+    #[test]
+    fn test_set_dir_mapping_replaces_equivalent_key_with_different_case() {
+        with_settings_test_state(|| {
+            set_dir_mapping(DirMapping {
+                dir_key: "DatRoot\\Console".to_string(),
+                dir_path: r"C:\Old".to_string(),
+            });
+            set_dir_mapping(DirMapping {
+                dir_key: "datroot\\console".to_string(),
+                dir_path: r"C:\New".to_string(),
+            });
+
+            let settings = get_settings();
+            let matching: Vec<_> = settings
+                .dir_mappings
+                .items
+                .iter()
+                .filter(|m| logical_dir_key_eq(&normalize_dir_key(&m.dir_key), "DatRoot\\Console"))
+                .collect();
+            assert_eq!(matching.len(), 1);
+            assert_eq!(std::path::PathBuf::from(&matching[0].dir_path), std::path::PathBuf::from(r"C:\New"));
+        });
+    }
+
+    #[test]
+    fn test_find_mapping_for_physical_path_prefers_longest_matching_prefix() {
+        with_settings_test_state(|| {
+            set_dir_mapping(DirMapping {
+                dir_key: "RustyVault".to_string(),
+                dir_path: r"C:\Root".to_string(),
+            });
+            set_dir_mapping(DirMapping {
+                dir_key: "RustyVault\\Nintendo".to_string(),
+                dir_path: r"C:\Root\Nintendo".to_string(),
+            });
+
+            let (dir_key, mapping_path) =
+                find_mapping_for_physical_path(std::path::Path::new(r"C:\Root\Nintendo\game.zip")).unwrap();
+            assert_eq!(dir_key, "RustyVault\\Nintendo");
+            assert_eq!(mapping_path, std::path::PathBuf::from(r"C:\Root\Nintendo"));
+        });
+    }
+
+    #[test]
+    fn test_find_mapping_for_physical_path_is_case_insensitive_on_windows_paths() {
+        with_settings_test_state(|| {
+            set_dir_mapping(DirMapping {
+                dir_key: "RustyVault\\Nintendo".to_string(),
+                dir_path: r"C:\Root\Nintendo".to_string(),
+            });
+
+            let (dir_key, mapping_path) =
+                find_mapping_for_physical_path(std::path::Path::new(r"c:\root\nintendo\GAME.zip")).unwrap();
+            assert_eq!(dir_key, "RustyVault\\Nintendo");
+            assert_eq!(mapping_path, std::path::PathBuf::from(r"C:\Root\Nintendo"));
+        });
+    }
+
+    #[test]
+    fn test_strip_physical_prefix_is_case_insensitive_on_windows_paths() {
+        let relative =
+            strip_physical_prefix(std::path::Path::new(r"c:\root\nintendo\GAME.zip"), std::path::Path::new(r"C:\Root"))
+                .unwrap();
+        assert_eq!(relative, std::path::PathBuf::from(r"nintendo\GAME.zip"));
     }
 }

@@ -17,7 +17,11 @@ pub struct FileCompare;
 
 /// Performs a basic alphabetical name comparison between a DB file and a scanned file.
 pub fn compare_db_to_file(db_file: &RvFile, file_c: &ScannedFile) -> i32 {
-    let name_cmp = db_file.name.to_lowercase().cmp(&file_c.name.to_lowercase());
+    let name_cmp = if cfg!(windows) {
+        db_file.name.to_ascii_lowercase().cmp(&file_c.name.to_ascii_lowercase())
+    } else {
+        db_file.name.cmp(&file_c.name)
+    };
     match name_cmp {
         std::cmp::Ordering::Less => -1,
         std::cmp::Ordering::Equal => 0,
@@ -26,6 +30,16 @@ pub fn compare_db_to_file(db_file: &RvFile, file_c: &ScannedFile) -> i32 {
 }
 
 impl FileCompare {
+    fn compare_names(db_name: &str, test_name: &str, index_case: i32) -> std::cmp::Ordering {
+        if index_case == 0 {
+            db_name.cmp(test_name)
+        } else if cfg!(windows) {
+            db_name.to_ascii_lowercase().cmp(&test_name.to_ascii_lowercase())
+        } else {
+            db_name.cmp(test_name)
+        }
+    }
+
     fn db_file_requires_hash_match(db_file: &RvFile) -> bool {
         db_file.crc.is_some()
             || db_file.sha1.is_some()
@@ -56,11 +70,7 @@ impl FileCompare {
         let mut matched_alt = false;
 
         // Name comparison
-        let retv = if index_case == 0 {
-            db_file.name.cmp(&test_file.name)
-        } else {
-            db_file.name.to_lowercase().cmp(&test_file.name.to_lowercase())
-        };
+        let retv = Self::compare_names(&db_file.name, &test_file.name, index_case);
 
         if retv != std::cmp::Ordering::Equal {
             return (false, matched_alt);
@@ -147,12 +157,40 @@ impl FileCompare {
         false
     }
 
+    fn current_parent_physical_path(db_file: &RvFile) -> std::path::PathBuf {
+        let mut path_parts = Vec::new();
+        let mut current_parent = db_file.parent.as_ref().and_then(|p| p.upgrade());
+
+        while let Some(parent) = current_parent {
+            let parent_borrow = parent.borrow();
+            if !parent_borrow.name_case().is_empty() {
+                path_parts.push(parent_borrow.name_case().to_string());
+            }
+            current_parent = parent_borrow.parent.as_ref().and_then(|p| p.upgrade());
+        }
+
+        path_parts.reverse();
+        let logical_path = path_parts.join("\\");
+        let path = std::path::PathBuf::from(&logical_path);
+        if path.is_absolute() {
+            path
+        } else if logical_path.is_empty() {
+            std::path::PathBuf::new()
+        } else {
+            crate::settings::find_dir_mapping(&logical_path)
+                .map(std::path::PathBuf::from)
+                .unwrap_or(path)
+        }
+    }
+
     fn deep_scan_physical_file(db_file: &RvFile, test_file: &mut ScannedFile) {
         if !test_file.deep_scanned && test_file.got_status != dat_reader::enums::GotStatus::FileLocked {
-            let full_path = std::path::Path::new(&db_file.get_full_name())
-                .parent()
-                .map(|p| p.join(&test_file.name).to_string_lossy().to_string())
-                .unwrap_or_else(|| test_file.name.clone());
+            let parent_path = Self::current_parent_physical_path(db_file);
+            let full_path = if parent_path.as_os_str().is_empty() {
+                test_file.name.clone()
+            } else {
+                parent_path.join(&test_file.name).to_string_lossy().to_string()
+            };
 
             if let Ok(mut sf) = crate::scanner::Scanner::scan_raw_file(&full_path) {
                 test_file.file_mod_time_stamp = sf.file_mod_time_stamp;
@@ -180,11 +218,7 @@ impl FileCompare {
         let mut matched_alt = false;
 
         // Name comparison
-        let retv = if index_case == 0 {
-            db_file.name.cmp(&test_file.name)
-        } else {
-            db_file.name.to_lowercase().cmp(&test_file.name.to_lowercase())
-        };
+        let retv = Self::compare_names(&db_file.name, &test_file.name, index_case);
 
         if retv != std::cmp::Ordering::Equal {
             return (false, matched_alt);
@@ -260,6 +294,17 @@ mod tests {
 
         sc_file.name = "B_File.zip".to_string();
         assert_eq!(compare_db_to_file(&db_file, &sc_file), 0);
+    }
+
+    #[test]
+    fn test_compare_db_to_file_uses_windows_style_case_insensitive_ordering() {
+        let mut db_file = RvFile::new(FileType::File);
+        db_file.name = "B_File.zip".to_string();
+
+        let mut sc_file = ScannedFile::new(FileType::File);
+        sc_file.name = "a_file.zip".to_string();
+
+        assert_eq!(compare_db_to_file(&db_file, &sc_file), 1);
     }
 
     #[test]
@@ -361,6 +406,41 @@ mod tests {
     }
 
     #[test]
+    fn test_phase_1_test_matches_case_only_name_difference_when_index_case_enabled() {
+        let mut db_file = RvFile::new(FileType::File);
+        db_file.name = "ROM.BIN".to_string();
+        db_file.size = Some(4);
+        db_file.crc = Some(vec![0xAD, 0xF3, 0xF3, 0x63]);
+
+        let mut sc_file = ScannedFile::new(FileType::File);
+        sc_file.name = "rom.bin".to_string();
+        sc_file.size = Some(4);
+        sc_file.crc = Some(vec![0xAD, 0xF3, 0xF3, 0x63]);
+
+        let (matched, alt) = FileCompare::phase_1_test(&db_file, &sc_file, EScanLevel::Level2, 1);
+        assert!(matched);
+        assert!(!alt);
+    }
+
+    #[test]
+    fn test_phase_2_test_matches_case_only_name_difference_when_index_case_enabled() {
+        let mut db_file = RvFile::new(FileType::File);
+        db_file.name = "ROM.BIN".to_string();
+        db_file.size = Some(4);
+        db_file.crc = Some(vec![0xAD, 0xF3, 0xF3, 0x63]);
+
+        let mut sc_file = ScannedFile::new(FileType::File);
+        sc_file.name = "rom.bin".to_string();
+        sc_file.size = Some(4);
+        sc_file.crc = Some(vec![0xAD, 0xF3, 0xF3, 0x63]);
+        sc_file.deep_scanned = true;
+
+        let (matched, alt) = FileCompare::phase_2_test(&db_file, &mut sc_file, 1);
+        assert!(matched);
+        assert!(!alt);
+    }
+
+    #[test]
     fn test_phase_2_name_agnostic_test_matches_renamed_file_by_hash() {
         let mut db_file = RvFile::new(FileType::File);
         db_file.name = "expected.bin".to_string();
@@ -425,6 +505,40 @@ mod tests {
         let _ = FileCompare::phase_2_name_agnostic_test(&db_file, &mut sc_file);
         assert!(sc_file.status_flags.contains(crate::rv_file::FileStatus::HEADER_FILE_TYPE_FROM_HEADER));
         assert!(sc_file.status_flags.contains(crate::rv_file::FileStatus::ALT_CRC_FROM_HEADER));
+    }
+
+    #[test]
+    fn test_phase_2_name_agnostic_test_deep_scans_using_existing_parent_directory_name() {
+        let temp = tempdir().unwrap();
+        let existing_dir = temp.path().join("olddir");
+        fs::create_dir_all(&existing_dir).unwrap();
+        fs::write(existing_dir.join("renamed.bin"), b"data").unwrap();
+
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        root.borrow_mut().name = temp.path().to_string_lossy().to_string();
+
+        let parent_dir = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        {
+            let mut dir = parent_dir.borrow_mut();
+            dir.name = "NewDir".to_string();
+            dir.file_name = "olddir".to_string();
+            dir.parent = Some(Rc::downgrade(&root));
+        }
+
+        let mut db_file = RvFile::new(FileType::File);
+        db_file.name = "expected.bin".to_string();
+        db_file.size = Some(4);
+        db_file.crc = Some(vec![0xAD, 0xF3, 0xF3, 0x63]);
+        db_file.parent = Some(Rc::downgrade(&parent_dir));
+
+        let mut sc_file = ScannedFile::new(FileType::File);
+        sc_file.name = "renamed.bin".to_string();
+
+        let (matched, alt) = FileCompare::phase_2_name_agnostic_test(&db_file, &mut sc_file);
+        assert!(matched);
+        assert!(!alt);
+        assert!(sc_file.deep_scanned);
+        assert_eq!(sc_file.crc, Some(vec![0xAD, 0xF3, 0xF3, 0x63]));
     }
 
     #[test]

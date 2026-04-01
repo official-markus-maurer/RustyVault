@@ -67,6 +67,17 @@ pub struct ScannedFile {
 }
 
 impl ScannedFile {
+    fn compare_names(left: &str, right: &str) -> std::cmp::Ordering {
+        #[cfg(windows)]
+        {
+            left.to_ascii_lowercase().cmp(&right.to_ascii_lowercase())
+        }
+        #[cfg(not(windows))]
+        {
+            left.cmp(right)
+        }
+    }
+
     /// Instantiates a new empty ScannedFile node
     pub fn new(file_type: FileType) -> Self {
         Self {
@@ -113,6 +124,27 @@ impl ScannedFile {
 
     /// Alphabetically sorts the internal child files list.
     pub fn sort(&mut self) {
-        self.children.sort_by(|a, b| a.name.cmp(&b.name));
+        self.children.sort_by(|a, b| Self::compare_names(&a.name, &b.name));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sort_uses_windows_style_case_insensitive_ordering() {
+        let mut dir = ScannedFile::new(FileType::Dir);
+        let mut upper = ScannedFile::new(FileType::File);
+        upper.name = "B.bin".to_string();
+        let mut lower = ScannedFile::new(FileType::File);
+        lower.name = "a.bin".to_string();
+        dir.children.push(upper);
+        dir.children.push(lower);
+
+        dir.sort();
+
+        assert_eq!(dir.children[0].name, "a.bin");
+        assert_eq!(dir.children[1].name, "B.bin");
     }
 }

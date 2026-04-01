@@ -12,6 +12,96 @@ use rv_core::read_dat::DatUpdate;
 use rv_core::rv_file::{RvFile, TreeSelect};
 use rv_core::scanner::Scanner;
 
+fn merged_roms(stats: &rv_core::repair_status::RepairStatus) -> i32 {
+    stats.roms_not_collected + stats.roms_unneeded
+}
+
+fn correct_roms(stats: &rv_core::repair_status::RepairStatus) -> i32 {
+    stats.count_correct()
+}
+
+fn missing_roms(stats: &rv_core::repair_status::RepairStatus) -> i32 {
+    stats.roms_missing + stats.roms_missing_mia
+}
+
+fn unknown_roms(stats: &rv_core::repair_status::RepairStatus) -> i32 {
+    stats.roms_unknown
+}
+
+fn tree_color_from_rep_status(rep_status: RepStatus, dat_status: DatStatus) -> egui::Color32 {
+    match rep_status {
+        RepStatus::Correct | RepStatus::CorrectMIA => egui::Color32::from_rgb(0, 200, 0),
+        RepStatus::Missing | RepStatus::MissingMIA | RepStatus::Corrupt | RepStatus::DirCorrupt | RepStatus::Incomplete => {
+            egui::Color32::from_rgb(200, 0, 0)
+        }
+        RepStatus::CanBeFixed | RepStatus::CanBeFixedMIA | RepStatus::CorruptCanBeFixed => {
+            egui::Color32::from_rgb(200, 200, 0)
+        }
+        RepStatus::MoveToSort | RepStatus::MoveToCorrupt | RepStatus::NeededForFix | RepStatus::Rename => {
+            egui::Color32::from_rgb(0, 200, 200)
+        }
+        RepStatus::Delete => egui::Color32::from_rgb(200, 0, 0),
+        RepStatus::NotCollected | RepStatus::UnNeeded | RepStatus::Unknown => egui::Color32::from_rgb(150, 150, 150),
+        _ => {
+            if dat_status == DatStatus::NotInDat {
+                egui::Color32::from_rgb(150, 150, 150)
+            } else {
+                egui::Color32::WHITE
+            }
+        }
+    }
+}
+
+fn tree_color_from_stats(stats: &rv_core::repair_status::RepairStatus) -> egui::Color32 {
+    if stats.total_roms == 0 && stats.roms_unknown == 0 {
+        egui::Color32::from_rgb(150, 150, 150)
+    } else if unknown_roms(stats) == stats.total_roms && stats.total_roms > 0 {
+        egui::Color32::from_rgb(150, 150, 150)
+    } else if merged_roms(stats) == stats.total_roms && stats.total_roms > 0 {
+        egui::Color32::from_rgb(150, 150, 150)
+    } else if correct_roms(stats) == stats.total_roms && stats.total_roms > 0 {
+        egui::Color32::from_rgb(0, 200, 0)
+    } else if missing_roms(stats) == stats.total_roms && stats.total_roms > 0 {
+        egui::Color32::from_rgb(200, 0, 0)
+    } else if correct_roms(stats) > 0 {
+        egui::Color32::from_rgb(200, 200, 0)
+    } else if stats.roms_fixes > 0 {
+        egui::Color32::from_rgb(200, 200, 0)
+    } else {
+        egui::Color32::WHITE
+    }
+}
+
+fn tree_icon_idx_from_stats(stats: &rv_core::repair_status::RepairStatus) -> i32 {
+    if stats.total_roms == 0 {
+        2
+    } else if unknown_roms(stats) == stats.total_roms {
+        4
+    } else if merged_roms(stats) == stats.total_roms {
+        4
+    } else if correct_roms(stats) == stats.total_roms {
+        3
+    } else if missing_roms(stats) == stats.total_roms {
+        1
+    } else {
+        2
+    }
+}
+
+fn tree_icon_idx_from_report_status(report_status: rv_core::enums::ReportStatus) -> i32 {
+    if !report_status.has_correct() && report_status.has_missing(false) {
+        1
+    } else if report_status.has_unknown() || report_status.has_all_merged() {
+        4
+    } else if !report_status.has_missing(false) && report_status.has_mia() {
+        5
+    } else if !report_status.has_missing(false) {
+        3
+    } else {
+        2
+    }
+}
+
 /// Contains the logic for rendering the recursive left-hand directory tree.
 /// 
 /// `tree.rs` implements `RomVaultApp::draw_tree_node`, which is called every frame to
@@ -75,52 +165,15 @@ impl RomVaultApp {
             }
 
             color = if let Some(stats) = &cached_stats {
-                if stats.total_roms == 0 && stats.roms_unknown == 0 {
-                    egui::Color32::from_rgb(150, 150, 150) // Empty
-                } else if stats.roms_correct == stats.total_roms && stats.total_roms > 0 {
-                    egui::Color32::from_rgb(0, 200, 0) // Green
-                } else if stats.roms_missing == stats.total_roms && stats.total_roms > 0 {
-                    egui::Color32::from_rgb(200, 0, 0) // Red
-                } else if stats.roms_correct > 0 {
-                    egui::Color32::from_rgb(200, 200, 0) // Yellow
-                } else {
-                    egui::Color32::WHITE
-                }
+                tree_color_from_stats(stats)
             } else {
-                match node.rep_status() {
-                    RepStatus::Correct | RepStatus::CorrectMIA => egui::Color32::from_rgb(0, 200, 0),
-                    RepStatus::Missing | RepStatus::MissingMIA => egui::Color32::from_rgb(200, 0, 0),
-                    RepStatus::CanBeFixed | RepStatus::CanBeFixedMIA => egui::Color32::from_rgb(200, 200, 0),
-                    _ => {
-                        if node.dat_status() == DatStatus::NotInDat {
-                            egui::Color32::from_rgb(150, 150, 150)
-                        } else {
-                            egui::Color32::WHITE
-                        }
-                    }
-                }
+                tree_color_from_rep_status(node.rep_status(), node.dat_status())
             };
 
             icon_idx = if let Some(stats) = &cached_stats {
-                if stats.total_roms == 0 {
-                    2
-                } else if stats.roms_correct == stats.total_roms {
-                    3 // Green
-                } else if stats.roms_missing == stats.total_roms {
-                    1 // Red
-                } else {
-                    2 // Yellow
-                }
+                tree_icon_idx_from_stats(stats)
             } else if let Some(ds) = &node.dir_status {
-                if !ds.has_correct() && ds.has_missing(false) {
-                    1
-                } else if !ds.has_missing(false) && ds.has_mia() {
-                    5
-                } else if !ds.has_missing(false) {
-                    3
-                } else {
-                    2
-                }
+                tree_icon_idx_from_report_status(*ds)
             } else {
                 2
             };
@@ -205,6 +258,9 @@ impl RomVaultApp {
                             }
                             if stats.roms_fixes > 0 {
                                 parts.push(format!("Fixes: {}", crate::format_number(stats.roms_fixes)));
+                            }
+                            if stats.roms_not_collected > 0 {
+                                parts.push(format!("NotCollected: {}", crate::format_number(stats.roms_not_collected)));
                             }
                             if stats.roms_unknown > 0 {
                                 parts.push(format!("Unknown: {}", crate::format_number(stats.roms_unknown)));
@@ -655,6 +711,164 @@ impl RomVaultApp {
                     .line_segment([egui::pos2(line_x, start_y), egui::pos2(line_x, end_y)], stroke);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tree_color_from_stats_treats_all_merged_branch_as_grey() {
+        let mut stats = rv_core::repair_status::RepairStatus::new();
+        stats.total_roms = 2;
+        stats.roms_not_collected = 1;
+        stats.roms_unneeded = 1;
+
+        assert_eq!(tree_color_from_stats(&stats), egui::Color32::from_rgb(150, 150, 150));
+    }
+
+    #[test]
+    fn test_tree_icon_idx_from_stats_uses_merged_icon_for_all_merged_branch() {
+        let mut stats = rv_core::repair_status::RepairStatus::new();
+        stats.total_roms = 2;
+        stats.roms_not_collected = 1;
+        stats.roms_unneeded = 1;
+
+        assert_eq!(tree_icon_idx_from_stats(&stats), 4);
+    }
+
+    #[test]
+    fn test_tree_color_from_stats_treats_correct_mia_branch_as_green() {
+        let mut stats = rv_core::repair_status::RepairStatus::new();
+        stats.total_roms = 2;
+        stats.roms_correct_mia = 2;
+
+        assert_eq!(tree_color_from_stats(&stats), egui::Color32::from_rgb(0, 200, 0));
+    }
+
+    #[test]
+    fn test_tree_icon_idx_from_stats_uses_green_icon_for_correct_mia_branch() {
+        let mut stats = rv_core::repair_status::RepairStatus::new();
+        stats.total_roms = 2;
+        stats.roms_correct_mia = 2;
+
+        assert_eq!(tree_icon_idx_from_stats(&stats), 3);
+    }
+
+    #[test]
+    fn test_tree_color_from_stats_treats_missing_mia_branch_as_red() {
+        let mut stats = rv_core::repair_status::RepairStatus::new();
+        stats.total_roms = 2;
+        stats.roms_missing_mia = 2;
+
+        assert_eq!(tree_color_from_stats(&stats), egui::Color32::from_rgb(200, 0, 0));
+    }
+
+    #[test]
+    fn test_tree_icon_idx_from_stats_uses_red_icon_for_missing_mia_branch() {
+        let mut stats = rv_core::repair_status::RepairStatus::new();
+        stats.total_roms = 2;
+        stats.roms_missing_mia = 2;
+
+        assert_eq!(tree_icon_idx_from_stats(&stats), 1);
+    }
+
+    #[test]
+    fn test_tree_color_from_stats_treats_fixable_only_branch_as_yellow() {
+        let mut stats = rv_core::repair_status::RepairStatus::new();
+        stats.total_roms = 2;
+        stats.roms_fixes = 2;
+
+        assert_eq!(tree_color_from_stats(&stats), egui::Color32::from_rgb(200, 200, 0));
+    }
+
+    #[test]
+    fn test_tree_color_from_rep_status_treats_corrupt_can_be_fixed_as_yellow() {
+        assert_eq!(
+            tree_color_from_rep_status(RepStatus::CorruptCanBeFixed, DatStatus::InDatCollect),
+            egui::Color32::from_rgb(200, 200, 0)
+        );
+    }
+
+    #[test]
+    fn test_tree_color_from_rep_status_treats_move_to_corrupt_as_cyan() {
+        assert_eq!(
+            tree_color_from_rep_status(RepStatus::MoveToCorrupt, DatStatus::InDatCollect),
+            egui::Color32::from_rgb(0, 200, 200)
+        );
+    }
+
+    #[test]
+    fn test_tree_color_from_rep_status_treats_needed_for_fix_and_rename_as_cyan() {
+        assert_eq!(
+            tree_color_from_rep_status(RepStatus::NeededForFix, DatStatus::InDatCollect),
+            egui::Color32::from_rgb(0, 200, 200)
+        );
+        assert_eq!(
+            tree_color_from_rep_status(RepStatus::Rename, DatStatus::InDatCollect),
+            egui::Color32::from_rgb(0, 200, 200)
+        );
+    }
+
+    #[test]
+    fn test_tree_color_from_rep_status_treats_delete_as_red() {
+        assert_eq!(
+            tree_color_from_rep_status(RepStatus::Delete, DatStatus::NotInDat),
+            egui::Color32::from_rgb(200, 0, 0)
+        );
+    }
+
+    #[test]
+    fn test_tree_color_from_rep_status_treats_missing_family_variants_as_red() {
+        assert_eq!(
+            tree_color_from_rep_status(RepStatus::Corrupt, DatStatus::InDatCollect),
+            egui::Color32::from_rgb(200, 0, 0)
+        );
+        assert_eq!(
+            tree_color_from_rep_status(RepStatus::DirCorrupt, DatStatus::InDatCollect),
+            egui::Color32::from_rgb(200, 0, 0)
+        );
+        assert_eq!(
+            tree_color_from_rep_status(RepStatus::Incomplete, DatStatus::InDatCollect),
+            egui::Color32::from_rgb(200, 0, 0)
+        );
+    }
+
+    #[test]
+    fn test_tree_color_from_stats_treats_unknown_only_branch_as_grey() {
+        let mut stats = rv_core::repair_status::RepairStatus::new();
+        stats.total_roms = 2;
+        stats.roms_unknown = 2;
+
+        assert_eq!(tree_color_from_stats(&stats), egui::Color32::from_rgb(150, 150, 150));
+    }
+
+    #[test]
+    fn test_tree_color_from_rep_status_treats_unknown_as_grey() {
+        assert_eq!(
+            tree_color_from_rep_status(RepStatus::Unknown, DatStatus::InDatCollect),
+            egui::Color32::from_rgb(150, 150, 150)
+        );
+    }
+
+    #[test]
+    fn test_tree_icon_idx_from_report_status_treats_unknown_as_grey_icon() {
+        assert_eq!(tree_icon_idx_from_report_status(rv_core::enums::ReportStatus::Unknown), 4);
+    }
+
+    #[test]
+    fn test_tree_icon_idx_from_report_status_treats_merged_as_grey_icon() {
+        assert_eq!(tree_icon_idx_from_report_status(rv_core::enums::ReportStatus::NotCollected), 4);
+    }
+
+    #[test]
+    fn test_tree_icon_idx_from_stats_treats_unknown_only_branch_as_grey_icon() {
+        let mut stats = rv_core::repair_status::RepairStatus::new();
+        stats.total_roms = 2;
+        stats.roms_unknown = 2;
+
+        assert_eq!(tree_icon_idx_from_stats(&stats), 4);
     }
 }
 

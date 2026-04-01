@@ -126,7 +126,7 @@ impl ReportStatus {
 
     /// Returns true if all files in this branch are merged.
     pub fn has_all_merged(&self) -> bool {
-        matches!(self, ReportStatus::NotCollected)
+        matches!(self, ReportStatus::NotCollected | ReportStatus::UnNeeded)
     }
 
     /// Returns true if the status of this branch is unknown.
@@ -163,6 +163,7 @@ mod tests {
         assert!(!ReportStatus::Correct.has_missing(false));
 
         assert!(ReportStatus::NotCollected.has_all_merged());
+        assert!(ReportStatus::UnNeeded.has_all_merged());
         assert!(!ReportStatus::Correct.has_all_merged());
 
         assert!(ReportStatus::Unknown.has_unknown());

@@ -19,6 +19,14 @@ pub struct DB {
 }
 
 impl DB {
+    fn ensure_root_dir(logical_name: &str, fallback_path: &str) {
+        let resolved_path = crate::settings::find_dir_mapping(logical_name)
+            .unwrap_or_else(|| fallback_path.to_string());
+        if !Path::new(&resolved_path).exists() {
+            let _ = fs::create_dir_all(&resolved_path);
+        }
+    }
+
     /// Initializes a new database instance.
     /// 
     /// If a valid cache file exists (`RomVault.db`), it loads the tree from disk.
@@ -69,15 +77,8 @@ impl DB {
             let _ = fs::create_dir_all(dat_root_path);
         }
 
-        // Create RustyVault
-        if !Path::new("RustyVault").exists() {
-            let _ = fs::create_dir_all("RustyVault");
-        }
-
-        // Create ToSort
-        if !Path::new("ToSort").exists() {
-            let _ = fs::create_dir_all("ToSort");
-        }
+        Self::ensure_root_dir("RustyVault", "RustyVault");
+        Self::ensure_root_dir("ToSort", "ToSort");
     }
 
     /// Retrieves the designated cache directory for sorting operations.
@@ -143,4 +144,51 @@ pub fn init_db() {
     GLOBAL_DB.with(|db| {
         *db.borrow_mut() = Some(DB::new());
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::{get_settings, set_dir_mapping, update_settings, DirMapping, Settings};
+    use tempfile::tempdir;
+
+    fn with_db_test_state(test: impl FnOnce(&std::path::Path)) {
+        let original_settings = get_settings();
+        let temp = tempdir().unwrap();
+
+        let mut settings = Settings::default();
+        settings.dat_root = temp.path().join("DatRoot").to_string_lossy().into_owned();
+        update_settings(settings);
+        test(temp.path());
+        update_settings(original_settings);
+    }
+
+    #[test]
+    fn test_check_create_root_dirs_uses_mapped_rustyvault_path() {
+        with_db_test_state(|temp_path| {
+            set_dir_mapping(DirMapping {
+                dir_key: "RustyVault".to_string(),
+                dir_path: temp_path.join("RomRoot").to_string_lossy().into_owned(),
+            });
+
+            DB::check_create_root_dirs();
+
+            assert!(temp_path.join("RomRoot").exists());
+            assert!(temp_path.join("DatRoot").exists());
+        });
+    }
+
+    #[test]
+    fn test_check_create_root_dirs_uses_custom_tosort_mapping() {
+        with_db_test_state(|temp_path| {
+            set_dir_mapping(DirMapping {
+                dir_key: "ToSort".to_string(),
+                dir_path: temp_path.join("SortedOutput").to_string_lossy().into_owned(),
+            });
+
+            DB::check_create_root_dirs();
+
+            assert!(temp_path.join("SortedOutput").exists());
+        });
+    }
 }

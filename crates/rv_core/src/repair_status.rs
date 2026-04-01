@@ -38,6 +38,8 @@ pub struct RepairStatus {
     pub roms_missing_mia: i32,
     /// Number of files marked as `CanBeFixed`
     pub roms_fixes: i32,
+    /// Number of files marked as `NotCollected`
+    pub roms_not_collected: i32,
     /// Number of files marked as `UnNeeded`
     pub roms_unneeded: i32,
     /// Number of files marked as `Unknown`
@@ -59,6 +61,7 @@ impl RepairStatus {
             roms_missing: 0,
             roms_missing_mia: 0,
             roms_fixes: 0,
+            roms_not_collected: 0,
             roms_unneeded: 0,
             roms_unknown: 0,
         }
@@ -90,12 +93,12 @@ impl RepairStatus {
 
     /// Returns the total number of missing or corrupt items.
     pub fn count_missing(&self) -> i32 {
-        self.roms_missing + self.roms_missing_mia + self.roms_fixes + self.roms_unknown // Approximation
+        self.roms_missing + self.roms_missing_mia + self.roms_fixes
     }
 
     /// Returns the total number of files that have been marked as fixable.
     pub fn count_fixes_needed(&self) -> i32 {
-        self.roms_fixes + self.roms_unneeded + self.roms_unknown
+        self.roms_fixes + self.roms_unknown
     }
 
     /// Recursively traverses a tree branch and calculates its exact `RepairStatus` by 
@@ -118,6 +121,7 @@ impl RepairStatus {
                 self.roms_missing += cached.roms_missing;
                 self.roms_missing_mia += cached.roms_missing_mia;
                 self.roms_fixes += cached.roms_fixes;
+                self.roms_not_collected += cached.roms_not_collected;
                 self.roms_unneeded += cached.roms_unneeded;
                 self.roms_unknown += cached.roms_unknown;
                 return;
@@ -147,6 +151,7 @@ impl RepairStatus {
                 node_stats.roms_missing += child_status.roms_missing;
                 node_stats.roms_missing_mia += child_status.roms_missing_mia;
                 node_stats.roms_fixes += child_status.roms_fixes;
+                node_stats.roms_not_collected += child_status.roms_not_collected;
                 node_stats.roms_unneeded += child_status.roms_unneeded;
                 node_stats.roms_unknown += child_status.roms_unknown;
             }
@@ -173,6 +178,7 @@ impl RepairStatus {
                     node_stats.roms_missing_mia += 1;
                 },
                 RepStatus::CanBeFixed | RepStatus::CanBeFixedMIA => node_stats.roms_fixes += 1,
+                RepStatus::NotCollected => node_stats.roms_not_collected += 1,
                 RepStatus::UnNeeded => node_stats.roms_unneeded += 1,
                 RepStatus::Unknown | RepStatus::MoveToSort | RepStatus::DirUnknown | RepStatus::DirInToSort => node_stats.roms_unknown += 1,
                 _ => {}
@@ -192,6 +198,7 @@ impl RepairStatus {
         self.roms_missing += node_stats.roms_missing;
         self.roms_missing_mia += node_stats.roms_missing_mia;
         self.roms_fixes += node_stats.roms_fixes;
+        self.roms_not_collected += node_stats.roms_not_collected;
         self.roms_unneeded += node_stats.roms_unneeded;
         self.roms_unknown += node_stats.roms_unknown;
     }
@@ -234,7 +241,88 @@ mod tests {
         assert_eq!(status.roms_unknown, 1);
 
         assert_eq!(status.count_correct(), 1);
-        // count_missing approximates fixes and unknowns in the basic implementation
-        assert_eq!(status.count_missing(), 2); 
+        assert_eq!(status.count_missing(), 1);
+        assert_eq!(status.count_fixes_needed(), 1);
+    }
+
+    #[test]
+    fn test_repair_status_fix_count_excludes_unneeded_roms() {
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+
+        let fixable_rom = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut rom = fixable_rom.borrow_mut();
+            rom.set_dat_got_status(DatStatus::InDatCollect, GotStatus::NotGot);
+            rom.set_rep_status(crate::enums::RepStatus::CanBeFixed);
+        }
+
+        let merged_rom = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut rom = merged_rom.borrow_mut();
+            rom.set_dat_got_status(DatStatus::InDatMerged, GotStatus::Got);
+            rom.set_rep_status(crate::enums::RepStatus::UnNeeded);
+        }
+
+        root.borrow_mut().child_add(fixable_rom);
+        root.borrow_mut().child_add(merged_rom);
+
+        let mut status = RepairStatus::new();
+        status.report_status(Rc::clone(&root));
+
+        assert_eq!(status.roms_fixes, 1);
+        assert_eq!(status.roms_unneeded, 1);
+        assert_eq!(status.count_fixes_needed(), 1);
+    }
+
+    #[test]
+    fn test_repair_status_tracks_not_collected_roms_separately() {
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+
+        let merged_missing_rom = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut rom = merged_missing_rom.borrow_mut();
+            rom.set_dat_got_status(DatStatus::InDatMerged, GotStatus::NotGot);
+            rom.rep_status_reset();
+        }
+
+        root.borrow_mut().child_add(merged_missing_rom);
+
+        let mut status = RepairStatus::new();
+        status.report_status(Rc::clone(&root));
+
+        assert_eq!(status.total_roms, 1);
+        assert_eq!(status.roms_not_collected, 1);
+        assert_eq!(status.roms_unneeded, 0);
+        assert_eq!(status.count_missing(), 0);
+        assert_eq!(status.count_fixes_needed(), 0);
+    }
+
+    #[test]
+    fn test_repair_status_missing_count_excludes_unknown_roms() {
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+
+        let missing_rom = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut rom = missing_rom.borrow_mut();
+            rom.set_dat_got_status(DatStatus::InDatCollect, GotStatus::NotGot);
+            rom.rep_status_reset();
+        }
+
+        let unknown_rom = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut rom = unknown_rom.borrow_mut();
+            rom.set_dat_got_status(DatStatus::NotInDat, GotStatus::Got);
+            rom.rep_status_reset();
+        }
+
+        root.borrow_mut().child_add(missing_rom);
+        root.borrow_mut().child_add(unknown_rom);
+
+        let mut status = RepairStatus::new();
+        status.report_status(Rc::clone(&root));
+
+        assert_eq!(status.roms_missing, 1);
+        assert_eq!(status.roms_unknown, 1);
+        assert_eq!(status.count_missing(), 1);
     }
 }
