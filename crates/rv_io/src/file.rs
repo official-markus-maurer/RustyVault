@@ -1,6 +1,7 @@
 use std::fs;
 use std::io;
 use std::path::Path as StdPath;
+use crate::name_fix::NameFix;
 
 /// Cross-platform wrapper for file operations.
 /// 
@@ -14,37 +15,40 @@ pub struct File;
 
 impl File {
     pub fn exists(path: &str) -> bool {
-        StdPath::new(path).is_file()
+        StdPath::new(&NameFix::add_long_path_prefix(path)).is_file()
     }
 
     pub fn delete(path: &str) -> io::Result<()> {
-        fs::remove_file(path)
+        fs::remove_file(NameFix::add_long_path_prefix(path))
     }
 
     pub fn move_file(source: &str, dest: &str) -> io::Result<()> {
-        fs::rename(source, dest)
+        fs::rename(NameFix::add_long_path_prefix(source), NameFix::add_long_path_prefix(dest))
     }
 
     pub fn copy(source: &str, dest: &str, overwrite: bool) -> io::Result<u64> {
-        if !overwrite && StdPath::new(dest).exists() {
+        if !overwrite && StdPath::new(&NameFix::add_long_path_prefix(dest)).exists() {
             return Err(io::Error::new(io::ErrorKind::AlreadyExists, "Destination file already exists"));
         }
-        fs::copy(source, dest)
+        fs::copy(NameFix::add_long_path_prefix(source), NameFix::add_long_path_prefix(dest))
     }
 
     pub fn read_all_bytes(path: &str) -> io::Result<Vec<u8>> {
-        fs::read(path)
+        fs::read(NameFix::add_long_path_prefix(path))
     }
 
     pub fn write_all_bytes(path: &str, bytes: &[u8]) -> io::Result<()> {
-        fs::write(path, bytes)
+        fs::write(NameFix::add_long_path_prefix(path), bytes)
     }
 
     pub fn get_last_write_time(path: &str) -> io::Result<u64> {
-        let metadata = fs::metadata(path)?;
+        let metadata = fs::metadata(NameFix::add_long_path_prefix(path))?;
         if let Ok(time) = metadata.modified() {
             if let Ok(dur) = time.duration_since(std::time::UNIX_EPOCH) {
-                return Ok(dur.as_secs());
+                const TICKS_AT_UNIX_EPOCH: i64 = 621355968000000000;
+                const TICKS_PER_SECOND: i64 = 10_000_000;
+                let ticks = TICKS_AT_UNIX_EPOCH + (dur.as_secs() as i64) * TICKS_PER_SECOND + (dur.subsec_nanos() as i64) / 100;
+                return Ok(ticks.max(0) as u64);
             }
         }
         Ok(0)

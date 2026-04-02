@@ -134,3 +134,48 @@
         assert!(scanned_file.status_flags.contains(FileStatus::HEADER_FILE_TYPE_FROM_HEADER));
         assert!(scanned_file.status_flags.contains(FileStatus::ALT_CRC_FROM_HEADER));
     }
+
+    #[test]
+    fn test_scan_archive_file_light_scan_populates_alt_crc_for_headered_files() {
+        let dir = tempdir().unwrap();
+        let archive_path = dir.path().join("headered_light.zip");
+        {
+            let file = File::create(&archive_path).unwrap();
+            let mut writer = ZipWriter::new(file);
+            let options = SimpleFileOptions::default()
+                .compression_method(CompressionMethod::Deflated)
+                .compression_level(Some(9));
+            let mut bytes = vec![0x4E, 0x45, 0x53, 0x1A];
+            bytes.extend_from_slice(&[0; 12]);
+            bytes.extend_from_slice(b"DATA");
+            writer.start_file("rom.nes", options).unwrap();
+            writer.write_all(&bytes).unwrap();
+            writer.finish().unwrap();
+        }
+
+        let scanned_archive = Scanner::scan_archive_file(
+            FileType::Zip,
+            archive_path.to_str().unwrap(),
+            0,
+            false,
+        )
+        .expect("Failed to scan archive");
+
+        let scanned_file = scanned_archive
+            .children
+            .iter()
+            .find(|entry| entry.name == "rom.nes")
+            .unwrap();
+
+        let mut crc = Crc32Hasher::new();
+        crc.update(b"DATA");
+
+        assert_eq!(scanned_file.header_file_type, HeaderFileType::NES);
+        assert_eq!(scanned_file.alt_size, Some(4));
+        assert_eq!(scanned_file.alt_crc, Some(crc.finalize().to_be_bytes().to_vec()));
+        assert!(scanned_file.sha1.is_none());
+        assert!(scanned_file.md5.is_none());
+        assert!(scanned_file.status_flags.contains(FileStatus::CRC_FROM_HEADER));
+        assert!(scanned_file.status_flags.contains(FileStatus::ALT_CRC_FROM_HEADER));
+        assert!(scanned_file.status_flags.contains(FileStatus::HEADER_FILE_TYPE_FROM_HEADER));
+    }

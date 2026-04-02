@@ -1,6 +1,7 @@
 use crate::dat_store::{DatDir, DatGame, DatHeader, DatNode};
 use crate::enums::FileType;
 use crate::cmp_reader::DatFileLoader;
+use crate::var_fix;
 
 /// DOSCenter DAT parser.
 /// 
@@ -142,9 +143,9 @@ fn load_file(dfl: &mut DatFileLoader, parent_dir: &mut DatDir) -> Result<(), Str
 
     let mut d_rom = DatNode::new_file(name.trim().to_string(), FileType::UnSet);
     
-    // the next token is already the value for size since we broke on "size"
+    let size_value = dfl.gn();
     if let Some(f) = d_rom.file_mut() {
-        f.size = dfl.next_token.parse::<u64>().ok();
+        f.size = var_fix::u64_opt(&size_value);
     }
     dfl.gn();
 
@@ -152,13 +153,13 @@ fn load_file(dfl: &mut DatFileLoader, parent_dir: &mut DatDir) -> Result<(), Str
         match dfl.next_token.to_lowercase().as_str() {
             "crc" => {
                 if let Some(f) = d_rom.file_mut() {
-                    f.crc = hex::decode(dfl.gn()).ok();
+                    f.crc = var_fix::clean_md5_sha1(&dfl.gn(), 8);
                 }
                 dfl.gn();
             }
             "sha1" => {
                 if let Some(f) = d_rom.file_mut() {
-                    f.sha1 = hex::decode(dfl.gn()).ok();
+                    f.sha1 = var_fix::clean_md5_sha1(&dfl.gn(), 40);
                 }
                 dfl.gn();
             }

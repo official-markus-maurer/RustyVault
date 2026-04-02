@@ -1,5 +1,6 @@
 use crate::dat_store::{DatDir, DatGame, DatHeader, DatNode};
 use crate::enums::FileType;
+use crate::var_fix;
 use roxmltree::{Document, Node};
 
 /// Standard XML DAT parser.
@@ -223,13 +224,16 @@ fn load_rom_from_dat(parent_dir: &mut DatDir, rom_node: Node) {
 
     if let Some(f) = d_file.file_mut() {
         if let Some(size) = rom_node.attribute("size") {
-            f.size = size.parse::<u64>().ok();
+            f.size = var_fix::u64_opt(size);
         }
-        f.crc = rom_node.attribute("crc").and_then(|s| hex::decode(s).ok());
-        f.sha1 = rom_node.attribute("sha1").and_then(|s| hex::decode(s).ok());
-        f.md5 = rom_node.attribute("md5").and_then(|s| hex::decode(s).ok());
+        f.crc = rom_node.attribute("crc").and_then(|s| var_fix::clean_md5_sha1(s, 8));
+        f.sha1 = rom_node.attribute("sha1").and_then(|s| var_fix::clean_md5_sha1(s, 40));
+        f.sha256 = rom_node.attribute("sha256").and_then(|s| var_fix::clean_md5_sha1(s, 64));
+        f.md5 = rom_node.attribute("md5").and_then(|s| var_fix::clean_md5_sha1(s, 32));
         f.merge = rom_node.attribute("merge").map(|s| s.to_string());
-        f.status = rom_node.attribute("status").map(|s| s.to_string());
+        f.status = rom_node.attribute("status").map(|s| var_fix::to_lower(s));
+        f.region = rom_node.attribute("region").map(|s| var_fix::to_lower(s));
+        f.mia = rom_node.attribute("mia").map(|s| s.to_string());
     }
 
     parent_dir.add_child(d_file);
@@ -237,17 +241,20 @@ fn load_rom_from_dat(parent_dir: &mut DatDir, rom_node: Node) {
 
 fn load_disk_from_dat(parent_dir: &mut DatDir, disk_node: Node) {
     let name = match disk_node.attribute("name") {
-        Some(n) => format!("{}.chd", n),
+        Some(n) => var_fix::clean_chd(n),
         None => return,
     };
 
     let mut d_file = DatNode::new_file(name, FileType::File);
 
     if let Some(f) = d_file.file_mut() {
-        f.sha1 = disk_node.attribute("sha1").and_then(|s| hex::decode(s).ok());
-        f.md5 = disk_node.attribute("md5").and_then(|s| hex::decode(s).ok());
-        f.merge = disk_node.attribute("merge").map(|s| s.to_string());
-        f.status = disk_node.attribute("status").map(|s| s.to_string());
+        f.sha1 = disk_node.attribute("sha1").and_then(|s| var_fix::clean_md5_sha1(s, 40));
+        f.sha256 = disk_node.attribute("sha256").and_then(|s| var_fix::clean_md5_sha1(s, 64));
+        f.md5 = disk_node.attribute("md5").and_then(|s| var_fix::clean_md5_sha1(s, 32));
+        f.merge = disk_node.attribute("merge").map(|s| var_fix::clean_chd(s));
+        f.status = disk_node.attribute("status").map(|s| var_fix::to_lower(s));
+        f.mia = disk_node.attribute("mia").map(|s| s.to_string());
+        f.is_disk = true;
     }
 
     parent_dir.add_child(d_file);

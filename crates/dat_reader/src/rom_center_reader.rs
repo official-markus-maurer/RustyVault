@@ -1,6 +1,7 @@
 use crate::dat_store::{DatDir, DatGame, DatHeader, DatNode};
 use crate::enums::FileType;
 use crate::cmp_reader::DatFileLoader;
+use crate::var_fix;
 
 /// RomCenter DAT parser.
 /// 
@@ -146,8 +147,8 @@ fn load_game(dfl: &mut DatFileLoader, parent_dir: &mut DatDir) -> Result<(), Str
             if let Some(d) = parent_dir.children[idx].dir_mut() {
                 let mut d_rom = DatNode::new_file(rom_name.to_string(), FileType::UnSet);
                 if let Some(f) = d_rom.file_mut() {
-                    f.crc = hex::decode(rom_crc).ok();
-                    f.size = rom_size.parse::<u64>().ok();
+                    f.crc = var_fix::clean_md5_sha1(rom_crc, 8);
+                    f.size = var_fix::u64_opt(rom_size);
                     f.merge = Some(merge.to_string());
                 }
                 d.add_child(d_rom);
@@ -167,8 +168,8 @@ fn load_game(dfl: &mut DatFileLoader, parent_dir: &mut DatDir) -> Result<(), Str
 
                 let mut d_rom = DatNode::new_file(rom_name.to_string(), FileType::UnSet);
                 if let Some(f) = d_rom.file_mut() {
-                    f.crc = hex::decode(rom_crc).ok();
-                    f.size = rom_size.parse::<u64>().ok();
+                    f.crc = var_fix::clean_md5_sha1(rom_crc, 8);
+                    f.size = var_fix::u64_opt(rom_size);
                     f.merge = Some(merge.to_string());
                 }
                 d.add_child(d_rom);
@@ -215,11 +216,11 @@ fn load_disks(dfl: &mut DatFileLoader, parent_dir: &mut DatDir) -> Result<(), St
 
         if let Some(idx) = found_idx {
             if let Some(d) = parent_dir.children[idx].dir_mut() {
-                let mut d_rom = DatNode::new_file(format!("{}.chd", rom_name), FileType::UnSet);
+                let mut d_rom = DatNode::new_file(var_fix::clean_chd(rom_name), FileType::UnSet);
                 if let Some(f) = d_rom.file_mut() {
                     f.is_disk = true;
-                    f.sha1 = hex::decode(rom_crc).ok();
-                    f.merge = Some(format!("{}.chd", merge));
+                    f.sha1 = var_fix::clean_md5_sha1(rom_crc, 40);
+                    f.merge = Some(var_fix::clean_chd(merge));
                 }
                 d.add_child(d_rom);
             }
@@ -233,11 +234,11 @@ fn load_disks(dfl: &mut DatFileLoader, parent_dir: &mut DatDir) -> Result<(), St
                 }
                 d.d_game = Some(Box::new(d_game));
 
-                let mut d_rom = DatNode::new_file(format!("{}.chd", rom_name), FileType::UnSet);
+                let mut d_rom = DatNode::new_file(var_fix::clean_chd(rom_name), FileType::UnSet);
                 if let Some(f) = d_rom.file_mut() {
                     f.is_disk = true;
-                    f.sha1 = hex::decode(rom_crc).ok();
-                    f.merge = Some(format!("{}.chd", merge));
+                    f.sha1 = var_fix::clean_md5_sha1(rom_crc, 40);
+                    f.merge = Some(var_fix::clean_chd(merge));
                 }
                 d.add_child(d_rom);
             }

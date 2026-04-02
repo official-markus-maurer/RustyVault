@@ -1,5 +1,6 @@
 use crate::dat_store::{DatDir, DatGame, DatHeader, DatNode};
 use crate::enums::FileType;
+use crate::var_fix;
 
 /// ClrMamePro (CMP) DAT parser.
 /// 
@@ -343,17 +344,26 @@ fn load_rom_from_dat(dfl: &mut DatFileLoader, parent_dir: &mut DatDir, node_type
         match key.as_str() {
             "name" => {
                 if node_type == "disk" {
-                    file.name = format!("{}.chd", val);
+                    file.name = var_fix::clean_chd(&val);
                 } else {
                     file.name = val;
                 }
             }
-            "size" => { if let Some(f) = file.file_mut() { f.size = val.parse::<u64>().ok(); } }
-            "crc" => { if let Some(f) = file.file_mut() { f.crc = hex::decode(&val).ok(); } }
-            "sha1" => { if let Some(f) = file.file_mut() { f.sha1 = hex::decode(&val).ok(); } }
-            "md5" => { if let Some(f) = file.file_mut() { f.md5 = hex::decode(&val).ok(); } }
-            "merge" => { if let Some(f) = file.file_mut() { f.merge = Some(val); } }
-            "status" => { if let Some(f) = file.file_mut() { f.status = Some(val.to_lowercase()); } }
+            "size" => { if let Some(f) = file.file_mut() { f.size = var_fix::u64_opt(&val); } }
+            "crc" => { if let Some(f) = file.file_mut() { f.crc = var_fix::clean_md5_sha1(&val, 8); } }
+            "sha1" => { if let Some(f) = file.file_mut() { f.sha1 = var_fix::clean_md5_sha1(&val, 40); } }
+            "sha256" => { if let Some(f) = file.file_mut() { f.sha256 = var_fix::clean_md5_sha1(&val, 64); } }
+            "md5" => { if let Some(f) = file.file_mut() { f.md5 = var_fix::clean_md5_sha1(&val, 32); } }
+            "merge" => {
+                if let Some(f) = file.file_mut() {
+                    f.merge = Some(if node_type == "disk" {
+                        var_fix::clean_chd(&val)
+                    } else {
+                        val
+                    });
+                }
+            }
+            "status" => { if let Some(f) = file.file_mut() { f.status = Some(var_fix::to_lower(&val)); } }
             _ => {}
         }
         dfl.gn();

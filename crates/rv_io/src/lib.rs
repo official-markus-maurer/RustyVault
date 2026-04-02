@@ -17,9 +17,13 @@ pub mod directory;
 pub mod file_info;
 pub mod directory_info;
 pub mod path;
+pub mod name_fix;
+pub mod file_stream;
 
 pub use file::*;
 pub use directory::*;
 pub use file_info::*;
 pub use directory_info::*;
 pub use path::*;
+pub use name_fix::*;
+pub use file_stream::*;

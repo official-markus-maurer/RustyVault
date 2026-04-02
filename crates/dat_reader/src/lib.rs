@@ -6,6 +6,9 @@ pub mod rom_center_reader;
 pub mod dos_reader;
 pub mod mess_xml_reader;
 pub mod xml_writer;
+pub mod dos_writer;
+pub mod dat_clean;
+pub mod var_fix;
 
 pub use dat_store::*;
 pub use enums::*;
@@ -15,6 +18,9 @@ pub use rom_center_reader::*;
 pub use dos_reader::*;
 pub use mess_xml_reader::*;
 pub use xml_writer::*;
+pub use dos_writer::*;
+pub use dat_clean::*;
+pub use var_fix::*;
 
 /// Main entry point for reading DAT files.
 /// 

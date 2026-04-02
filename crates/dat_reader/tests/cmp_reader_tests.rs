@@ -45,7 +45,7 @@ fn test_parse_cmp_dat() {
     assert_eq!(rom_file.crc.as_ref().unwrap(), &vec![0x12, 0x34, 0x56, 0x78]);
 
     let disk = &roms[1];
-    assert_eq!(disk.name, "test_disk.chd");
+    assert_eq!(disk.name, "test_disk");
     assert!(disk.is_file());
     let disk_file = disk.file().unwrap();
     assert!(disk_file.is_disk);

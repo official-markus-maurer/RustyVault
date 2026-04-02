@@ -1,5 +1,6 @@
 use crate::dat_store::{DatDir, DatGame, DatHeader, DatNode};
 use crate::enums::FileType;
+use crate::var_fix;
 use roxmltree::{Document, Node};
 
 /// Parser for MESS Software List XML formats.
@@ -123,10 +124,10 @@ fn load_rom(parent_dir: &mut DatDir, rom_node: Node, index_continue: &mut Option
     if let Some(n) = name {
         let mut d_rom = DatNode::new_file(n.to_string(), FileType::UnSet);
         if let Some(f) = d_rom.file_mut() {
-            f.size = rom_node.attribute("size").and_then(|s| s.parse::<u64>().ok());
-            f.crc = rom_node.attribute("crc").and_then(|s| hex::decode(s).ok());
-            f.sha1 = rom_node.attribute("sha1").and_then(|s| hex::decode(s).ok());
-            f.status = rom_node.attribute("status").map(|s| s.to_lowercase());
+            f.size = rom_node.attribute("size").and_then(var_fix::u64_opt);
+            f.crc = rom_node.attribute("crc").and_then(|s| var_fix::clean_md5_sha1(s, 8));
+            f.sha1 = rom_node.attribute("sha1").and_then(|s| var_fix::clean_md5_sha1(s, 40));
+            f.status = rom_node.attribute("status").map(var_fix::to_lower);
         }
         parent_dir.add_child(d_rom);
         *index_continue = Some(parent_dir.children.len() - 1);
@@ -148,15 +149,15 @@ fn load_rom(parent_dir: &mut DatDir, rom_node: Node, index_continue: &mut Option
 
 fn load_disk(parent_dir: &mut DatDir, disk_node: Node) {
     let name = match disk_node.attribute("name") {
-        Some(n) => format!("{}.chd", n),
+        Some(n) => var_fix::clean_chd(n),
         None => return,
     };
 
     let mut d_disk = DatNode::new_file(name, FileType::UnSet);
     if let Some(f) = d_disk.file_mut() {
         f.is_disk = true;
-        f.sha1 = disk_node.attribute("sha1").and_then(|s| hex::decode(s).ok());
-        f.status = disk_node.attribute("status").map(|s| s.to_lowercase());
+        f.sha1 = disk_node.attribute("sha1").and_then(|s| var_fix::clean_md5_sha1(s, 40));
+        f.status = disk_node.attribute("status").map(var_fix::to_lower);
     }
 
     parent_dir.add_child(d_disk);

@@ -39,6 +39,9 @@ merge=split
 
         // Disk Check
         let disk = files[1].file().unwrap();
-        assert_eq!(files[1].name, "mydisk.chd");
-        assert_eq!(disk.sha1, Some(hex::decode("9876543210abcdef").unwrap()));
+        assert_eq!(files[1].name, "mydisk");
+        assert_eq!(
+            disk.sha1,
+            Some(hex::decode("0000000000000000000000009876543210abcdef").unwrap())
+        );
     }

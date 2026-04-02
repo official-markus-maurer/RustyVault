@@ -71,11 +71,31 @@ impl FileHeaders {
                 data: Data { offset: 1, value: vec![0x41, 0x54, 0x41, 0x52, 0x49, 0x37, 0x38, 0x30, 0x30] },
             },
             Detector {
+                ftype: HeaderFileType::A7800,
+                header_length: 128,
+                file_offset: 128,
+                header_id: "A78".to_string(),
+                data: Data {
+                    offset: 100,
+                    value: vec![
+                        0x41, 0x43, 0x54, 0x55, 0x41, 0x4C, 0x20, 0x43, 0x41, 0x52, 0x54, 0x20, 0x44, 0x41,
+                        0x54, 0x41, 0x20, 0x53, 0x54, 0x41, 0x52, 0x54, 0x53, 0x20, 0x48, 0x45, 0x52, 0x45,
+                    ],
+                },
+            },
+            Detector {
                 ftype: HeaderFileType::LYNX,
                 header_length: 64,
                 file_offset: 64,
                 header_id: "LYNX".to_string(),
                 data: Data { offset: 0, value: vec![0x4C, 0x59, 0x4E, 0x58] },
+            },
+            Detector {
+                ftype: HeaderFileType::LYNX,
+                header_length: 64,
+                file_offset: 64,
+                header_id: "LYNX".to_string(),
+                data: Data { offset: 6, value: vec![0x42, 0x53, 0x39] },
             },
             Detector {
                 ftype: HeaderFileType::NES,
@@ -92,6 +112,46 @@ impl FileHeaders {
                 data: Data { offset: 0, value: vec![0x46, 0x44, 0x53, 0x1A] },
             },
             Detector {
+                ftype: HeaderFileType::FDS,
+                header_length: 16,
+                file_offset: 16,
+                header_id: "FDS".to_string(),
+                data: Data {
+                    offset: 0,
+                    value: vec![0x46, 0x44, 0x53, 0x1A, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+                },
+            },
+            Detector {
+                ftype: HeaderFileType::FDS,
+                header_length: 16,
+                file_offset: 16,
+                header_id: "FDS".to_string(),
+                data: Data {
+                    offset: 0,
+                    value: vec![0x46, 0x44, 0x53, 0x1A, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+                },
+            },
+            Detector {
+                ftype: HeaderFileType::FDS,
+                header_length: 16,
+                file_offset: 16,
+                header_id: "FDS".to_string(),
+                data: Data {
+                    offset: 0,
+                    value: vec![0x46, 0x44, 0x53, 0x1A, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+                },
+            },
+            Detector {
+                ftype: HeaderFileType::FDS,
+                header_length: 16,
+                file_offset: 16,
+                header_id: "FDS".to_string(),
+                data: Data {
+                    offset: 0,
+                    value: vec![0x46, 0x44, 0x53, 0x1A, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+                },
+            },
+            Detector {
                 ftype: HeaderFileType::PCE,
                 header_length: 512,
                 file_offset: 512,
@@ -106,11 +166,56 @@ impl FileHeaders {
                 data: Data { offset: 0, value: vec![0x50, 0x53, 0x49, 0x44] },
             },
             Detector {
+                ftype: HeaderFileType::PSID,
+                header_length: 118,
+                file_offset: 118,
+                header_id: "PSID".to_string(),
+                data: Data { offset: 0, value: vec![0x50, 0x53, 0x49, 0x44, 0x00, 0x01, 0x00, 0x76] },
+            },
+            Detector {
+                ftype: HeaderFileType::PSID,
+                header_length: 118,
+                file_offset: 118,
+                header_id: "PSID".to_string(),
+                data: Data { offset: 0, value: vec![0x50, 0x53, 0x49, 0x44, 0x00, 0x03, 0x00, 0x7C] },
+            },
+            Detector {
+                ftype: HeaderFileType::PSID,
+                header_length: 124,
+                file_offset: 124,
+                header_id: "PSID".to_string(),
+                data: Data { offset: 0, value: vec![0x50, 0x53, 0x49, 0x44, 0x00, 0x02, 0x00, 0x7C] },
+            },
+            Detector {
+                ftype: HeaderFileType::PSID,
+                header_length: 124,
+                file_offset: 124,
+                header_id: "PSID".to_string(),
+                data: Data { offset: 0, value: vec![0x50, 0x53, 0x49, 0x44, 0x00, 0x01, 0x00, 0x7C] },
+            },
+            Detector {
+                ftype: HeaderFileType::PSID,
+                header_length: 124,
+                file_offset: 124,
+                header_id: "PSID".to_string(),
+                data: Data { offset: 0, value: vec![0x52, 0x53, 0x49, 0x44, 0x00, 0x02, 0x00, 0x7C] },
+            },
+            Detector {
                 ftype: HeaderFileType::SNES,
                 header_length: 512,
                 file_offset: 512,
                 header_id: "SMC".to_string(),
                 data: Data { offset: 0, value: vec![0xAA, 0xBB, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00] },
+            },
+            Detector {
+                ftype: HeaderFileType::SNES,
+                header_length: 512,
+                file_offset: 512,
+                header_id: "SMC".to_string(),
+                data: Data {
+                    offset: 0,
+                    value: vec![0x53, 0x55, 0x50, 0x45, 0x52, 0x55, 0x46, 0x4F],
+                },
             },
             Detector {
                 ftype: HeaderFileType::SPC,

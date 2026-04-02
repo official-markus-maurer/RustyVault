@@ -1,5 +1,7 @@
 use crate::enums::{DatStatus, FileType, HeaderFileType, ZipStructure};
 
+pub const TRRNTZIP_DOS_DATETIME: i64 = ((8600u32 as i64) << 16) | 48128i64;
+
 /// In-memory Abstract Syntax Tree (AST) for parsed DAT files.
 /// 
 /// `dat_store.rs` defines the hierarchical structures (`DatHeader`, `DatNode`, `DatDir`, `DatFile`, `DatGame`)

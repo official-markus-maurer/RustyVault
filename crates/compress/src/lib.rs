@@ -19,6 +19,7 @@ pub mod raw_file;
 pub mod gzip_file;
 pub mod native_zlib;
 pub mod codepage_437;
+pub mod zip_extra_field;
 
 pub use file_header::*;
 pub use structured_archive::*;
@@ -30,3 +31,4 @@ pub use raw_file::*;
 pub use gzip_file::*;
 pub use native_zlib::*;
 pub use codepage_437::*;
+pub use zip_extra_field::*;

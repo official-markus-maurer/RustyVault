@@ -16,6 +16,9 @@ pub struct DatXmlWriter;
 
 impl DatXmlWriter {
     pub fn write_dat<W: Write>(writer: &mut W, dat_header: &DatHeader) -> io::Result<()> {
+        if dat_header.mame_xml {
+            return Self::write_mame_xml(writer, dat_header);
+        }
         writeln!(writer, "<?xml version=\"1.0\"?>")?;
         
         let is_mame_style = dat_header.mame_xml
@@ -87,6 +90,53 @@ impl DatXmlWriter {
         Self::write_header(writer, dat_header)?;
         Self::write_base_newstyle(writer, &dat_header.base_dir, 1)?;
         writeln!(writer, "</RVDatFile>")?;
+        Ok(())
+    }
+
+    fn write_mame_xml<W: Write>(writer: &mut W, dat_header: &DatHeader) -> io::Result<()> {
+        writeln!(writer, "<?xml version=\"1.0\"?>")?;
+        writeln!(writer, r#"<!DOCTYPE mame [
+<!ELEMENT mame (machine+)>
+	<!ATTLIST mame build CDATA #IMPLIED>
+	<!ATTLIST mame debug (yes|no) "no">
+	<!ELEMENT machine (description, year?, manufacturer?, biosset*, rom*, disk*, device_ref*, sample*, chip*, display*, sound?, input?, dipswitch*, configuration*, port*, adjuster*, driver?, feature*, device*, slot*, softwarelist*, ramoption*)>
+		<!ATTLIST machine name CDATA #REQUIRED>
+		<!ATTLIST machine isbios (yes|no) "no">
+		<!ATTLIST machine isdevice (yes|no) "no">
+		<!ATTLIST machine runnable (yes|no) "yes">
+		<!ATTLIST machine cloneof CDATA #IMPLIED>
+		<!ATTLIST machine romof CDATA #IMPLIED>
+		<!ELEMENT description (#PCDATA)>
+		<!ELEMENT year (#PCDATA)>
+		<!ELEMENT manufacturer (#PCDATA)>
+		<!ELEMENT rom EMPTY>
+			<!ATTLIST rom name CDATA #REQUIRED>
+			<!ATTLIST rom bios CDATA #IMPLIED>
+			<!ATTLIST rom size CDATA #REQUIRED>
+			<!ATTLIST rom crc CDATA #IMPLIED>
+			<!ATTLIST rom sha1 CDATA #IMPLIED>
+			<!ATTLIST rom merge CDATA #IMPLIED>
+			<!ATTLIST rom region CDATA #IMPLIED>
+			<!ATTLIST rom offset CDATA #IMPLIED>
+			<!ATTLIST rom status (baddump|nodump|good) "good">
+			<!ATTLIST rom optional (yes|no) "no">
+		<!ELEMENT disk EMPTY>
+			<!ATTLIST disk name CDATA #REQUIRED>
+			<!ATTLIST disk sha1 CDATA #IMPLIED>
+			<!ATTLIST disk merge CDATA #IMPLIED>
+			<!ATTLIST disk region CDATA #IMPLIED>
+			<!ATTLIST disk index CDATA #IMPLIED>
+			<!ATTLIST disk writable (yes|no) "no">
+			<!ATTLIST disk status (baddump|nodump|good) "good">
+			<!ATTLIST disk optional (yes|no) "no">
+		<!ELEMENT device_ref EMPTY>
+			<!ATTLIST device_ref name CDATA #REQUIRED>
+]>
+
+"#)?;
+        writeln!(writer, "<mame build=\"{}\">", Self::etxt(dat_header.name.as_deref().unwrap_or("")))?;
+        Self::write_base(writer, &dat_header.base_dir, 1, true)?;
+        writeln!(writer, "</mame>")?;
         Ok(())
     }
 

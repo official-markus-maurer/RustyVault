@@ -45,6 +45,8 @@ pub mod fix_dat_report;
 
 /// Module containing Cache serialization
 pub mod cache;
+pub mod byte_sorted_list;
+pub mod fast_array_sort;
 
 pub use enums::*;
 pub use rv_dat::*;
@@ -64,3 +66,5 @@ pub use compare::*;
 pub use external_dat_converter_to::*;
 pub use fix_dat_report::*;
 pub use cache::*;
+pub use byte_sorted_list::*;
+pub use fast_array_sort::*;

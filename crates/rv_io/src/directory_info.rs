@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::Path as StdPath;
 use crate::file_info::FileInfo;
+use crate::name_fix::NameFix;
 
 /// Object-oriented wrapper representing a specific directory on disk.
 /// 
@@ -22,7 +23,8 @@ pub struct DirectoryInfo {
 
 impl DirectoryInfo {
     pub fn new(path: &str) -> Self {
-        let std_path = StdPath::new(path);
+        let fixed = NameFix::add_long_path_prefix(path);
+        let std_path = StdPath::new(&fixed);
         let name = std_path.file_name().unwrap_or_default().to_string_lossy().into_owned();
         let full_name = path.to_string();
 
@@ -42,19 +44,19 @@ impl DirectoryInfo {
         let last_write_time = metadata.modified()
             .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as i64)
+            .map(|d| ticks_from_unix_duration(d.as_secs(), d.subsec_nanos()))
             .unwrap_or(0);
             
         let last_access_time = metadata.accessed()
             .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as i64)
+            .map(|d| ticks_from_unix_duration(d.as_secs(), d.subsec_nanos()))
             .unwrap_or(0);
             
         let creation_time = metadata.created()
             .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as i64)
+            .map(|d| ticks_from_unix_duration(d.as_secs(), d.subsec_nanos()))
             .unwrap_or(0);
 
         Self {
@@ -73,7 +75,7 @@ impl DirectoryInfo {
             return dirs;
         }
 
-        if let Ok(entries) = fs::read_dir(&self.full_name) {
+        if let Ok(entries) = fs::read_dir(NameFix::add_long_path_prefix(&self.full_name)) {
             for entry in entries.flatten() {
                 if let Ok(metadata) = entry.metadata() {
                     if metadata.is_dir() {
@@ -85,22 +87,75 @@ impl DirectoryInfo {
         dirs
     }
 
-    pub fn get_files(&self, _search_pattern: &str) -> Vec<FileInfo> {
-        // Simplified search pattern handling. A full port might use the glob crate
+    pub fn get_files(&self, search_pattern: &str) -> Vec<FileInfo> {
         let mut files = Vec::new();
         if !self.exists {
             return files;
         }
 
-        if let Ok(entries) = fs::read_dir(&self.full_name) {
+        let pattern = if search_pattern.is_empty() { "*" } else { search_pattern };
+        if let Ok(entries) = fs::read_dir(NameFix::add_long_path_prefix(&self.full_name)) {
             for entry in entries.flatten() {
                 if let Ok(metadata) = entry.metadata() {
                     if metadata.is_file() {
-                        files.push(FileInfo::new(&entry.path().to_string_lossy()));
+                        let name = entry.file_name().to_string_lossy().into_owned();
+                        if wildcard_match(&name, pattern) {
+                            files.push(FileInfo::new(&entry.path().to_string_lossy()));
+                        }
                     }
                 }
             }
         }
         files
     }
+}
+
+fn ticks_from_unix_duration(secs: u64, nanos: u32) -> i64 {
+    const TICKS_AT_UNIX_EPOCH: i64 = 621355968000000000;
+    const TICKS_PER_SECOND: i64 = 10_000_000;
+    TICKS_AT_UNIX_EPOCH + (secs as i64) * TICKS_PER_SECOND + (nanos as i64) / 100
+}
+
+fn wildcard_match(name: &str, pattern: &str) -> bool {
+    let (n_owned, p_owned);
+    let (n, p) = if cfg!(windows) {
+        n_owned = name.to_ascii_lowercase();
+        p_owned = pattern.to_ascii_lowercase();
+        (n_owned.as_str(), p_owned.as_str())
+    } else {
+        (name, pattern)
+    };
+
+    let n_bytes = n.as_bytes();
+    let p_bytes = p.as_bytes();
+    let mut ni = 0usize;
+    let mut pi = 0usize;
+    let mut star_pi: Option<usize> = None;
+    let mut match_ni = 0usize;
+
+    while ni < n_bytes.len() {
+        if pi < p_bytes.len() && (p_bytes[pi] == b'?' || p_bytes[pi] == n_bytes[ni]) {
+            ni += 1;
+            pi += 1;
+            continue;
+        }
+        if pi < p_bytes.len() && p_bytes[pi] == b'*' {
+            star_pi = Some(pi);
+            pi += 1;
+            match_ni = ni;
+            continue;
+        }
+        if let Some(sp) = star_pi {
+            pi = sp + 1;
+            match_ni += 1;
+            ni = match_ni;
+            continue;
+        }
+        return false;
+    }
+
+    while pi < p_bytes.len() && p_bytes[pi] == b'*' {
+        pi += 1;
+    }
+    pi == p_bytes.len()
 }

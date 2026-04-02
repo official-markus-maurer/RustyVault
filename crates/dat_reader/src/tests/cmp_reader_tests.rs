@@ -42,6 +42,9 @@ game (
 
         // Disk Check
         let disk = files[1].file().unwrap();
-        assert_eq!(files[1].name, "mydisk.chd");
-        assert_eq!(disk.sha1, Some(hex::decode("987654").unwrap()));
+        assert_eq!(files[1].name, "mydisk");
+        assert_eq!(
+            disk.sha1,
+            Some(hex::decode("0000000000000000000000000000000000987654").unwrap())
+        );
     }

@@ -127,6 +127,75 @@ impl Scanner {
             if !_lf_is_dir {
                 if !do_deep_scan {
                     scanned_file.got_status = GotStatus::Got;
+                    let stream_res = file.zip_file_open_read_stream(i);
+                    match stream_res {
+                        Ok((mut stream, _size)) => {
+                            let mut alt_crc_hasher = Crc32Hasher::new();
+                            let mut header_probe = Vec::with_capacity(512);
+                            let mut header_file_type = HeaderFileType::NOTHING;
+                            let mut header_size = 0usize;
+                            let mut total_read = 0usize;
+
+                            let mut buffer = [0u8; 32768];
+                            loop {
+                                match stream.read(&mut buffer) {
+                                    Ok(0) => break,
+                                    Ok(n) => {
+                                        if header_probe.len() < 512 {
+                                            let probe_take =
+                                                std::cmp::min(512 - header_probe.len(), n);
+                                            header_probe.extend_from_slice(&buffer[..probe_take]);
+                                            let (detected_type, detected_size) =
+                                                FileHeaders::get_file_type_from_buffer(&header_probe);
+                                            header_file_type = detected_type;
+                                            header_size = detected_size;
+                                        }
+
+                                        if header_size > 0 {
+                                            let chunk_start = total_read;
+                                            let chunk_end = total_read + n;
+                                            if chunk_end > header_size {
+                                                let alt_start = header_size.saturating_sub(chunk_start);
+                                                alt_crc_hasher.update(&buffer[alt_start..n]);
+                                            }
+                                        }
+                                        total_read += n;
+                                    }
+                                    Err(_) => {
+                                        scanned_file.got_status = GotStatus::Corrupt;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if scanned_file.got_status != GotStatus::Corrupt {
+                                scanned_file.header_file_type = header_file_type;
+                                if header_file_type != HeaderFileType::NOTHING {
+                                    scanned_file
+                                        .status_flags
+                                        .insert(FileStatus::HEADER_FILE_TYPE_FROM_HEADER);
+                                }
+                                if header_size > 0
+                                    && scanned_file.size.unwrap_or(0) >= header_size as u64
+                                {
+                                    scanned_file.alt_size = Some(
+                                        scanned_file.size.unwrap_or(0) - header_size as u64,
+                                    );
+                                    scanned_file.alt_crc =
+                                        Some(alt_crc_hasher.finalize().to_be_bytes().to_vec());
+                                    scanned_file
+                                        .status_flags
+                                        .insert(FileStatus::ALT_SIZE_FROM_HEADER | FileStatus::ALT_CRC_FROM_HEADER);
+                                }
+                            }
+
+                            let _ = file.zip_file_close_read_stream();
+                        }
+                        Err(_) => {
+                            scanned_file.got_status = GotStatus::Corrupt;
+                            scanned_file.crc = lf_crc;
+                        }
+                    }
                 } else {
                     // Deep Scan logic: stream and hash
                     let stream_res = file.zip_file_open_read_stream(i);

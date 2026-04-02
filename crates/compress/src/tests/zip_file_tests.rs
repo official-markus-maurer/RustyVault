@@ -131,3 +131,133 @@
 
         let _ = fs::remove_file(path);
     }
+
+    #[test]
+    fn test_read_local_header_offsets_supports_zip64_extra_offset() {
+        let path = unique_temp_zip("compress_zip64_offsets");
+
+        let file_name = b"a";
+        let extra_data: Vec<u8> = {
+            let mut v = Vec::new();
+            v.extend_from_slice(&0x0001u16.to_le_bytes());
+            v.extend_from_slice(&8u16.to_le_bytes());
+            v.extend_from_slice(&0x1_0000_0000u64.to_le_bytes());
+            v
+        };
+
+        let central_size = 46 + file_name.len() + extra_data.len();
+        let mut bytes = Vec::new();
+
+        bytes.extend_from_slice(&[0x50, 0x4B, 0x01, 0x02]);
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&(file_name.len() as u16).to_le_bytes());
+        bytes.extend_from_slice(&(extra_data.len() as u16).to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+        bytes.extend_from_slice(file_name);
+        bytes.extend_from_slice(&extra_data);
+
+        bytes.extend_from_slice(&[0x50, 0x4B, 0x05, 0x06]);
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&(central_size as u32).to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+
+        fs::write(&path, bytes).unwrap();
+
+        let offsets = ZipFile::read_local_header_offsets(&path).unwrap();
+        assert_eq!(offsets, vec![0x1_0000_0000u64]);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_open_read_stream_from_local_header_pointer_supports_raw_and_nonraw_stored() {
+        let path = unique_temp_zip("compress_zip_localptr_stream");
+        {
+            let file = File::create(&path).unwrap();
+            let mut writer = ZipWriter::new(file);
+            let options = FileOptions::default().compression_method(CompressionMethod::Stored);
+            writer.start_file("a.bin", options).unwrap();
+            writer.write_all(b"hello").unwrap();
+            writer.finish().unwrap();
+        }
+
+        let mut zip_file = ZipFile::new();
+        assert_eq!(zip_file.zip_file_open(&path, 0, true), ZipReturn::ZipGood);
+        let local = zip_file.get_file_header(0).unwrap().local_head.unwrap();
+
+        {
+            let (mut stream, stream_size, compression) = zip_file
+                .zip_file_open_read_stream_from_local_header_pointer(local, true)
+                .unwrap();
+            let mut data = Vec::new();
+            stream.read_to_end(&mut data).unwrap();
+            assert_eq!(compression, 0);
+            assert_eq!(stream_size, 5);
+            assert_eq!(data, b"hello");
+        }
+
+        {
+            let (mut stream, stream_size, compression) = zip_file
+                .zip_file_open_read_stream_from_local_header_pointer(local, false)
+                .unwrap();
+            let mut data = Vec::new();
+            stream.read_to_end(&mut data).unwrap();
+            assert_eq!(compression, 0);
+            assert_eq!(stream_size, 5);
+            assert_eq!(data, b"hello");
+        }
+
+        zip_file.zip_file_close();
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_open_read_stream_from_local_header_pointer_rejects_data_descriptor_flag() {
+        let path = unique_temp_zip("compress_zip_localptr_dd");
+        {
+            let file = File::create(&path).unwrap();
+            let mut writer = ZipWriter::new(file);
+            let options = FileOptions::default().compression_method(CompressionMethod::Stored);
+            writer.start_file("a.bin", options).unwrap();
+            writer.write_all(b"hello").unwrap();
+            writer.finish().unwrap();
+        }
+
+        let mut zip_file = ZipFile::new();
+        assert_eq!(zip_file.zip_file_open(&path, 0, true), ZipReturn::ZipGood);
+        let local = zip_file.get_file_header(0).unwrap().local_head.unwrap();
+        zip_file.zip_file_close();
+
+        let mut bytes = fs::read(&path).unwrap();
+        let flag_pos = (local as usize) + 6;
+        let flags = u16::from_le_bytes([bytes[flag_pos], bytes[flag_pos + 1]]);
+        let new_flags = flags | 8;
+        bytes[flag_pos..flag_pos + 2].copy_from_slice(&new_flags.to_le_bytes());
+        fs::write(&path, bytes).unwrap();
+
+        let mut zip_file = ZipFile::new();
+        assert_eq!(zip_file.zip_file_open(&path, 0, true), ZipReturn::ZipGood);
+        let err = zip_file
+            .zip_file_open_read_stream_from_local_header_pointer(local, false)
+            .err()
+            .unwrap();
+        assert_eq!(err, ZipReturn::ZipCannotFastOpen);
+        zip_file.zip_file_close();
+
+        let _ = fs::remove_file(path);
+    }
