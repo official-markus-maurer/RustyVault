@@ -29,5 +29,7 @@ bitflags::bitflags! {
         // File access errors
         const SOURCE_FILE_LOCKED = 4096;
         const CATCH_ERROR = 8192;
+        const USER_ABORTED = 16384;
+        const USER_ABORTED_HARD = 32768;
     }
 }

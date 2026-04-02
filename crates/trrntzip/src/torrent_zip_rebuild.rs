@@ -4,6 +4,7 @@ use std::path::Path;
 use compress::i_compress::ICompress;
 use compress::zip_enums::ZipReturn;
 use compress::structured_archive::{ZipStructure, get_compression_type};
+use crate::process_control::ProcessControl;
 use crate::trrntzip_status::TrrntZipStatus;
 use crate::zipped_file::ZippedFile;
 use crc32fast::Hasher as Crc32Hasher;
@@ -35,6 +36,69 @@ struct RawZipEntry {
 impl TorrentZipRebuild {
     const TORRENTZIP_DOS_TIME: u16 = 48128;
     const TORRENTZIP_DOS_DATE: u16 = 8600;
+
+    fn aborted_status(control: Option<&ProcessControl>) -> TrrntZipStatus {
+        if control.is_some_and(|control| control.is_hard_stop_requested()) {
+            TrrntZipStatus::USER_ABORTED_HARD
+        } else {
+            TrrntZipStatus::USER_ABORTED
+        }
+    }
+
+    fn hard_stop_requested(control: Option<&ProcessControl>) -> bool {
+        control.is_some_and(|control| control.is_hard_stop_requested())
+    }
+
+    fn remove_tmp_if_present(tmp_filename: &Path) {
+        if tmp_filename.exists() {
+            let _ = fs::remove_file(tmp_filename);
+        }
+    }
+
+    pub fn cleanup_samtmp_files(base_path: &Path, recursive: bool) -> usize {
+        let mut removed = 0;
+
+        let is_samtmp = base_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.contains(".samtmp"));
+
+        if is_samtmp {
+            if base_path.is_dir() {
+                if fs::remove_dir_all(base_path).is_ok() {
+                    removed += 1;
+                }
+            } else if base_path.is_file() && fs::remove_file(base_path).is_ok() {
+                removed += 1;
+            }
+            return removed;
+        }
+
+        let Ok(entries) = fs::read_dir(base_path) else {
+            return 0;
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let is_samtmp = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.contains(".samtmp"));
+            if is_samtmp {
+                if path.is_dir() {
+                    if fs::remove_dir_all(&path).is_ok() {
+                        removed += 1;
+                    }
+                } else if fs::remove_file(&path).is_ok() {
+                    removed += 1;
+                }
+            } else if path.is_dir() && recursive {
+                removed += Self::cleanup_samtmp_files(&path, true);
+            }
+        }
+
+        removed
+    }
 
     fn read_raw_zip_entry(zip_bytes: &[u8], entry_name: &str) -> Option<RawZipEntry> {
         let eocd_offset = zip_bytes
@@ -229,7 +293,14 @@ impl TorrentZipRebuild {
         tmp_filename: &Path,
         out_filename: &Path,
         source_path: &Path,
+        control: Option<&ProcessControl>,
     ) -> Option<TrrntZipStatus> {
+        if Self::hard_stop_requested(control) {
+            Self::remove_tmp_if_present(tmp_filename);
+            original_zip_file.zip_file_close();
+            return Some(Self::aborted_status(control));
+        }
+
         let zip_bytes = fs::read(source_path).ok()?;
         let mut entries = Vec::with_capacity(zipped_files.len());
 
@@ -242,6 +313,11 @@ impl TorrentZipRebuild {
         }
 
         let built = Self::build_torrentzip_archive(&entries);
+        if Self::hard_stop_requested(control) {
+            Self::remove_tmp_if_present(tmp_filename);
+            original_zip_file.zip_file_close();
+            return Some(Self::aborted_status(control));
+        }
         fs::write(tmp_filename, built).ok()?;
 
         original_zip_file.zip_file_close();
@@ -256,6 +332,15 @@ impl TorrentZipRebuild {
         zipped_files: &[ZippedFile],
         original_zip_file: &mut dyn ICompress,
         output_type: ZipStructure,
+    ) -> TrrntZipStatus {
+        Self::rezip_files_with_control(zipped_files, original_zip_file, output_type, None)
+    }
+
+    pub fn rezip_files_with_control(
+        zipped_files: &[ZippedFile],
+        original_zip_file: &mut dyn ICompress,
+        output_type: ZipStructure,
+        control: Option<&ProcessControl>,
     ) -> TrrntZipStatus {
         let filename = original_zip_file.zip_filename().to_string();
         let path = Path::new(&filename);
@@ -276,8 +361,11 @@ impl TorrentZipRebuild {
             }
         }
 
-        if tmp_filename.exists() {
-            let _ = fs::remove_file(&tmp_filename);
+        Self::remove_tmp_if_present(&tmp_filename);
+
+        if Self::hard_stop_requested(control) {
+            original_zip_file.zip_file_close();
+            return Self::aborted_status(control);
         }
 
         if output_type == ZipStructure::ZipTrrnt {
@@ -287,6 +375,7 @@ impl TorrentZipRebuild {
                 &tmp_filename,
                 &out_filename,
                 path,
+                control,
             ) {
                 return status;
             }
@@ -299,6 +388,7 @@ impl TorrentZipRebuild {
         let zr = zip_file_out.zip_file_create(&tmp_filename.to_string_lossy());
         
         if zr != ZipReturn::ZipGood {
+            Self::remove_tmp_if_present(&tmp_filename);
             return TrrntZipStatus::CATCH_ERROR;
         }
 
@@ -307,6 +397,12 @@ impl TorrentZipRebuild {
         let mut buffer = [0u8; 8192];
 
         for t in zipped_files {
+            if Self::hard_stop_requested(control) {
+                zip_file_out.zip_file_close_failed();
+                original_zip_file.zip_file_close();
+                Self::remove_tmp_if_present(&tmp_filename);
+                return Self::aborted_status(control);
+            }
             let mut read_stream: Box<dyn Read> = Box::new(std::io::empty());
             let stream_size = t.size;
 
@@ -318,7 +414,7 @@ impl TorrentZipRebuild {
                     Err(_) => {
                         zip_file_out.zip_file_close_failed();
                         original_zip_file.zip_file_close();
-                        let _ = fs::remove_file(&tmp_filename);
+                        Self::remove_tmp_if_present(&tmp_filename);
                         return TrrntZipStatus::CORRUPT_ZIP;
                     }
                 }
@@ -330,6 +426,13 @@ impl TorrentZipRebuild {
                     let mut size_to_go = stream_size;
 
                     while size_to_go > 0 {
+                        if Self::hard_stop_requested(control) {
+                            zip_file_out.zip_file_close_failed();
+                            let _ = original_zip_file.zip_file_close_read_stream();
+                            original_zip_file.zip_file_close();
+                            Self::remove_tmp_if_present(&tmp_filename);
+                            return Self::aborted_status(control);
+                        }
                         let size_now = std::cmp::min(size_to_go as usize, buffer.len());
                         if let Ok(n) = read_stream.read(&mut buffer[..size_now]) {
                             if n == 0 { break; }
@@ -350,7 +453,7 @@ impl TorrentZipRebuild {
                 Err(_) => {
                     zip_file_out.zip_file_close_failed();
                     original_zip_file.zip_file_close();
-                    let _ = fs::remove_file(&tmp_filename);
+                    Self::remove_tmp_if_present(&tmp_filename);
                     return TrrntZipStatus::CORRUPT_ZIP;
                 }
             }
@@ -371,89 +474,5 @@ impl TorrentZipRebuild {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use compress::i_compress::ICompress;
-    use compress::zip_file::ZipFile;
-    use tempfile::tempdir;
-    use zip::write::FileOptions;
-    use zip::{CompressionMethod, ZipArchive, ZipWriter};
-
-    #[test]
-    fn test_rezip_files_builds_torrentzip_with_raw_stream_reuse() {
-        let temp = tempdir().unwrap();
-        let source_path = temp.path().join("sample.zip");
-
-        {
-            let file = fs::File::create(&source_path).unwrap();
-            let mut writer = ZipWriter::new(file);
-            let options = FileOptions::default()
-                .compression_method(CompressionMethod::Deflated)
-                .compression_level(Some(9));
-            writer.start_file("b.bin", options).unwrap();
-            writer.write_all(b"bbbb").unwrap();
-            writer.start_file("a.bin", options).unwrap();
-            writer.write_all(b"aaaa").unwrap();
-            writer.finish().unwrap();
-        }
-
-        let source_bytes = fs::read(&source_path).unwrap();
-        let source_a = TorrentZipRebuild::read_raw_zip_entry(&source_bytes, "a.bin").unwrap();
-
-        let mut zip_file = ZipFile::new();
-        assert_eq!(
-            zip_file.zip_file_open(&source_path.to_string_lossy(), 0, true),
-            ZipReturn::ZipGood
-        );
-
-        let zipped_files = vec![
-            ZippedFile {
-                index: 1,
-                name: "a.bin".to_string(),
-                size: 4,
-                crc: None,
-                sha1: None,
-                is_dir: false,
-            },
-            ZippedFile {
-                index: 0,
-                name: "b.bin".to_string(),
-                size: 4,
-                crc: None,
-                sha1: None,
-                is_dir: false,
-            },
-        ];
-
-        let status = TorrentZipRebuild::rezip_files(&zipped_files, &mut zip_file, ZipStructure::ZipTrrnt);
-        assert_eq!(status, TrrntZipStatus::VALID_TRRNTZIP);
-
-        let rebuilt_bytes = fs::read(&source_path).unwrap();
-        let rebuilt_a = TorrentZipRebuild::read_raw_zip_entry(&rebuilt_bytes, "a.bin").unwrap();
-        assert_eq!(source_a.compressed_data, rebuilt_a.compressed_data);
-
-        let archive = ZipArchive::new(fs::File::open(&source_path).unwrap()).unwrap();
-        let eocd_offset = rebuilt_bytes
-            .windows(4)
-            .rposition(|window| window == [0x50, 0x4B, 0x05, 0x06])
-            .unwrap();
-        let central_directory_size = u32::from_le_bytes([
-            rebuilt_bytes[eocd_offset + 12],
-            rebuilt_bytes[eocd_offset + 13],
-            rebuilt_bytes[eocd_offset + 14],
-            rebuilt_bytes[eocd_offset + 15],
-        ]) as usize;
-        let central_directory_offset = u32::from_le_bytes([
-            rebuilt_bytes[eocd_offset + 16],
-            rebuilt_bytes[eocd_offset + 17],
-            rebuilt_bytes[eocd_offset + 18],
-            rebuilt_bytes[eocd_offset + 19],
-        ]) as usize;
-        let mut crc = Crc32Hasher::new();
-        crc.update(
-            &rebuilt_bytes[central_directory_offset..central_directory_offset + central_directory_size],
-        );
-        let expected_comment = format!("TORRENTZIPPED-{:08X}", crc.finalize());
-        assert_eq!(String::from_utf8_lossy(archive.comment()), expected_comment);
-    }
-}
+#[path = "tests/torrent_zip_rebuild_tests.rs"]
+mod tests;

@@ -1,17 +1,28 @@
 use eframe::egui;
-use std::rc::Rc;
 use std::cell::RefCell;
+use std::collections::HashSet;
+use std::fs::{self, File};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
+use std::thread;
+use compress::structured_archive::ZipStructure;
 use rv_core::read_dat::DatUpdate;
 use rv_core::scanner::Scanner;
 use rv_core::find_fixes::FindFixes;
 use rv_core::fix::Fix;
 use rv_core::fix_dat_report::FixDatReport;
 use rv_core::file_scanning::FileScanning;
-use std::sync::mpsc::{channel, Sender};
 use dat_reader::enums::FileType;
 use rv_core::db::{init_db, GLOBAL_DB};
 use rv_core::rv_file::{RvFile, TreeSelect};
 use dat_reader::enums::DatStatus;
+use sevenz_rust::{SevenZArchiveEntry, SevenZWriter};
+use trrntzip::{ProcessControl, StopMode, TorrentZip, TorrentZipRebuild, TrrntZipStatus};
+use zip::read::ZipArchive;
+use zip::write::FileOptions;
+use zip::{CompressionMethod, ZipWriter};
 
 /// Main GUI entry point using `egui` and `eframe`.
 /// 
@@ -35,82 +46,62 @@ mod grids;
 use crate::utils::{get_full_node_path, extract_text_from_zip, extract_image_from_zip};
 
 fn ui_missing_count(stats: &rv_core::repair_status::RepairStatus) -> i32 {
-    stats.roms_missing + stats.roms_missing_mia + stats.roms_fixes
+    stats.count_missing()
 }
 
 fn ui_fixable_count(stats: &rv_core::repair_status::RepairStatus) -> i32 {
-    stats.roms_fixes + stats.roms_unknown
+    stats.count_fixes_needed()
+}
+
+fn recompute_fix_plan(root: Rc<RefCell<RvFile>>) {
+    FindFixes::scan_files(Rc::clone(&root));
+    rv_core::repair_status::RepairStatus::report_status_reset(root);
+}
+
+fn is_actionable_fix_status(status: rv_core::enums::RepStatus) -> bool {
+    matches!(
+        status,
+        rv_core::enums::RepStatus::CanBeFixed
+            | rv_core::enums::RepStatus::CanBeFixedMIA
+            | rv_core::enums::RepStatus::CorruptCanBeFixed
+            | rv_core::enums::RepStatus::UnNeeded
+            | rv_core::enums::RepStatus::MoveToSort
+            | rv_core::enums::RepStatus::MoveToCorrupt
+            | rv_core::enums::RepStatus::Rename
+            | rv_core::enums::RepStatus::Delete
+            | rv_core::enums::RepStatus::IncompleteRemove
+    )
+}
+
+fn count_selected_actionable_fixes(node: Rc<RefCell<RvFile>>) -> i32 {
+    let (is_selected, rep_status, is_dir, children) = {
+        let n = node.borrow();
+        (
+            matches!(n.tree_checked, TreeSelect::Selected | TreeSelect::Locked),
+            n.rep_status(),
+            n.is_directory(),
+            n.children.clone(),
+        )
+    };
+
+    let mut count = if is_selected && is_actionable_fix_status(rep_status) { 1 } else { 0 };
+
+    if is_dir {
+        for child in children {
+            count += count_selected_actionable_fixes(child);
+        }
+    }
+
+    count
+}
+
+fn current_fixable_count(root: Rc<RefCell<RvFile>>) -> i32 {
+    count_selected_actionable_fixes(root)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use rv_core::rv_file::RvFile;
-    use dat_reader::enums::FileType;
-    use std::rc::Rc;
-    use std::cell::RefCell;
-    use crate::utils::get_full_node_path;
-
-    #[test]
-    fn test_get_full_node_path() {
-        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
-        root.borrow_mut().name = "RustyVault".to_string();
-
-        let sub_dir = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
-        sub_dir.borrow_mut().name = "MAME".to_string();
-        sub_dir.borrow_mut().parent = Some(Rc::downgrade(&root));
-        
-        let game = Rc::new(RefCell::new(RvFile::new(FileType::Zip)));
-        game.borrow_mut().name = "pacman.zip".to_string();
-        game.borrow_mut().parent = Some(Rc::downgrade(&sub_dir));
-
-        sub_dir.borrow_mut().child_add(Rc::clone(&game));
-        root.borrow_mut().child_add(Rc::clone(&sub_dir));
-
-        let path = get_full_node_path(Rc::clone(&game));
-        assert_eq!(path, "RustyVault\\MAME\\pacman.zip");
-    }
-
-    #[test]
-    fn test_branch_has_selected_nodes_finds_selected_descendant() {
-        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
-        root.borrow_mut().tree_checked = TreeSelect::UnSelected;
-
-        let child_dir = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
-        child_dir.borrow_mut().tree_checked = TreeSelect::UnSelected;
-
-        let selected_file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
-        selected_file.borrow_mut().tree_checked = TreeSelect::Selected;
-
-        child_dir.borrow_mut().child_add(Rc::clone(&selected_file));
-        root.borrow_mut().child_add(Rc::clone(&child_dir));
-
-        assert!(RomVaultApp::branch_has_selected_nodes(&root.borrow()));
-    }
-
-    #[test]
-    fn test_ui_missing_count_excludes_unknown_and_not_collected() {
-        let mut stats = rv_core::repair_status::RepairStatus::new();
-        stats.roms_missing = 1;
-        stats.roms_missing_mia = 1;
-        stats.roms_fixes = 1;
-        stats.roms_unknown = 2;
-        stats.roms_not_collected = 3;
-
-        assert_eq!(ui_missing_count(&stats), 3);
-    }
-
-    #[test]
-    fn test_ui_fixable_count_excludes_not_collected_and_unneeded() {
-        let mut stats = rv_core::repair_status::RepairStatus::new();
-        stats.roms_fixes = 1;
-        stats.roms_unknown = 2;
-        stats.roms_not_collected = 3;
-        stats.roms_unneeded = 4;
-
-        assert_eq!(ui_fixable_count(&stats), 3);
-    }
-}
+#[path = "tests/main_tests.rs"]
+mod tests;
 
 fn main() -> eframe::Result<()> {
     tracing_subscriber::fmt()
@@ -182,6 +173,26 @@ struct RomVaultApp {
     working_dir_mappings: Vec<rv_core::settings::DirMapping>,
     selected_dir_mapping_idx: Option<usize>,
     show_sam_dialog: bool,
+    sam_source_items: Vec<String>,
+    sam_selected_source_idx: Option<usize>,
+    sam_pending_source_path: String,
+    sam_output_directory: String,
+    sam_use_origin_output: bool,
+    sam_input_kind: crate::dialogs::SamInputKind,
+    sam_output_kind: crate::dialogs::SamOutputKind,
+    sam_recurse_subdirs: bool,
+    sam_rebuild_existing: bool,
+    sam_remove_source: bool,
+    sam_verify_output: bool,
+    sam_running: bool,
+    sam_soft_stop_requested: bool,
+    sam_hard_stop_requested: bool,
+    sam_status_text: String,
+    sam_current_item: Option<String>,
+    sam_completed_items: usize,
+    sam_total_items: usize,
+    sam_stop_control: Option<ProcessControl>,
+    sam_worker_rx: Option<Receiver<SamWorkerEvent>>,
     show_color_key: bool,
     pub show_settings: bool,
     pub global_settings_tab: usize,
@@ -220,6 +231,51 @@ struct RomVaultApp {
     startup_done_at: Option<std::time::Instant>,
 }
 
+#[derive(Clone)]
+struct SamJobRequest {
+    sources: Vec<String>,
+    output_directory: String,
+    use_origin_output: bool,
+    input_kind: crate::dialogs::SamInputKind,
+    output_kind: crate::dialogs::SamOutputKind,
+    recurse_subdirs: bool,
+    rebuild_existing: bool,
+    remove_source: bool,
+    verify_output: bool,
+}
+
+enum SamWorkerEvent {
+    Started { total_items: usize },
+    ItemStarted { item: String, index: usize, total: usize },
+    Log(String),
+    ItemFinished { item: String, status: String },
+    Finished { status: String },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SamSourceKind {
+    Directory,
+    Zip,
+    SevenZip,
+}
+
+struct SamInterruptReader<R> {
+    inner: R,
+    control: ProcessControl,
+}
+
+impl<R: Read> Read for SamInterruptReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.control.is_hard_stop_requested() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "USER_ABORTED_HARD",
+            ));
+        }
+        self.inner.read(buf)
+    }
+}
+
 impl RomVaultApp {
     fn new() -> Self {
         rv_core::settings::load_settings_from_file();
@@ -243,6 +299,26 @@ impl RomVaultApp {
             working_dir_mappings: Vec::new(),
             selected_dir_mapping_idx: None,
             show_sam_dialog: false,
+            sam_source_items: Vec::new(),
+            sam_selected_source_idx: None,
+            sam_pending_source_path: String::new(),
+            sam_output_directory: String::new(),
+            sam_use_origin_output: false,
+            sam_input_kind: crate::dialogs::SamInputKind::Directory,
+            sam_output_kind: crate::dialogs::SamOutputKind::TorrentZip,
+            sam_recurse_subdirs: true,
+            sam_rebuild_existing: false,
+            sam_remove_source: false,
+            sam_verify_output: true,
+            sam_running: false,
+            sam_soft_stop_requested: false,
+            sam_hard_stop_requested: false,
+            sam_status_text: "Idle".to_string(),
+            sam_current_item: None,
+            sam_completed_items: 0,
+            sam_total_items: 0,
+            sam_stop_control: None,
+            sam_worker_rx: None,
             show_color_key: false,
             show_settings: false,
             global_settings_tab: 0,
@@ -358,6 +434,773 @@ impl RomVaultApp {
         self.task_logs.push("Task completed.".to_string());
     }
 
+    fn sam_output_extension(output_kind: crate::dialogs::SamOutputKind) -> Option<&'static str> {
+        match output_kind {
+            crate::dialogs::SamOutputKind::TorrentZip
+            | crate::dialogs::SamOutputKind::Zip
+            | crate::dialogs::SamOutputKind::ZipZstd => Some("zip"),
+            crate::dialogs::SamOutputKind::SevenZipLzma => Some("7z"),
+            crate::dialogs::SamOutputKind::SevenZipZstd => None,
+        }
+    }
+
+    pub(crate) fn sam_output_kind_supported(output_kind: crate::dialogs::SamOutputKind) -> bool {
+        !matches!(output_kind, crate::dialogs::SamOutputKind::SevenZipZstd)
+    }
+
+    pub(crate) fn sam_output_kind_support_message(output_kind: crate::dialogs::SamOutputKind) -> Option<&'static str> {
+        match output_kind {
+            crate::dialogs::SamOutputKind::SevenZipZstd => Some("7z Zstd is visible for reference parity, but the current archive backend cannot write stop-safe 7z Zstd output yet."),
+            _ => None,
+        }
+    }
+
+    fn sam_collect_stage_entries(
+        base_dir: &Path,
+        current_dir: &Path,
+        entries: &mut Vec<(PathBuf, bool)>,
+    ) -> Result<(), String> {
+        let mut children: Vec<_> = fs::read_dir(current_dir)
+            .map_err(|err| err.to_string())?
+            .flatten()
+            .map(|entry| entry.path())
+            .collect();
+        children.sort_by_key(|path| path.to_string_lossy().to_lowercase());
+
+        if current_dir != base_dir {
+            entries.push((
+                current_dir
+                    .strip_prefix(base_dir)
+                    .map_err(|err| err.to_string())?
+                    .to_path_buf(),
+                true,
+            ));
+        }
+
+        for child in children {
+            if child.is_dir() {
+                Self::sam_collect_stage_entries(base_dir, &child, entries)?;
+            } else {
+                entries.push((
+                    child.strip_prefix(base_dir).map_err(|err| err.to_string())?.to_path_buf(),
+                    false,
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn sam_source_kind(path: &Path) -> Option<SamSourceKind> {
+        if path.is_dir() {
+            Some(SamSourceKind::Directory)
+        } else if path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
+        {
+            Some(SamSourceKind::Zip)
+        } else if path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("7z"))
+        {
+            Some(SamSourceKind::SevenZip)
+        } else {
+            None
+        }
+    }
+
+    fn sam_input_allows_source(input_kind: crate::dialogs::SamInputKind, source_kind: SamSourceKind) -> bool {
+        match input_kind {
+            crate::dialogs::SamInputKind::Directory => source_kind == SamSourceKind::Directory,
+            crate::dialogs::SamInputKind::Zip => source_kind == SamSourceKind::Zip,
+            crate::dialogs::SamInputKind::SevenZip => source_kind == SamSourceKind::SevenZip,
+            crate::dialogs::SamInputKind::Mixed => true,
+        }
+    }
+
+    fn collect_sam_work_items(
+        source: &Path,
+        recurse: bool,
+        input_kind: crate::dialogs::SamInputKind,
+        items: &mut Vec<PathBuf>,
+        seen: &mut HashSet<PathBuf>,
+    ) {
+        if let Some(source_kind) = Self::sam_source_kind(source) {
+            if Self::sam_input_allows_source(input_kind, source_kind) {
+                let canonical = source.canonicalize().unwrap_or_else(|_| source.to_path_buf());
+                if seen.insert(canonical) {
+                    items.push(source.to_path_buf());
+                }
+            }
+        }
+
+        if !source.is_dir() || !recurse {
+            return;
+        }
+
+        let Ok(entries) = fs::read_dir(source) else {
+            return;
+        };
+
+        for entry in entries.flatten() {
+            Self::collect_sam_work_items(&entry.path(), true, input_kind, items, seen);
+        }
+    }
+
+    fn sam_output_path(
+        output_root: &Path,
+        source_path: &Path,
+        output_kind: crate::dialogs::SamOutputKind,
+    ) -> Option<PathBuf> {
+        let extension = Self::sam_output_extension(output_kind)?;
+        let stem = if source_path.is_dir() {
+            source_path.file_name()?.to_string_lossy().to_string()
+        } else {
+            source_path.file_stem()?.to_string_lossy().to_string()
+        };
+        Some(output_root.join(format!("{}.{}", stem, extension)))
+    }
+
+    fn sam_output_root_for_source(
+        source_path: &Path,
+        output_directory: &str,
+        use_origin_output: bool,
+    ) -> Option<PathBuf> {
+        if use_origin_output {
+            if source_path.is_dir() {
+                source_path.parent().map(Path::to_path_buf)
+            } else {
+                source_path.parent().map(Path::to_path_buf)
+            }
+        } else if output_directory.trim().is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(output_directory))
+        }
+    }
+
+    pub(crate) fn sam_has_usable_output_target(&self) -> bool {
+        self.sam_use_origin_output || !self.sam_output_directory.trim().is_empty()
+    }
+
+    fn sam_archive_temp_path(output_path: &Path) -> PathBuf {
+        let file_name = output_path.file_name().unwrap_or_default().to_string_lossy();
+        output_path
+            .parent()
+            .unwrap_or(Path::new(""))
+            .join(format!("__{}.samtmp", file_name))
+    }
+
+    fn sam_stage_dir(output_path: &Path) -> PathBuf {
+        let file_name = output_path.file_name().unwrap_or_default().to_string_lossy();
+        output_path
+            .parent()
+            .unwrap_or(Path::new(""))
+            .join(format!("__{}.samtmp.dir", file_name))
+    }
+
+    fn sam_hard_stop_requested(control: &ProcessControl) -> bool {
+        control.is_hard_stop_requested()
+    }
+
+    fn sam_copy_stream<R: Read, W: Write>(
+        reader: &mut R,
+        writer: &mut W,
+        control: &ProcessControl,
+    ) -> Result<(), String> {
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            if Self::sam_hard_stop_requested(control) {
+                return Err("USER_ABORTED_HARD".to_string());
+            }
+            let read = reader.read(&mut buffer).map_err(|err| err.to_string())?;
+            if read == 0 {
+                return Ok(());
+            }
+            writer.write_all(&buffer[..read]).map_err(|err| err.to_string())?;
+        }
+    }
+
+    fn sam_collect_directory_entries(
+        base_dir: &Path,
+        current_dir: &Path,
+        entries: &mut Vec<(PathBuf, bool)>,
+    ) -> Result<(), String> {
+        let mut children: Vec<_> = fs::read_dir(current_dir)
+            .map_err(|err| err.to_string())?
+            .flatten()
+            .map(|entry| entry.path())
+            .collect();
+        children.sort_by_key(|path| path.to_string_lossy().to_lowercase());
+
+        if current_dir != base_dir {
+            entries.push((
+                current_dir
+                    .strip_prefix(base_dir)
+                    .map_err(|err| err.to_string())?
+                    .to_path_buf(),
+                true,
+            ));
+        }
+
+        for child in children {
+            if child.is_dir() {
+                Self::sam_collect_directory_entries(base_dir, &child, entries)?;
+            } else {
+                entries.push((
+                    child.strip_prefix(base_dir).map_err(|err| err.to_string())?.to_path_buf(),
+                    false,
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn sam_write_zip_from_directory(
+        source_dir: &Path,
+        output_path: &Path,
+        compression: CompressionMethod,
+        control: &ProcessControl,
+    ) -> Result<(), String> {
+        let file = File::create(output_path).map_err(|err| err.to_string())?;
+        let mut writer = ZipWriter::new(file);
+        let options = FileOptions::default().compression_method(compression);
+        let mut entries = Vec::new();
+        Self::sam_collect_directory_entries(source_dir, source_dir, &mut entries)?;
+
+        for (relative_path, is_dir) in entries {
+            if Self::sam_hard_stop_requested(control) {
+                return Err("USER_ABORTED_HARD".to_string());
+            }
+            let name = relative_path.to_string_lossy().replace('\\', "/");
+            if is_dir {
+                writer.add_directory(format!("{}/", name.trim_end_matches('/')), options).map_err(|err| err.to_string())?;
+            } else {
+                writer.start_file(&name, options).map_err(|err| err.to_string())?;
+                let mut file = File::open(source_dir.join(&relative_path)).map_err(|err| err.to_string())?;
+                Self::sam_copy_stream(&mut file, &mut writer, control)?;
+            }
+        }
+
+        writer.finish().map_err(|err| err.to_string())?;
+        Ok(())
+    }
+
+    fn sam_extract_zip_to_directory(
+        source_path: &Path,
+        stage_dir: &Path,
+        control: &ProcessControl,
+    ) -> Result<(), String> {
+        let file = File::open(source_path).map_err(|err| err.to_string())?;
+        let mut archive = ZipArchive::new(file).map_err(|err| err.to_string())?;
+
+        for idx in 0..archive.len() {
+            if Self::sam_hard_stop_requested(control) {
+                return Err("USER_ABORTED_HARD".to_string());
+            }
+            let mut entry = archive.by_index(idx).map_err(|err| err.to_string())?;
+            let out_path = stage_dir.join(entry.mangled_name());
+            if entry.is_dir() {
+                fs::create_dir_all(&out_path).map_err(|err| err.to_string())?;
+            } else {
+                if let Some(parent) = out_path.parent() {
+                    fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+                }
+                let mut output = File::create(&out_path).map_err(|err| err.to_string())?;
+                Self::sam_copy_stream(&mut entry, &mut output, control)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn sam_extract_7z_to_directory(
+        source_path: &Path,
+        stage_dir: &Path,
+        control: &ProcessControl,
+    ) -> Result<(), String> {
+        sevenz_rust::decompress_file_with_extract_fn(
+            source_path,
+            stage_dir,
+            |entry, reader, dest| {
+                if control.is_hard_stop_requested() {
+                    return Err(sevenz_rust::Error::io(std::io::Error::new(
+                        std::io::ErrorKind::Interrupted,
+                        "USER_ABORTED_HARD",
+                    )));
+                }
+                let out_path = dest.to_path_buf();
+                if entry.name().ends_with('/') {
+                    fs::create_dir_all(&out_path)?;
+                } else {
+                    if let Some(parent) = out_path.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+                    let mut output = File::create(&out_path)?;
+                    let mut buffer = [0u8; 64 * 1024];
+                    loop {
+                        if control.is_hard_stop_requested() {
+                            return Err(sevenz_rust::Error::io(std::io::Error::new(
+                                std::io::ErrorKind::Interrupted,
+                                "USER_ABORTED_HARD",
+                            )));
+                        }
+                        let read = reader.read(&mut buffer)?;
+                        if read == 0 {
+                            break;
+                        }
+                        output.write_all(&buffer[..read])?;
+                    }
+                }
+                Ok(true)
+            },
+        )
+        .map_err(|err| {
+            if control.is_hard_stop_requested() {
+                "USER_ABORTED_HARD".to_string()
+            } else {
+                err.to_string()
+            }
+        })?;
+        Ok(())
+    }
+
+    fn sam_prepare_source_directory(
+        source_path: &Path,
+        source_kind: SamSourceKind,
+        stage_dir: &Path,
+        control: &ProcessControl,
+    ) -> Result<Option<PathBuf>, String> {
+        match source_kind {
+            SamSourceKind::Directory => Ok(None),
+            SamSourceKind::Zip => {
+                fs::create_dir_all(stage_dir).map_err(|err| err.to_string())?;
+                Self::sam_extract_zip_to_directory(source_path, stage_dir, control)?;
+                Ok(Some(stage_dir.to_path_buf()))
+            }
+            SamSourceKind::SevenZip => {
+                fs::create_dir_all(stage_dir).map_err(|err| err.to_string())?;
+                Self::sam_extract_7z_to_directory(source_path, stage_dir, control)?;
+                Ok(Some(stage_dir.to_path_buf()))
+            }
+        }
+    }
+
+    fn sam_verify_zip_output(output_path: &Path) -> Result<(), String> {
+        let file = File::open(output_path).map_err(|err| err.to_string())?;
+        let archive = ZipArchive::new(file).map_err(|err| err.to_string())?;
+        let _ = archive.len();
+        Ok(())
+    }
+
+    fn sam_verify_7z_output(output_path: &Path) -> Result<(), String> {
+        let mut file = File::open(output_path).map_err(|err| err.to_string())?;
+        sevenz_rust::Archive::read(&mut file, 0, sevenz_rust::Password::empty().as_slice())
+            .map_err(|err| err.to_string())?;
+        Ok(())
+    }
+
+    fn sam_process_7z_item(
+        source_path: &Path,
+        source_kind: SamSourceKind,
+        output_path: &Path,
+        verify_output: bool,
+        control: &ProcessControl,
+    ) -> Result<String, String> {
+        let temp_archive = Self::sam_archive_temp_path(output_path);
+        let stage_dir = Self::sam_stage_dir(output_path);
+        let _ = fs::remove_file(&temp_archive);
+        let _ = fs::remove_dir_all(&stage_dir);
+
+        let result = (|| -> Result<String, String> {
+            let prepared_dir = Self::sam_prepare_source_directory(source_path, source_kind, &stage_dir, control)?;
+            let source_dir = prepared_dir.as_deref().unwrap_or(source_path);
+            let mut entries = Vec::new();
+            Self::sam_collect_stage_entries(source_dir, source_dir, &mut entries)?;
+
+            let mut writer = SevenZWriter::create(&temp_archive).map_err(|err| err.to_string())?;
+            for (relative_path, is_dir) in entries {
+                if control.is_hard_stop_requested() {
+                    return Err("USER_ABORTED_HARD".to_string());
+                }
+
+                let disk_path = source_dir.join(&relative_path);
+                let entry_name = relative_path.to_string_lossy().replace('\\', "/");
+                let entry = SevenZArchiveEntry::from_path(&disk_path, entry_name);
+                if is_dir {
+                    writer.push_archive_entry::<&[u8]>(entry, None).map_err(|err| err.to_string())?;
+                } else {
+                    let file = File::open(&disk_path).map_err(|err| err.to_string())?;
+                    let reader = SamInterruptReader {
+                        inner: file,
+                        control: control.clone(),
+                    };
+                    writer.push_archive_entry(entry, Some(reader)).map_err(|err| {
+                        if control.is_hard_stop_requested() {
+                            "USER_ABORTED_HARD".to_string()
+                        } else {
+                            err.to_string()
+                        }
+                    })?;
+                }
+            }
+            writer.finish().map_err(|err| err.to_string())?;
+
+            if verify_output {
+                Self::sam_verify_7z_output(&temp_archive)?;
+            }
+
+            if output_path.exists() {
+                let _ = fs::remove_file(output_path);
+            }
+            fs::rename(&temp_archive, output_path).map_err(|err| err.to_string())?;
+            Ok("SEVENZIP_LZMA_CREATED".to_string())
+        })();
+
+        if result.is_err() {
+            let _ = fs::remove_file(&temp_archive);
+        }
+        let _ = fs::remove_dir_all(&stage_dir);
+        result
+    }
+
+    fn sam_process_zip_family_item(
+        source_path: &Path,
+        source_kind: SamSourceKind,
+        output_path: &Path,
+        output_kind: crate::dialogs::SamOutputKind,
+        verify_output: bool,
+        control: &ProcessControl,
+    ) -> Result<String, String> {
+        let temp_archive = Self::sam_archive_temp_path(output_path);
+        let stage_dir = Self::sam_stage_dir(output_path);
+        let _ = fs::remove_file(&temp_archive);
+        let _ = fs::remove_dir_all(&stage_dir);
+
+        let result = (|| -> Result<String, String> {
+            let prepared_dir = Self::sam_prepare_source_directory(source_path, source_kind, &stage_dir, control)?;
+            let source_dir = prepared_dir.as_deref().unwrap_or(source_path);
+            let compression = match output_kind {
+                crate::dialogs::SamOutputKind::ZipZstd => CompressionMethod::Zstd,
+                _ => CompressionMethod::Deflated,
+            };
+
+            Self::sam_write_zip_from_directory(source_dir, &temp_archive, compression, control)?;
+
+            if output_kind == crate::dialogs::SamOutputKind::TorrentZip {
+                let mut sam = TorrentZip::new();
+                sam.force_rezip = true;
+                sam.check_only = false;
+                sam.out_zip_type = ZipStructure::ZipTrrnt;
+                let status = sam.process_with_control(&temp_archive.to_string_lossy(), Some(control));
+                if status == TrrntZipStatus::USER_ABORTED_HARD {
+                    return Err("USER_ABORTED_HARD".to_string());
+                }
+                if status != TrrntZipStatus::VALID_TRRNTZIP {
+                    return Err(format!("{:?}", status));
+                }
+                if verify_output {
+                    let verify_status = sam.process(&temp_archive.to_string_lossy());
+                    if verify_status != TrrntZipStatus::VALID_TRRNTZIP {
+                        return Err(format!("SAM verification reported {:?} for {}", verify_status, temp_archive.to_string_lossy()));
+                    }
+                }
+            } else if verify_output {
+                Self::sam_verify_zip_output(&temp_archive)?;
+            }
+
+            if output_path.exists() {
+                let _ = fs::remove_file(output_path);
+            }
+            fs::rename(&temp_archive, output_path).map_err(|err| err.to_string())?;
+            Ok(match output_kind {
+                crate::dialogs::SamOutputKind::TorrentZip => "VALID_TRRNTZIP".to_string(),
+                crate::dialogs::SamOutputKind::Zip => "ZIP_CREATED".to_string(),
+                crate::dialogs::SamOutputKind::ZipZstd => "ZIP_ZSTD_CREATED".to_string(),
+                _ => unreachable!(),
+            })
+        })();
+
+        if result.is_err() {
+            let _ = fs::remove_file(&temp_archive);
+        }
+        if result.is_err() || output_path.exists() {
+            let _ = fs::remove_dir_all(&stage_dir);
+        }
+
+        result
+    }
+
+    fn cleanup_samtmp_for_request(request: &SamJobRequest) -> usize {
+        let mut visited = HashSet::new();
+        let mut removed = 0;
+
+        if !request.use_origin_output && !request.output_directory.trim().is_empty() {
+            let output_dir = PathBuf::from(&request.output_directory);
+            if visited.insert(output_dir.clone()) {
+                removed += TorrentZipRebuild::cleanup_samtmp_files(&output_dir, true);
+            }
+        }
+
+        for source in &request.sources {
+            let path = PathBuf::from(source);
+            let cleanup_root = if request.use_origin_output {
+                path.parent().map(Path::to_path_buf).unwrap_or(path.clone())
+            } else if path.is_dir() {
+                path.clone()
+            } else {
+                path.parent().map(Path::to_path_buf).unwrap_or(path.clone())
+            };
+            if visited.insert(cleanup_root.clone()) {
+                removed += TorrentZipRebuild::cleanup_samtmp_files(&cleanup_root, true);
+            }
+        }
+
+        removed
+    }
+
+    fn run_sam_job(request: SamJobRequest, control: ProcessControl, tx: Sender<SamWorkerEvent>) {
+        let mut work_items = Vec::new();
+        let mut seen = HashSet::new();
+        for source in &request.sources {
+            Self::collect_sam_work_items(
+                Path::new(source),
+                request.recurse_subdirs,
+                request.input_kind,
+                &mut work_items,
+                &mut seen,
+            );
+        }
+
+        let _ = tx.send(SamWorkerEvent::Started { total_items: work_items.len() });
+
+        if !Self::sam_output_kind_supported(request.output_kind) {
+            let _ = tx.send(SamWorkerEvent::Finished {
+                status: Self::sam_output_kind_support_message(request.output_kind)
+                    .unwrap_or("The selected SAM output type is not available.")
+                    .to_string(),
+            });
+            return;
+        }
+
+        for (idx, source_path) in work_items.iter().enumerate() {
+            if control.stop_mode() != StopMode::Running {
+                break;
+            }
+
+            let item_label = source_path.to_string_lossy().to_string();
+            let _ = tx.send(SamWorkerEvent::ItemStarted {
+                item: item_label.clone(),
+                index: idx + 1,
+                total: work_items.len(),
+            });
+
+            let Some(source_kind) = Self::sam_source_kind(source_path) else {
+                let _ = tx.send(SamWorkerEvent::Log(format!("SAM skipped unsupported source {}", item_label)));
+                continue;
+            };
+
+            let Some(output_root) = Self::sam_output_root_for_source(
+                source_path,
+                &request.output_directory,
+                request.use_origin_output,
+            ) else {
+                let _ = tx.send(SamWorkerEvent::Log(format!(
+                    "SAM skipped {} because no usable output location could be resolved.",
+                    item_label
+                )));
+                continue;
+            };
+            let _ = fs::create_dir_all(&output_root);
+
+            let Some(output_path) = Self::sam_output_path(&output_root, source_path, request.output_kind) else {
+                let _ = tx.send(SamWorkerEvent::Log(format!(
+                    "SAM skipped {} because the selected output type is not available.",
+                    item_label
+                )));
+                continue;
+            };
+
+            if output_path.exists() && !request.rebuild_existing {
+                let _ = tx.send(SamWorkerEvent::Log(format!(
+                    "SAM skipped {} because {} already exists.",
+                    item_label,
+                    output_path.to_string_lossy()
+                )));
+                continue;
+            }
+
+            let result = match request.output_kind {
+                crate::dialogs::SamOutputKind::TorrentZip
+                | crate::dialogs::SamOutputKind::Zip
+                | crate::dialogs::SamOutputKind::ZipZstd => Self::sam_process_zip_family_item(
+                    source_path,
+                    source_kind,
+                    &output_path,
+                    request.output_kind,
+                    request.verify_output,
+                    &control,
+                ),
+                crate::dialogs::SamOutputKind::SevenZipLzma => Self::sam_process_7z_item(
+                    source_path,
+                    source_kind,
+                    &output_path,
+                    request.verify_output,
+                    &control,
+                ),
+                crate::dialogs::SamOutputKind::SevenZipZstd => {
+                    Err("7z output is not yet available through the stop-safe SAM backend.".to_string())
+                }
+            };
+
+            match result {
+                Ok(status) => {
+                    if request.remove_source {
+                        if source_kind == SamSourceKind::Directory {
+                            let _ = fs::remove_dir_all(source_path);
+                        } else if source_path != &output_path {
+                            let _ = fs::remove_file(source_path);
+                        }
+                    }
+                    let _ = tx.send(SamWorkerEvent::ItemFinished { item: item_label, status });
+                }
+                Err(status) => {
+                    let _ = tx.send(SamWorkerEvent::ItemFinished {
+                        item: item_label.clone(),
+                        status: status.clone(),
+                    });
+                    if status == "USER_ABORTED_HARD" {
+                        let removed = Self::cleanup_samtmp_for_request(&request);
+                        let _ = tx.send(SamWorkerEvent::Log(format!(
+                            "SAM hard stop removed {} .samtmp file(s).",
+                            removed
+                        )));
+                        break;
+                    }
+                    let _ = tx.send(SamWorkerEvent::Log(format!("SAM {}", status)));
+                }
+            }
+        }
+
+        let finish_status = match control.stop_mode() {
+            StopMode::HardStop => {
+                let removed = Self::cleanup_samtmp_for_request(&request);
+                format!("SAM hard stopped. Removed {} .samtmp file(s).", removed)
+            }
+            StopMode::SoftStop => "SAM soft stopped after the current conversion.".to_string(),
+            StopMode::Running => "SAM completed.".to_string(),
+        };
+        let _ = tx.send(SamWorkerEvent::Finished { status: finish_status });
+    }
+
+    fn start_sam_job(&mut self) {
+        if self.sam_running {
+            return;
+        }
+        if !self.sam_has_usable_output_target() {
+            self.task_logs.push("SAM requires either an output directory or origin-location output mode.".to_string());
+            return;
+        }
+
+        let request = SamJobRequest {
+            sources: self.sam_source_items.clone(),
+            output_directory: self.sam_output_directory.clone(),
+            use_origin_output: self.sam_use_origin_output,
+            input_kind: self.sam_input_kind,
+            output_kind: self.sam_output_kind,
+            recurse_subdirs: self.sam_recurse_subdirs,
+            rebuild_existing: self.sam_rebuild_existing,
+            remove_source: self.sam_remove_source,
+            verify_output: self.sam_verify_output,
+        };
+        let control = ProcessControl::new();
+        let worker_control = control.clone();
+        let (tx, rx) = channel();
+
+        self.sam_running = true;
+        self.sam_soft_stop_requested = false;
+        self.sam_hard_stop_requested = false;
+        self.sam_status_text = "Running".to_string();
+        self.sam_current_item = None;
+        self.sam_completed_items = 0;
+        self.sam_total_items = 0;
+        self.sam_stop_control = Some(control);
+        self.sam_worker_rx = Some(rx);
+        self.task_logs.push(format!(
+            "Starting SAM with {} queued source path(s).",
+            request.sources.len()
+        ));
+
+        thread::spawn(move || Self::run_sam_job(request, worker_control, tx));
+    }
+
+    fn request_sam_soft_stop(&mut self) {
+        if let Some(control) = self.sam_stop_control.as_ref() {
+            control.request_soft_stop();
+            self.sam_soft_stop_requested = true;
+            self.sam_status_text = "Soft stop requested".to_string();
+            self.task_logs.push("SAM soft stop requested.".to_string());
+        }
+    }
+
+    fn request_sam_hard_stop(&mut self) {
+        if let Some(control) = self.sam_stop_control.as_ref() {
+            control.request_hard_stop();
+            self.sam_hard_stop_requested = true;
+            self.sam_status_text = "Hard stop requested".to_string();
+            self.task_logs.push("SAM hard stop requested.".to_string());
+        }
+    }
+
+    fn poll_sam_worker(&mut self) {
+        let mut finished = false;
+
+        if let Some(rx) = self.sam_worker_rx.as_ref() {
+            loop {
+                match rx.try_recv() {
+                    Ok(SamWorkerEvent::Started { total_items }) => {
+                        self.sam_total_items = total_items;
+                        self.sam_status_text = format!("Running {} item(s)", total_items);
+                    }
+                    Ok(SamWorkerEvent::ItemStarted { item, index, total }) => {
+                        self.sam_current_item = Some(item.clone());
+                        self.sam_status_text = format!("Processing {}/{}", index, total);
+                        self.task_logs.push(format!("SAM processing {}", item));
+                    }
+                    Ok(SamWorkerEvent::Log(message)) => {
+                        self.task_logs.push(message);
+                    }
+                    Ok(SamWorkerEvent::ItemFinished { item, status }) => {
+                        self.sam_completed_items += 1;
+                        self.task_logs.push(format!("SAM finished {} with {}", item, status));
+                    }
+                    Ok(SamWorkerEvent::Finished { status }) => {
+                        self.sam_status_text = status.clone();
+                        self.task_logs.push(status);
+                        finished = true;
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        finished = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if finished {
+            self.sam_running = false;
+            self.sam_current_item = None;
+            self.sam_stop_control = None;
+            self.sam_worker_rx = None;
+            self.sam_soft_stop_requested = false;
+            self.sam_hard_stop_requested = false;
+        }
+    }
+
     fn scan_selected_roots(tx: &Sender<String>, scan_level: rv_core::settings::EScanLevel) {
         GLOBAL_DB.with(|db_ref| {
             if let Some(db) = db_ref.borrow().as_ref() {
@@ -415,21 +1258,39 @@ impl RomVaultApp {
 
     fn launch_fix_roms_task(&mut self) {
         self.launch_task("Fix ROMs", |tx| {
-            let _ = tx.send("Performing physical fixes...".to_string());
-            GLOBAL_DB.with(|db_ref| {
-                if let Some(db) = db_ref.borrow().as_ref() {
-                    Fix::perform_fixes(Rc::clone(&db.dir_root));
-                }
-            });
-
-            let _ = tx.send("Rescanning to sync DB with disk...".to_string());
+            let _ = tx.send("Rescanning to refresh fix plan...".to_string());
             Self::scan_selected_roots(&tx, rv_core::settings::EScanLevel::Level2);
 
-            let _ = tx.send("Finding Fixes...".to_string());
+            for pass in 1..=4 {
+                let _ = tx.send(format!("Finding Fixes (pass {pass}/4)..."));
+                let pending = GLOBAL_DB.with(|db_ref| {
+                    if let Some(db) = db_ref.borrow().as_ref() {
+                        recompute_fix_plan(Rc::clone(&db.dir_root));
+                        current_fixable_count(Rc::clone(&db.dir_root))
+                    } else {
+                        0
+                    }
+                });
+
+                if pending == 0 {
+                    break;
+                }
+
+                let _ = tx.send(format!("Performing physical fixes (pass {pass}/4)..."));
+                GLOBAL_DB.with(|db_ref| {
+                    if let Some(db) = db_ref.borrow().as_ref() {
+                        Fix::perform_fixes(Rc::clone(&db.dir_root));
+                    }
+                });
+
+                let _ = tx.send(format!("Rescanning to sync DB with disk (pass {pass}/4)..."));
+                Self::scan_selected_roots(&tx, rv_core::settings::EScanLevel::Level2);
+            }
+
+            let _ = tx.send("Refreshing final repair state...".to_string());
             GLOBAL_DB.with(|db_ref| {
                 if let Some(db) = db_ref.borrow().as_ref() {
-                    FindFixes::scan_files(Rc::clone(&db.dir_root));
-                    rv_core::repair_status::RepairStatus::report_status_reset(Rc::clone(&db.dir_root));
+                    recompute_fix_plan(Rc::clone(&db.dir_root));
                 }
             });
         });
@@ -442,29 +1303,36 @@ impl RomVaultApp {
             let _ = tx.send("Scanning...".to_string());
             Self::scan_selected_roots(&tx, rv_core::settings::EScanLevel::Level2);
 
-            let _ = tx.send("Finding Fixes...".to_string());
-            GLOBAL_DB.with(|db_ref| {
-                if let Some(db) = db_ref.borrow().as_ref() {
-                    FindFixes::scan_files(Rc::clone(&db.dir_root));
-                    rv_core::repair_status::RepairStatus::report_status_reset(Rc::clone(&db.dir_root));
+            for pass in 1..=4 {
+                let _ = tx.send(format!("Finding Fixes (pass {pass}/4)..."));
+                let pending = GLOBAL_DB.with(|db_ref| {
+                    if let Some(db) = db_ref.borrow().as_ref() {
+                        recompute_fix_plan(Rc::clone(&db.dir_root));
+                        current_fixable_count(Rc::clone(&db.dir_root))
+                    } else {
+                        0
+                    }
+                });
+
+                if pending == 0 {
+                    break;
                 }
-            });
 
-            let _ = tx.send("Fixing...".to_string());
+                let _ = tx.send(format!("Fixing (pass {pass}/4)..."));
+                GLOBAL_DB.with(|db_ref| {
+                    if let Some(db) = db_ref.borrow().as_ref() {
+                        Fix::perform_fixes(Rc::clone(&db.dir_root));
+                    }
+                });
+
+                let _ = tx.send(format!("Rescanning to sync DB with disk (pass {pass}/4)..."));
+                Self::scan_selected_roots(&tx, rv_core::settings::EScanLevel::Level2);
+            }
+
+            let _ = tx.send("Refreshing final repair state...".to_string());
             GLOBAL_DB.with(|db_ref| {
                 if let Some(db) = db_ref.borrow().as_ref() {
-                    Fix::perform_fixes(Rc::clone(&db.dir_root));
-                }
-            });
-
-            let _ = tx.send("Rescanning to sync DB with disk...".to_string());
-            Self::scan_selected_roots(&tx, rv_core::settings::EScanLevel::Level2);
-
-            let _ = tx.send("Finalizing Fixes...".to_string());
-            GLOBAL_DB.with(|db_ref| {
-                if let Some(db) = db_ref.borrow().as_ref() {
-                    FindFixes::scan_files(Rc::clone(&db.dir_root));
-                    rv_core::repair_status::RepairStatus::report_status_reset(Rc::clone(&db.dir_root));
+                    recompute_fix_plan(Rc::clone(&db.dir_root));
                 }
             });
         });
@@ -629,6 +1497,10 @@ impl eframe::App for RomVaultApp {
                     self.startup_active = false;
                 }
             }
+        }
+        self.poll_sam_worker();
+        if self.sam_running {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         // Update artwork cache if selection changed
         self.update_artwork();
@@ -1158,7 +2030,7 @@ impl eframe::App for RomVaultApp {
                     if let Some(node_rc) = &self.selected_node {
                         let node = node_rc.borrow();
                         if let Some(stats) = &node.cached_stats {
-                            got = stats.roms_correct + stats.roms_correct_mia;
+                            got = stats.count_correct();
                             missing = ui_missing_count(stats);
                             fixable = ui_fixable_count(stats);
                             unknown = stats.roms_unknown;
@@ -1170,7 +2042,7 @@ impl eframe::App for RomVaultApp {
                             let mut node_mut = node_rc.borrow_mut();
                             node_mut.cached_stats = Some(stats.clone());
                             
-                            got = stats.roms_correct + stats.roms_correct_mia;
+                            got = stats.count_correct();
                             missing = ui_missing_count(&stats);
                             fixable = ui_fixable_count(&stats);
                             unknown = stats.roms_unknown;

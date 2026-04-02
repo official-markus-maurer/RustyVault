@@ -240,17 +240,20 @@ impl RvFile {
 
     /// Appends a child `RvFile` to this node's internal children vector.
     pub fn child_add(&mut self, child: Rc<RefCell<RvFile>>) {
+        self.invalidate_cached_stats_with_ancestors();
         self.children.push(child);
     }
 
     /// Inserts a child `RvFile` into this node's internal children vector at a specific index.
     pub fn child_insert(&mut self, index: usize, child: Rc<RefCell<RvFile>>) {
+        self.invalidate_cached_stats_with_ancestors();
         self.children.insert(index, child);
     }
 
     /// Removes a child `RvFile` from this node's internal children vector at a specific index.
     pub fn child_remove(&mut self, index: usize) {
         if index < self.children.len() {
+            self.invalidate_cached_stats_with_ancestors();
             self.children.remove(index);
         }
     }
@@ -262,6 +265,7 @@ impl RvFile {
 
     /// Mutates the logical `DatStatus` of this node.
     pub fn set_dat_status(&mut self, status: DatStatus) {
+        self.invalidate_cached_stats_with_ancestors();
         self.dat_status = status;
     }
 
@@ -272,6 +276,7 @@ impl RvFile {
 
     /// Mutates the physical `GotStatus` of this node.
     pub fn set_got_status(&mut self, status: GotStatus) {
+        self.invalidate_cached_stats_with_ancestors();
         self.got_status = status;
     }
 
@@ -282,7 +287,29 @@ impl RvFile {
 
     /// Mutates the calculated `RepStatus` of this node.
     pub fn set_rep_status(&mut self, status: RepStatus) {
+        self.invalidate_cached_stats_with_ancestors();
         self.rep_status = status;
+    }
+
+    fn invalidate_cached_stats_with_ancestors(&mut self) {
+        self.cached_stats = None;
+        if self.dir_status.is_some() {
+            self.dir_status = Some(ReportStatus::Unknown);
+        }
+        let mut current = self.parent.as_ref().and_then(|parent| parent.upgrade());
+        while let Some(node_rc) = current {
+            let next = {
+                let Ok(mut node) = node_rc.try_borrow_mut() else {
+                    break;
+                };
+                node.cached_stats = None;
+                if node.dir_status.is_some() {
+                    node.dir_status = Some(ReportStatus::Unknown);
+                }
+                node.parent.as_ref().and_then(|parent| parent.upgrade())
+            };
+            current = next;
+        }
     }
 
     /// Partially resets the `RepStatus` and `GotStatus` to baseline values prior to a fix pass.
@@ -291,7 +318,7 @@ impl RvFile {
         self.search_found = false;
         
         // When rep_status resets, the cached_stats need to be cleared
-        self.cached_stats = None;
+        self.invalidate_cached_stats_with_ancestors();
         
         let new_status = match (self.file_type, self.dat_status, self.got_status) {
             (
@@ -335,6 +362,11 @@ impl RvFile {
                 dat_reader::enums::DatStatus::InDatCollect | dat_reader::enums::DatStatus::InDatMerged | dat_reader::enums::DatStatus::InDatNoDump,
                 dat_reader::enums::GotStatus::NotGot
             ) => RepStatus::DirMissing,
+            (
+                FileType::Dir,
+                dat_reader::enums::DatStatus::InDatCollect | dat_reader::enums::DatStatus::InDatMerged | dat_reader::enums::DatStatus::InDatNoDump,
+                dat_reader::enums::GotStatus::Corrupt
+            ) => RepStatus::DirCorrupt,
             (FileType::Dir, dat_reader::enums::DatStatus::NotInDat, dat_reader::enums::GotStatus::Got) => RepStatus::DirUnknown,
             (FileType::Dir, dat_reader::enums::DatStatus::InToSort, dat_reader::enums::GotStatus::Got) => RepStatus::DirInToSort,
             _ => RepStatus::UnScanned,
@@ -416,6 +448,7 @@ impl RvFile {
 
     /// Batch mutates the logical `DatStatus` and physical `GotStatus`.
     pub fn set_dat_got_status(&mut self, dat: DatStatus, got: GotStatus) {
+        self.invalidate_cached_stats_with_ancestors();
         self.dat_status = dat;
         self.got_status = got;
     }
@@ -520,139 +553,5 @@ impl RvFile {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::settings::{get_settings, set_dir_mapping, update_settings, DirMapping, Settings};
-    use std::rc::Rc;
-    use std::cell::RefCell;
-
-    #[test]
-    fn test_rvfile_hierarchy() {
-        let mut root = RvFile::new(FileType::Dir);
-        root.name = "Root".to_string();
-        let root_rc = Rc::new(RefCell::new(root));
-
-        let child1 = Rc::new(RefCell::new(RvFile::new(FileType::File)));
-        child1.borrow_mut().name = "File1.zip".to_string();
-        child1.borrow_mut().parent = Some(Rc::downgrade(&root_rc));
-        
-        let child2 = Rc::new(RefCell::new(RvFile::new(FileType::File)));
-        child2.borrow_mut().name = "File2.zip".to_string();
-        child2.borrow_mut().parent = Some(Rc::downgrade(&root_rc));
-
-        root_rc.borrow_mut().child_add(Rc::clone(&child1));
-        root_rc.borrow_mut().child_add(Rc::clone(&child2));
-
-        assert_eq!(root_rc.borrow().children.len(), 2);
-        
-        // Test parent linking
-        assert!(Rc::ptr_eq(&child1.borrow().parent.as_ref().unwrap().upgrade().unwrap(), &root_rc)); 
-        
-        // Remove child
-        root_rc.borrow_mut().child_remove(0);
-        assert_eq!(root_rc.borrow().children.len(), 1);
-        assert_eq!(root_rc.borrow().children[0].borrow().name, "File2.zip");
-    }
-
-    #[test]
-    fn test_file_status_flags() {
-        let mut file = RvFile::new(FileType::File);
-        assert!(!file.file_status_is(FileStatus::SIZE_FROM_HEADER));
-        
-        file.file_status_set(FileStatus::SIZE_FROM_HEADER);
-        assert!(file.file_status_is(FileStatus::SIZE_FROM_HEADER));
-        
-        file.file_status_clear(FileStatus::SIZE_FROM_HEADER);
-        assert!(!file.file_status_is(FileStatus::SIZE_FROM_HEADER));
-    }
-
-    #[test]
-    fn test_mark_as_missing() {
-        let mut root = RvFile::new(FileType::Dir);
-        root.dat_status = DatStatus::InDatCollect;
-        
-        let child1 = Rc::new(RefCell::new(RvFile::new(FileType::File)));
-        child1.borrow_mut().dat_status = DatStatus::NotInDat; 
-        
-        let child2 = Rc::new(RefCell::new(RvFile::new(FileType::File)));
-        child2.borrow_mut().dat_status = DatStatus::InDatCollect; 
-
-        root.child_add(Rc::clone(&child1));
-        root.child_add(Rc::clone(&child2));
-
-        root.mark_as_missing();
-
-        assert_eq!(root.children.len(), 1);
-        assert_eq!(root.children[0].borrow().rep_status(), RepStatus::Missing);
-    }
-
-    #[test]
-    fn test_get_full_name_uses_dir_mappings() {
-        let original_settings = get_settings();
-        update_settings(Settings::default());
-        set_dir_mapping(DirMapping {
-            dir_key: "RustyVault".to_string(),
-            dir_path: r"C:\Mapped\Vault".to_string(),
-        });
-
-        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
-        root.borrow_mut().name = "RustyVault".to_string();
-
-        let folder = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
-        folder.borrow_mut().name = "Nintendo".to_string();
-        folder.borrow_mut().parent = Some(Rc::downgrade(&root));
-
-        let file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
-        file.borrow_mut().name = "game.zip".to_string();
-        file.borrow_mut().parent = Some(Rc::downgrade(&folder));
-
-        let full_name = file.borrow().get_full_name();
-        update_settings(original_settings);
-
-        assert_eq!(std::path::PathBuf::from(full_name), std::path::PathBuf::from(r"C:\Mapped\Vault\Nintendo\game.zip"));
-    }
-
-    #[test]
-    fn test_rep_status_reset_treats_indatmerged_missing_file_as_not_collected() {
-        let mut file = RvFile::new(FileType::File);
-        file.dat_status = DatStatus::InDatMerged;
-        file.got_status = dat_reader::enums::GotStatus::NotGot;
-
-        file.rep_status_reset();
-
-        assert_eq!(file.rep_status(), RepStatus::NotCollected);
-    }
-
-    #[test]
-    fn test_rep_status_reset_treats_indatnodump_corrupt_file_as_unneeded() {
-        let mut file = RvFile::new(FileType::File);
-        file.dat_status = DatStatus::InDatNoDump;
-        file.got_status = dat_reader::enums::GotStatus::Corrupt;
-
-        file.rep_status_reset();
-
-        assert_eq!(file.rep_status(), RepStatus::UnNeeded);
-    }
-
-    #[test]
-    fn test_rep_status_reset_treats_indatmerged_got_file_as_unneeded() {
-        let mut file = RvFile::new(FileType::File);
-        file.dat_status = DatStatus::InDatMerged;
-        file.got_status = dat_reader::enums::GotStatus::Got;
-
-        file.rep_status_reset();
-
-        assert_eq!(file.rep_status(), RepStatus::UnNeeded);
-    }
-
-    #[test]
-    fn test_rep_status_reset_treats_indatmerged_directory_like_other_indat_directories() {
-        let mut dir = RvFile::new(FileType::Dir);
-        dir.dat_status = DatStatus::InDatMerged;
-        dir.got_status = dat_reader::enums::GotStatus::Got;
-
-        dir.rep_status_reset();
-
-        assert_eq!(dir.rep_status(), RepStatus::DirCorrect);
-    }
-}
+#[path = "tests/rv_file_tests.rs"]
+mod tests;

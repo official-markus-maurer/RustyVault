@@ -58,8 +58,40 @@ impl FileCompare {
             || db_file.alt_md5.is_some()
     }
 
+    fn scanned_file_has_hash_identity(test_file: &ScannedFile) -> bool {
+        test_file.crc.is_some()
+            || test_file.sha1.is_some()
+            || test_file.md5.is_some()
+            || test_file.alt_crc.is_some()
+            || test_file.alt_sha1.is_some()
+            || test_file.alt_md5.is_some()
+    }
+
+    fn scanned_file_covers_required_hashes(db_file: &RvFile, test_file: &ScannedFile) -> bool {
+        let has_crc = test_file.crc.is_some() || test_file.alt_crc.is_some();
+        let has_sha1 = test_file.sha1.is_some() || test_file.alt_sha1.is_some();
+        let has_md5 = test_file.md5.is_some() || test_file.alt_md5.is_some();
+
+        (!db_file.crc.is_some() && !db_file.alt_crc.is_some() || has_crc)
+            && (!db_file.sha1.is_some() && !db_file.alt_sha1.is_some() || has_sha1)
+            && (!db_file.md5.is_some() && !db_file.alt_md5.is_some() || has_md5)
+    }
+
     fn header_requirement_matches(db_file: &RvFile, test_file: &ScannedFile) -> bool {
         !db_file.header_file_type_required() || db_file.header_file_type() == test_file.header_file_type
+    }
+
+    fn phase_2_supported_leaf_type(file_type: FileType) -> bool {
+        matches!(
+            file_type,
+            FileType::File | FileType::FileOnly | FileType::FileZip | FileType::FileSevenZip
+        )
+    }
+
+    fn phase_1_compatible_type_pair(db_file_type: FileType, test_file_type: FileType) -> bool {
+        db_file_type == test_file_type
+            || (Self::phase_2_supported_leaf_type(db_file_type)
+                && Self::phase_2_supported_leaf_type(test_file_type))
     }
 
     /// Core evaluation logic that matches physical metadata against logical expected metadata.
@@ -79,12 +111,12 @@ impl FileCompare {
         let db_file_type = db_file.file_type;
         let test_file_type = test_file.file_type;
 
-        if db_file_type != test_file_type {
+        if !Self::phase_1_compatible_type_pair(db_file_type, test_file_type) {
             return (false, matched_alt);
         }
 
-        // Directories and Archives don't need deep hashing matches at this level
-        if db_file_type == FileType::Dir || db_file_type == FileType::Zip || db_file_type == FileType::SevenZip || db_file_type == FileType::FileZip || db_file_type == FileType::FileSevenZip {
+        // Directories and container nodes don't need deep hashing matches at this level
+        if db_file_type == FileType::Dir || db_file_type == FileType::Zip || db_file_type == FileType::SevenZip {
             return (true, matched_alt);
         }
 
@@ -92,8 +124,8 @@ impl FileCompare {
             return (false, matched_alt);
         }
 
-        // If test file has CRC, we can do full hash matching
-        if test_file.crc.is_some() {
+        // If the scanned file has any hash identity, we should do full hash matching
+        if Self::scanned_file_has_hash_identity(test_file) {
             let matched = Self::compare_with_alt(db_file, test_file, &mut matched_alt);
             return (matched, matched_alt);
         }
@@ -210,7 +242,15 @@ impl FileCompare {
     }
 
     fn deep_scan_physical_file(db_file: &RvFile, test_file: &mut ScannedFile) {
-        if !test_file.deep_scanned && test_file.got_status != dat_reader::enums::GotStatus::FileLocked {
+        if !Self::phase_2_supported_leaf_type(test_file.file_type) {
+            return;
+        }
+
+        if (!test_file.deep_scanned
+            || !Self::scanned_file_has_hash_identity(test_file)
+            || !Self::scanned_file_covers_required_hashes(db_file, test_file))
+            && test_file.got_status != dat_reader::enums::GotStatus::FileLocked
+        {
             let parent_path = Self::current_parent_physical_path(db_file);
             let full_path = if parent_path.as_os_str().is_empty() {
                 test_file.name.clone()
@@ -253,7 +293,9 @@ impl FileCompare {
         let db_file_type = db_file.file_type;
         let test_file_type = test_file.file_type;
 
-        if db_file_type != FileType::File || test_file_type != FileType::File {
+        if !Self::phase_2_supported_leaf_type(db_file_type)
+            || !Self::phase_2_supported_leaf_type(test_file_type)
+        {
             return (false, matched_alt);
         }
 
@@ -274,7 +316,9 @@ impl FileCompare {
     pub fn phase_2_name_agnostic_test(db_file: &RvFile, test_file: &mut ScannedFile) -> (bool, bool) {
         let mut matched_alt = false;
 
-        if db_file.file_type != FileType::File || test_file.file_type != FileType::File {
+        if !Self::phase_2_supported_leaf_type(db_file.file_type)
+            || !Self::phase_2_supported_leaf_type(test_file.file_type)
+        {
             return (false, matched_alt);
         }
 
@@ -302,429 +346,5 @@ impl FileCompare {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::cell::RefCell;
-    use std::fs;
-    use std::rc::Rc;
-    use tempfile::tempdir;
-
-    #[test]
-    fn test_compare_db_to_file() {
-        let mut db_file = RvFile::new(FileType::File);
-        db_file.name = "B_File.zip".to_string();
-
-        let mut sc_file = ScannedFile::new(FileType::File);
-        sc_file.name = "A_File.zip".to_string();
-
-        assert_eq!(compare_db_to_file(&db_file, &sc_file), 1);
-        
-        sc_file.name = "C_File.zip".to_string();
-        assert_eq!(compare_db_to_file(&db_file, &sc_file), -1);
-
-        sc_file.name = "B_File.zip".to_string();
-        assert_eq!(compare_db_to_file(&db_file, &sc_file), 0);
-    }
-
-    #[test]
-    fn test_compare_db_to_file_uses_windows_style_case_insensitive_ordering() {
-        let mut db_file = RvFile::new(FileType::File);
-        db_file.name = "B_File.zip".to_string();
-
-        let mut sc_file = ScannedFile::new(FileType::File);
-        sc_file.name = "a_file.zip".to_string();
-
-        assert_eq!(compare_db_to_file(&db_file, &sc_file), 1);
-    }
-
-    #[test]
-    fn test_phase_1_test_hashes() {
-        let mut db_file = RvFile::new(FileType::File);
-        db_file.name = "rom.bin".to_string();
-        db_file.size = Some(1024);
-        db_file.crc = Some(vec![0xAA, 0xBB, 0xCC, 0xDD]);
-
-        let mut sc_file = ScannedFile::new(FileType::File);
-        sc_file.name = "rom.bin".to_string();
-        sc_file.size = Some(1024);
-        sc_file.crc = Some(vec![0xAA, 0xBB, 0xCC, 0xDD]);
-
-        let (matched, alt) = FileCompare::phase_1_test(&db_file, &sc_file, EScanLevel::Level2, 0);
-        assert!(matched);
-        assert!(!alt);
-
-        // Test Alt Match
-        db_file.crc = Some(vec![0x11, 0x22, 0x33, 0x44]);
-        db_file.alt_size = Some(1024);
-        db_file.alt_crc = Some(vec![0xAA, 0xBB, 0xCC, 0xDD]);
-
-        let (matched, alt) = FileCompare::phase_1_test(&db_file, &sc_file, EScanLevel::Level2, 0);
-        assert!(matched);
-        assert!(alt);
-
-        // Test Mismatch
-        sc_file.crc = Some(vec![0xFF, 0xFF, 0xFF, 0xFF]);
-        let (matched, _) = FileCompare::phase_1_test(&db_file, &sc_file, EScanLevel::Level2, 0);
-        assert!(!matched);
-    }
-
-    #[test]
-    fn test_phase_1_test_does_not_match_archive_to_directory() {
-        let mut db_file = RvFile::new(FileType::Zip);
-        db_file.name = "game.zip".to_string();
-
-        let mut sc_file = ScannedFile::new(FileType::Dir);
-        sc_file.name = "game.zip".to_string();
-
-        let (matched, alt) = FileCompare::phase_1_test(&db_file, &sc_file, EScanLevel::Level1, 0);
-        assert!(!matched);
-        assert!(!alt);
-    }
-
-    #[test]
-    fn test_phase_1_test_level2_allows_timestamp_size_match_when_dat_has_no_hashes() {
-        let mut db_file = RvFile::new(FileType::File);
-        db_file.name = "rom.bin".to_string();
-        db_file.size = Some(1024);
-        db_file.file_mod_time_stamp = 123456;
-
-        let mut sc_file = ScannedFile::new(FileType::File);
-        sc_file.name = "rom.bin".to_string();
-        sc_file.size = Some(1024);
-        sc_file.file_mod_time_stamp = 123456;
-
-        let (matched, alt) = FileCompare::phase_1_test(&db_file, &sc_file, EScanLevel::Level2, 0);
-        assert!(matched);
-        assert!(!alt);
-    }
-
-    #[test]
-    fn test_phase_1_test_level2_rejects_timestamp_size_match_when_dat_has_hashes() {
-        let mut db_file = RvFile::new(FileType::File);
-        db_file.name = "rom.bin".to_string();
-        db_file.size = Some(1024);
-        db_file.crc = Some(vec![0xAA, 0xBB, 0xCC, 0xDD]);
-        db_file.file_mod_time_stamp = 123456;
-
-        let mut sc_file = ScannedFile::new(FileType::File);
-        sc_file.name = "rom.bin".to_string();
-        sc_file.size = Some(1024);
-        sc_file.file_mod_time_stamp = 123456;
-
-        let (matched, alt) = FileCompare::phase_1_test(&db_file, &sc_file, EScanLevel::Level2, 0);
-        assert!(!matched);
-        assert!(!alt);
-    }
-
-    #[test]
-    fn test_phase_1_test_alt_match_uses_scanned_alt_hashes() {
-        let mut db_file = RvFile::new(FileType::File);
-        db_file.name = "rom.nes".to_string();
-        db_file.alt_size = Some(4);
-        db_file.alt_crc = Some(vec![0xAD, 0xF3, 0xF3, 0x63]);
-
-        let mut sc_file = ScannedFile::new(FileType::File);
-        sc_file.name = "rom.nes".to_string();
-        sc_file.size = Some(20);
-        sc_file.crc = Some(vec![0x00, 0x00, 0x00, 0x00]);
-        sc_file.alt_size = Some(4);
-        sc_file.alt_crc = Some(vec![0xAD, 0xF3, 0xF3, 0x63]);
-
-        let (matched, alt) = FileCompare::phase_1_test(&db_file, &sc_file, EScanLevel::Level2, 0);
-        assert!(matched);
-        assert!(alt);
-    }
-
-    #[test]
-    fn test_phase_1_test_primary_match_can_use_scanned_alt_hashes() {
-        let mut db_file = RvFile::new(FileType::File);
-        db_file.name = "rom.nes".to_string();
-        db_file.size = Some(4);
-        db_file.crc = Some(vec![0xAD, 0xF3, 0xF3, 0x63]);
-
-        let mut sc_file = ScannedFile::new(FileType::File);
-        sc_file.name = "rom.nes".to_string();
-        sc_file.size = Some(20);
-        sc_file.crc = Some(vec![0x00, 0x00, 0x00, 0x00]);
-        sc_file.alt_size = Some(4);
-        sc_file.alt_crc = Some(vec![0xAD, 0xF3, 0xF3, 0x63]);
-
-        let (matched, alt) = FileCompare::phase_1_test(&db_file, &sc_file, EScanLevel::Level2, 0);
-        assert!(matched);
-        assert!(alt);
-    }
-
-    #[test]
-    fn test_phase_1_test_level2_allows_alt_size_only_timestamp_match_without_hashes() {
-        let mut db_file = RvFile::new(FileType::File);
-        db_file.name = "rom.bin".to_string();
-        db_file.alt_size = Some(1024);
-        db_file.file_mod_time_stamp = 123456;
-
-        let mut sc_file = ScannedFile::new(FileType::File);
-        sc_file.name = "rom.bin".to_string();
-        sc_file.size = Some(1024);
-        sc_file.file_mod_time_stamp = 123456;
-
-        let (matched, alt) = FileCompare::phase_1_test(&db_file, &sc_file, EScanLevel::Level2, 0);
-        assert!(matched);
-        assert!(alt);
-    }
-
-    #[test]
-    fn test_phase_1_test_level2_allows_scanned_alt_size_only_timestamp_match_without_hashes() {
-        let mut db_file = RvFile::new(FileType::File);
-        db_file.name = "rom.bin".to_string();
-        db_file.alt_size = Some(1024);
-        db_file.file_mod_time_stamp = 123456;
-
-        let mut sc_file = ScannedFile::new(FileType::File);
-        sc_file.name = "rom.bin".to_string();
-        sc_file.size = Some(1040);
-        sc_file.alt_size = Some(1024);
-        sc_file.file_mod_time_stamp = 123456;
-
-        let (matched, alt) = FileCompare::phase_1_test(&db_file, &sc_file, EScanLevel::Level2, 0);
-        assert!(matched);
-        assert!(alt);
-    }
-
-    #[test]
-    fn test_phase_1_test_level2_allows_primary_size_to_match_scanned_alt_size_without_hashes() {
-        let mut db_file = RvFile::new(FileType::File);
-        db_file.name = "rom.bin".to_string();
-        db_file.size = Some(1024);
-        db_file.file_mod_time_stamp = 123456;
-
-        let mut sc_file = ScannedFile::new(FileType::File);
-        sc_file.name = "rom.bin".to_string();
-        sc_file.size = Some(1040);
-        sc_file.alt_size = Some(1024);
-        sc_file.file_mod_time_stamp = 123456;
-
-        let (matched, alt) = FileCompare::phase_1_test(&db_file, &sc_file, EScanLevel::Level2, 0);
-        assert!(matched);
-        assert!(alt);
-    }
-
-    #[test]
-    fn test_phase_1_test_matches_case_only_name_difference_when_index_case_enabled() {
-        let mut db_file = RvFile::new(FileType::File);
-        db_file.name = "ROM.BIN".to_string();
-        db_file.size = Some(4);
-        db_file.crc = Some(vec![0xAD, 0xF3, 0xF3, 0x63]);
-
-        let mut sc_file = ScannedFile::new(FileType::File);
-        sc_file.name = "rom.bin".to_string();
-        sc_file.size = Some(4);
-        sc_file.crc = Some(vec![0xAD, 0xF3, 0xF3, 0x63]);
-
-        let (matched, alt) = FileCompare::phase_1_test(&db_file, &sc_file, EScanLevel::Level2, 1);
-        assert!(matched);
-        assert!(!alt);
-    }
-
-    #[test]
-    fn test_phase_2_test_matches_case_only_name_difference_when_index_case_enabled() {
-        let mut db_file = RvFile::new(FileType::File);
-        db_file.name = "ROM.BIN".to_string();
-        db_file.size = Some(4);
-        db_file.crc = Some(vec![0xAD, 0xF3, 0xF3, 0x63]);
-
-        let mut sc_file = ScannedFile::new(FileType::File);
-        sc_file.name = "rom.bin".to_string();
-        sc_file.size = Some(4);
-        sc_file.crc = Some(vec![0xAD, 0xF3, 0xF3, 0x63]);
-        sc_file.deep_scanned = true;
-
-        let (matched, alt) = FileCompare::phase_2_test(&db_file, &mut sc_file, 1);
-        assert!(matched);
-        assert!(!alt);
-    }
-
-    #[test]
-    fn test_phase_2_test_rejects_locked_file_instead_of_auto_matching() {
-        let mut db_file = RvFile::new(FileType::File);
-        db_file.name = "rom.bin".to_string();
-        db_file.size = Some(4);
-        db_file.crc = Some(vec![0xAD, 0xF3, 0xF3, 0x63]);
-
-        let mut sc_file = ScannedFile::new(FileType::File);
-        sc_file.name = "rom.bin".to_string();
-        sc_file.got_status = dat_reader::enums::GotStatus::FileLocked;
-        sc_file.deep_scanned = true;
-
-        let (matched, alt) = FileCompare::phase_2_test(&db_file, &mut sc_file, 0);
-        assert!(!matched);
-        assert!(!alt);
-    }
-
-    #[test]
-    fn test_phase_2_test_allows_size_only_exact_name_match_without_hash_identity() {
-        let mut db_file = RvFile::new(FileType::File);
-        db_file.name = "rom.bin".to_string();
-        db_file.size = Some(1024);
-
-        let mut sc_file = ScannedFile::new(FileType::File);
-        sc_file.name = "rom.bin".to_string();
-        sc_file.size = Some(1024);
-        sc_file.deep_scanned = true;
-
-        let (matched, alt) = FileCompare::phase_2_test(&db_file, &mut sc_file, 0);
-        assert!(matched);
-        assert!(!alt);
-    }
-
-    #[test]
-    fn test_phase_2_test_allows_alt_size_only_exact_name_match_without_hash_identity() {
-        let mut db_file = RvFile::new(FileType::File);
-        db_file.name = "rom.bin".to_string();
-        db_file.alt_size = Some(1024);
-
-        let mut sc_file = ScannedFile::new(FileType::File);
-        sc_file.name = "rom.bin".to_string();
-        sc_file.size = Some(1024);
-        sc_file.deep_scanned = true;
-
-        let (matched, alt) = FileCompare::phase_2_test(&db_file, &mut sc_file, 0);
-        assert!(matched);
-        assert!(alt);
-    }
-
-    #[test]
-    fn test_phase_2_name_agnostic_test_matches_renamed_file_by_hash() {
-        let mut db_file = RvFile::new(FileType::File);
-        db_file.name = "expected.bin".to_string();
-        db_file.size = Some(4);
-        db_file.crc = Some(vec![0xAD, 0xF3, 0xF3, 0x63]);
-
-        let mut sc_file = ScannedFile::new(FileType::File);
-        sc_file.name = "renamed.bin".to_string();
-        sc_file.size = Some(4);
-        sc_file.crc = Some(vec![0xAD, 0xF3, 0xF3, 0x63]);
-        sc_file.deep_scanned = true;
-
-        let (matched, alt) = FileCompare::phase_2_name_agnostic_test(&db_file, &mut sc_file);
-        assert!(matched);
-        assert!(!alt);
-    }
-
-    #[test]
-    fn test_phase_2_name_agnostic_test_rejects_wrong_required_header_type() {
-        let mut db_file = RvFile::new(FileType::File);
-        db_file.name = "expected.nes".to_string();
-        db_file.size = Some(4);
-        db_file.crc = Some(vec![0xAD, 0xF3, 0xF3, 0x63]);
-        db_file.header_file_type = dat_reader::enums::HeaderFileType::NES
-            | dat_reader::enums::HeaderFileType::REQUIRED;
-
-        let mut sc_file = ScannedFile::new(FileType::File);
-        sc_file.name = "renamed.bin".to_string();
-        sc_file.size = Some(4);
-        sc_file.crc = Some(vec![0xAD, 0xF3, 0xF3, 0x63]);
-        sc_file.header_file_type = dat_reader::enums::HeaderFileType::SNES;
-        sc_file.deep_scanned = true;
-
-        let (matched, alt) = FileCompare::phase_2_name_agnostic_test(&db_file, &mut sc_file);
-        assert!(!matched);
-        assert!(!alt);
-    }
-
-    #[test]
-    fn test_phase_2_name_agnostic_test_propagates_deep_scan_status_flags() {
-        let temp = tempdir().unwrap();
-        let file_path = temp.path().join("renamed.nes");
-        let mut bytes = vec![0x4E, 0x45, 0x53, 0x1A];
-        bytes.extend_from_slice(&[0; 12]);
-        bytes.extend_from_slice(b"DATA");
-        let mut crc = crc32fast::Hasher::new();
-        crc.update(&bytes);
-        fs::write(&file_path, bytes).unwrap();
-
-        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
-        root.borrow_mut().name = temp.path().to_string_lossy().to_string();
-
-        let mut db_file = RvFile::new(FileType::File);
-        db_file.name = "expected.nes".to_string();
-        db_file.size = Some(20);
-        db_file.crc = Some(crc.finalize().to_be_bytes().to_vec());
-        db_file.parent = Some(Rc::downgrade(&root));
-
-        let mut sc_file = ScannedFile::new(FileType::File);
-        sc_file.name = "renamed.nes".to_string();
-
-        let _ = FileCompare::phase_2_name_agnostic_test(&db_file, &mut sc_file);
-        assert!(sc_file.status_flags.contains(crate::rv_file::FileStatus::HEADER_FILE_TYPE_FROM_HEADER));
-        assert!(sc_file.status_flags.contains(crate::rv_file::FileStatus::ALT_CRC_FROM_HEADER));
-    }
-
-    #[test]
-    fn test_phase_2_name_agnostic_test_deep_scans_using_existing_parent_directory_name() {
-        let temp = tempdir().unwrap();
-        let existing_dir = temp.path().join("olddir");
-        fs::create_dir_all(&existing_dir).unwrap();
-        fs::write(existing_dir.join("renamed.bin"), b"data").unwrap();
-
-        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
-        root.borrow_mut().name = temp.path().to_string_lossy().to_string();
-
-        let parent_dir = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
-        {
-            let mut dir = parent_dir.borrow_mut();
-            dir.name = "NewDir".to_string();
-            dir.file_name = "olddir".to_string();
-            dir.parent = Some(Rc::downgrade(&root));
-        }
-
-        let mut db_file = RvFile::new(FileType::File);
-        db_file.name = "expected.bin".to_string();
-        db_file.size = Some(4);
-        db_file.crc = Some(vec![0xAD, 0xF3, 0xF3, 0x63]);
-        db_file.parent = Some(Rc::downgrade(&parent_dir));
-
-        let mut sc_file = ScannedFile::new(FileType::File);
-        sc_file.name = "renamed.bin".to_string();
-
-        let (matched, alt) = FileCompare::phase_2_name_agnostic_test(&db_file, &mut sc_file);
-        assert!(matched);
-        assert!(!alt);
-        assert!(sc_file.deep_scanned);
-        assert_eq!(sc_file.crc, Some(vec![0xAD, 0xF3, 0xF3, 0x63]));
-    }
-
-    #[test]
-    fn test_phase_2_name_agnostic_test_rejects_size_only_identity_without_timestamp_confidence() {
-        let mut db_file = RvFile::new(FileType::File);
-        db_file.name = "expected.bin".to_string();
-        db_file.size = Some(1024);
-        db_file.file_mod_time_stamp = 123;
-
-        let mut sc_file = ScannedFile::new(FileType::File);
-        sc_file.name = "renamed.bin".to_string();
-        sc_file.size = Some(1024);
-        sc_file.file_mod_time_stamp = 456;
-        sc_file.deep_scanned = true;
-
-        let (matched, alt) = FileCompare::phase_2_name_agnostic_test(&db_file, &mut sc_file);
-        assert!(!matched);
-        assert!(!alt);
-    }
-
-    #[test]
-    fn test_phase_2_name_agnostic_test_allows_size_only_identity_with_timestamp_confidence() {
-        let mut db_file = RvFile::new(FileType::File);
-        db_file.name = "expected.bin".to_string();
-        db_file.alt_size = Some(1024);
-        db_file.file_mod_time_stamp = 123456;
-
-        let mut sc_file = ScannedFile::new(FileType::File);
-        sc_file.name = "renamed.bin".to_string();
-        sc_file.size = Some(1024);
-        sc_file.file_mod_time_stamp = 123456;
-        sc_file.deep_scanned = true;
-
-        let (matched, alt) = FileCompare::phase_2_name_agnostic_test(&db_file, &mut sc_file);
-        assert!(matched);
-        assert!(alt);
-    }
-}
+#[path = "tests/compare_tests.rs"]
+mod tests;

@@ -3,6 +3,7 @@ use compress::zip_enums::ZipReturn;
 use crate::trrntzip_status::TrrntZipStatus;
 use compress::structured_archive::ZipStructure;
 use compress::zip_file::ZipFile;
+use crate::process_control::ProcessControl;
 use crate::zipped_file::ZippedFile;
 use crate::torrent_zip_check::TorrentZipCheck;
 use crate::torrent_zip_rebuild::TorrentZipRebuild;
@@ -30,6 +31,10 @@ impl TorrentZip {
     }
 
     pub fn process(&self, filename: &str) -> TrrntZipStatus {
+        self.process_with_control(filename, None)
+    }
+
+    pub fn process_with_control(&self, filename: &str, control: Option<&ProcessControl>) -> TrrntZipStatus {
         let mut zip_file = ZipFile::new();
         
         let open_status = zip_file.zip_file_open(filename, 0, true);
@@ -72,7 +77,7 @@ impl TorrentZip {
         }
 
         println!("Rebuilding archive: {}", filename);
-        let rebuild_status = TorrentZipRebuild::rezip_files(&zipped_files, &mut zip_file, self.out_zip_type);
+        let rebuild_status = TorrentZipRebuild::rezip_files_with_control(&zipped_files, &mut zip_file, self.out_zip_type, control);
         
         rebuild_status
     }

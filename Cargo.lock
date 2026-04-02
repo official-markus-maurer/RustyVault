@@ -3272,6 +3272,7 @@ dependencies = [
 name = "romvault_ui"
 version = "0.1.0"
 dependencies = [
+ "compress",
  "dat_reader",
  "eframe",
  "egui",
@@ -3281,7 +3282,10 @@ dependencies = [
  "rfd",
  "rv_core",
  "serde_json",
+ "sevenz-rust",
+ "tempfile",
  "tracing-subscriber",
+ "trrntzip",
  "zip 0.6.6",
 ]
 

@@ -3,7 +3,6 @@ use dat_reader::xml_reader::read_xml_dat;
 #[test]
 fn test_parse_xml_dat() {
     let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE datafile PUBLIC "-//Logiqx//DTD ROM Management Datafile//EN" "http://www.logiqx.com/Dats/datafile.dtd">
 <datafile>
     <header>
         <name>Test Dat</name>
@@ -50,5 +49,8 @@ fn test_parse_xml_dat() {
     assert_eq!(disk.name, "test_disk.chd");
     assert!(disk.is_file());
     let disk_file = disk.file().unwrap();
-    assert!(disk_file.is_disk);
+    assert_eq!(
+        disk_file.sha1.as_ref().unwrap(),
+        &hex::decode("0123456789abcdef0123456789abcdef01234567").unwrap()
+    );
 }

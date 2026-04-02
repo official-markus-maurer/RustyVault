@@ -1,10 +1,16 @@
 use std::io::{self, Write};
+use std::cell::RefCell;
+use std::rc::Rc;
 use rv_core::db::{init_db, GLOBAL_DB};
+use rv_core::file_scanning::FileScanning;
 use rv_core::scanner::Scanner;
 use rv_core::find_fixes::FindFixes;
 use rv_core::fix::Fix;
 use rv_core::read_dat::DatUpdate;
 use rv_core::repair_status::RepairStatus;
+use rv_core::rv_file::RvFile;
+use rv_core::scanned_file::ScannedFile;
+use rv_core::settings::EScanLevel;
 use dat_reader::enums::FileType;
 
 fn render_repair_report(report: &RepairStatus) -> Vec<String> {
@@ -19,6 +25,89 @@ fn render_repair_report(report: &RepairStatus) -> Vec<String> {
         format!("Unknown:    {}", report.roms_unknown),
         "---------------------".to_string(),
     ]
+}
+
+fn recompute_fix_plan(root: Rc<RefCell<RvFile>>) {
+    FindFixes::scan_files(Rc::clone(&root));
+    RepairStatus::report_status_reset(root);
+}
+
+fn is_actionable_fix_status(status: rv_core::enums::RepStatus) -> bool {
+    matches!(
+        status,
+        rv_core::enums::RepStatus::CanBeFixed
+            | rv_core::enums::RepStatus::CanBeFixedMIA
+            | rv_core::enums::RepStatus::CorruptCanBeFixed
+            | rv_core::enums::RepStatus::UnNeeded
+            | rv_core::enums::RepStatus::MoveToSort
+            | rv_core::enums::RepStatus::MoveToCorrupt
+            | rv_core::enums::RepStatus::Rename
+            | rv_core::enums::RepStatus::Delete
+            | rv_core::enums::RepStatus::IncompleteRemove
+    )
+}
+
+fn count_selected_actionable_fixes(node: Rc<RefCell<RvFile>>) -> i32 {
+    let (is_selected, rep_status, is_dir, children) = {
+        let n = node.borrow();
+        (
+            matches!(n.tree_checked, rv_core::rv_file::TreeSelect::Selected | rv_core::rv_file::TreeSelect::Locked),
+            n.rep_status(),
+            n.is_directory(),
+            n.children.clone(),
+        )
+    };
+
+    let mut count = if is_selected && is_actionable_fix_status(rep_status) { 1 } else { 0 };
+
+    if is_dir {
+        for child in children {
+            count += count_selected_actionable_fixes(child);
+        }
+    }
+
+    count
+}
+
+fn current_fixable_count(root: Rc<RefCell<RvFile>>) -> i32 {
+    count_selected_actionable_fixes(root)
+}
+
+fn branch_has_selected_nodes(node: &RvFile) -> bool {
+    if matches!(node.tree_checked, rv_core::rv_file::TreeSelect::Selected | rv_core::rv_file::TreeSelect::Locked) {
+        return true;
+    }
+
+    for child in &node.children {
+        if branch_has_selected_nodes(&child.borrow()) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn rescan_selected_roots(root: Rc<RefCell<RvFile>>, scan_level: EScanLevel) {
+    let root_children = root.borrow().children.clone();
+
+    for child in root_children {
+        let (name, is_selected) = {
+            let node = child.borrow();
+            (node.name.clone(), branch_has_selected_nodes(&node))
+        };
+
+        if !is_selected {
+            continue;
+        }
+
+        let files = Scanner::scan_directory_with_level(&name, scan_level);
+        let mut root_scan = ScannedFile::new(FileType::Dir);
+        root_scan.name = name.clone();
+        root_scan.children = files;
+        FileScanning::scan_dir_with_level(Rc::clone(&child), &mut root_scan, scan_level);
+    }
+
+    RepairStatus::report_status_reset(root);
 }
 
 /// Headless CLI binary for the RomVault engine.
@@ -139,12 +228,26 @@ fn main() {
                     },
                     "find_fixes" => {
                         println!("Running FindFixes on current DB tree...");
-                        FindFixes::scan_files(root.clone());
+                        recompute_fix_plan(root.clone());
                         println!("FindFixes completed.");
                     },
                     "fix" => {
-                        println!("Performing physical fixes (Move/Rename/Delete)...");
-                        Fix::perform_fixes(root.clone());
+                        println!("Refreshing DB from disk...");
+                        rescan_selected_roots(root.clone(), EScanLevel::Level2);
+                        for pass in 1..=4 {
+                            println!("Refreshing fix plan (pass {pass}/4)...");
+                            recompute_fix_plan(root.clone());
+                            let pending = current_fixable_count(root.clone());
+                            if pending == 0 {
+                                break;
+                            }
+                            println!("Performing physical fixes (pass {pass}/4)...");
+                            Fix::perform_fixes(root.clone());
+                            println!("Refreshing DB after fix pass {pass}/4...");
+                            rescan_selected_roots(root.clone(), EScanLevel::Level2);
+                        }
+                        println!("Refreshing final repair state...");
+                        recompute_fix_plan(root.clone());
                         println!("Fixes completed.");
                     },
                     "report" => {
@@ -193,27 +296,5 @@ fn main() {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_render_repair_report_includes_not_collected_line() {
-        let mut report = RepairStatus::new();
-        report.total_roms = 7;
-        report.roms_correct = 2;
-        report.roms_correct_mia = 1;
-        report.roms_missing = 1;
-        report.roms_fixes = 1;
-        report.roms_unknown = 2;
-        report.roms_not_collected = 2;
-        report.roms_unneeded = 1;
-
-        let lines = render_repair_report(&report);
-
-        assert!(lines.iter().any(|line| line == "Correct:    3"));
-        assert!(lines.iter().any(|line| line == "Missing:    2"));
-        assert!(lines.iter().any(|line| line == "Can Fix:    3"));
-        assert!(lines.iter().any(|line| line == "Not Collected: 2"));
-        assert!(lines.iter().any(|line| line == "Unneeded:   1"));
-    }
-}
+#[path = "tests/main_tests.rs"]
+mod tests;
