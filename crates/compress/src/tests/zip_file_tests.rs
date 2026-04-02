@@ -1,6 +1,7 @@
     use super::*;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+    use crc32fast::Hasher as Crc32Hasher;
 
     fn unique_temp_zip(name: &str) -> String {
         let unique = SystemTime::now()
@@ -46,16 +47,56 @@
     }
 
     #[test]
-    fn test_zip_file_detects_torrentzip_comment() {
+    fn test_zip_file_detects_valid_torrentzip_structure() {
         let path = unique_temp_zip("compress_zip_comment");
         {
             let file = File::create(&path).unwrap();
             let mut writer = ZipWriter::new(file);
-            let options = FileOptions::default().compression_method(CompressionMethod::Deflated);
+            let dt = zip::DateTime::from_date_and_time(1996, 12, 24, 23, 32, 0).unwrap();
+            let options = FileOptions::default()
+                .compression_method(CompressionMethod::Deflated)
+                .compression_level(Some(9))
+                .last_modified_time(dt);
             writer.start_file("a.txt", options).unwrap();
             writer.write_all(b"a").unwrap();
-            writer.set_comment("TORRENTZIPPED-12345678");
+            writer.set_comment("TORRENTZIPPED-00000000");
             writer.finish().unwrap();
+        }
+
+        {
+            let mut bytes = fs::read(&path).unwrap();
+            let eocd_offset = bytes
+                .windows(4)
+                .rposition(|window| window == [0x50, 0x4B, 0x05, 0x06])
+                .unwrap();
+
+            let central_directory_size = u32::from_le_bytes([
+                bytes[eocd_offset + 12],
+                bytes[eocd_offset + 13],
+                bytes[eocd_offset + 14],
+                bytes[eocd_offset + 15],
+            ]) as usize;
+            let central_directory_offset = u32::from_le_bytes([
+                bytes[eocd_offset + 16],
+                bytes[eocd_offset + 17],
+                bytes[eocd_offset + 18],
+                bytes[eocd_offset + 19],
+            ]) as usize;
+            let comment_length = u16::from_le_bytes([bytes[eocd_offset + 20], bytes[eocd_offset + 21]]) as usize;
+            let comment_offset = eocd_offset + 22;
+
+            let mut crc = Crc32Hasher::new();
+            crc.update(&bytes[central_directory_offset..central_directory_offset + central_directory_size]);
+            let cd_crc = format!("{:08X}", crc.finalize());
+
+            let expected_prefix = b"TORRENTZIPPED-";
+            assert_eq!(comment_length, expected_prefix.len() + 8);
+            assert_eq!(&bytes[comment_offset..comment_offset + expected_prefix.len()], expected_prefix);
+
+            bytes[comment_offset + expected_prefix.len()..comment_offset + expected_prefix.len() + 8]
+                .copy_from_slice(cd_crc.as_bytes());
+
+            fs::write(&path, bytes).unwrap();
         }
 
         let mut zip_file = ZipFile::new();

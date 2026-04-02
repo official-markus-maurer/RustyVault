@@ -28,4 +28,36 @@ impl ZippedFile {
             is_dir: false,
         }
     }
+
+    pub fn byte_crc(&self) -> Option<[u8; 4]> {
+        let bytes = self.crc.as_ref()?;
+        if bytes.len() != 4 {
+            return None;
+        }
+        Some([bytes[0], bytes[1], bytes[2], bytes[3]])
+    }
+
+    pub fn set_byte_crc(&mut self, value: Option<&[u8]>) {
+        let Some(bytes) = value else {
+            self.crc = None;
+            return;
+        };
+        if bytes.len() != 4 {
+            self.crc = None;
+            return;
+        }
+        self.crc = Some(bytes.to_vec());
+    }
+
+    pub fn string_crc(&self) -> String {
+        let Some(bytes) = self.byte_crc() else {
+            return String::new();
+        };
+        let mut out = String::with_capacity(8);
+        for b in bytes {
+            use std::fmt::Write;
+            let _ = write!(out, "{:02x}", b);
+        }
+        out
+    }
 }

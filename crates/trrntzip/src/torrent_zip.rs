@@ -1,8 +1,11 @@
+use std::path::Path;
+
 use compress::i_compress::ICompress;
 use compress::zip_enums::ZipReturn;
 use crate::trrntzip_status::TrrntZipStatus;
 use compress::structured_archive::ZipStructure;
 use compress::zip_file::ZipFile;
+use compress::seven_zip::SevenZipFile;
 use crate::process_control::ProcessControl;
 use crate::zipped_file::ZippedFile;
 use crate::torrent_zip_check::TorrentZipCheck;
@@ -15,6 +18,7 @@ use crate::torrent_zip_rebuild::TorrentZipRebuild;
 /// 
 /// Differences from C#:
 /// - Maps 1:1 to the C# `TrrntZip.TorrentZip` entry class.
+#[derive(Clone, Copy)]
 pub struct TorrentZip {
     pub force_rezip: bool,
     pub check_only: bool,
@@ -35,7 +39,16 @@ impl TorrentZip {
     }
 
     pub fn process_with_control(&self, filename: &str, control: Option<&ProcessControl>) -> TrrntZipStatus {
-        let mut zip_file = ZipFile::new();
+        let ext = Path::new(filename)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+
+        let mut zip_file: Box<dyn ICompress> = match ext.as_str() {
+            "7z" => Box::new(SevenZipFile::new()),
+            _ => Box::new(ZipFile::new()),
+        };
         
         let open_status = zip_file.zip_file_open(filename, 0, true);
         if open_status != ZipReturn::ZipGood {
@@ -56,13 +69,13 @@ impl TorrentZip {
             }
         }
 
-        let mut is_valid = match self.out_zip_type {
-            ZipStructure::ZipTrrnt | ZipStructure::ZipZSTD => TorrentZipCheck::check_zip_files(&mut zipped_files),
-            ZipStructure::SevenZipSLZMA | ZipStructure::SevenZipNLZMA | ZipStructure::SevenZipSZSTD | ZipStructure::SevenZipNZSTD => TorrentZipCheck::check_seven_zip_files(&mut zipped_files),
+        let mut is_valid = match ext.as_str() {
+            "7z" => TorrentZipCheck::check_seven_zip_files(&mut zipped_files),
             _ => TorrentZipCheck::check_zip_files(&mut zipped_files),
         };
         
-        if zip_file.zip_struct() != self.out_zip_type {
+        let compression_changed = zip_file.zip_struct() != self.out_zip_type;
+        if compression_changed {
             is_valid |= TrrntZipStatus::BAD_EXTRA_DATA;
         }
         
@@ -76,8 +89,26 @@ impl TorrentZip {
             return is_valid;
         }
 
+        if compression_changed {
+            match self.out_zip_type {
+                ZipStructure::ZipTrrnt | ZipStructure::ZipZSTD => {
+                    is_valid |= TorrentZipCheck::check_zip_files(&mut zipped_files);
+                }
+                ZipStructure::SevenZipSLZMA
+                | ZipStructure::SevenZipNLZMA
+                | ZipStructure::SevenZipSZSTD
+                | ZipStructure::SevenZipNZSTD => {
+                    is_valid |= TorrentZipCheck::check_seven_zip_files(&mut zipped_files);
+                }
+                _ => {
+                    is_valid |= TorrentZipCheck::check_zip_files(&mut zipped_files);
+                }
+            }
+        }
+
         println!("Rebuilding archive: {}", filename);
-        let rebuild_status = TorrentZipRebuild::rezip_files_with_control(&zipped_files, &mut zip_file, self.out_zip_type, control);
+        let rebuild_status =
+            TorrentZipRebuild::rezip_files_with_control(&zipped_files, zip_file.as_mut(), self.out_zip_type, control);
         
         rebuild_status
     }

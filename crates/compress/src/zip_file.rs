@@ -6,11 +6,13 @@ use std::rc::Rc;
 
 use crate::file_header::FileHeader;
 use crate::i_compress::ICompress;
-use crate::structured_archive::ZipStructure;
+use crate::structured_archive::{ZipDateType, ZipStructure, get_compression_type, get_zip_date_time_type};
 use crate::zip_enums::{ZipOpenType, ZipReturn};
+use crate::codepage_437;
 
 use zip::write::FileOptions;
 use zip::{CompressionMethod, DateTime, ZipArchive, ZipWriter};
+use crc32fast::Hasher as Crc32Hasher;
 
 /// ICompress wrapper for `.zip` files.
 /// 
@@ -29,6 +31,7 @@ pub struct ZipFile {
     zip_filename: String,
     zip_open_type: ZipOpenType,
     time_stamp: i64,
+    zip_struct: ZipStructure,
     
     archive: Option<ZipArchive<File>>,
     writer: Option<ZipWriter<File>>,
@@ -65,11 +68,15 @@ impl Write for SharedBufferWriter {
 mod tests;
 
 impl ZipFile {
+    const TORRENTZIP_DOS_TIME: u16 = 48128;
+    const TORRENTZIP_DOS_DATE: u16 = 8600;
+
     pub fn new() -> Self {
         Self {
             zip_filename: String::new(),
             zip_open_type: ZipOpenType::Closed,
             time_stamp: 0,
+            zip_struct: ZipStructure::None,
             archive: None,
             writer: None,
             file_headers: Vec::new(),
@@ -78,17 +85,305 @@ impl ZipFile {
         }
     }
 
-    fn detect_zip_structure(&self) -> ZipStructure {
-        if self.file_comment.starts_with("TORRENTZIPPED-") {
-            return ZipStructure::ZipTrrnt;
+    fn ascii_lower(byte: u8) -> u8 {
+        if byte >= b'A' && byte <= b'Z' {
+            byte + 0x20
+        } else {
+            byte
         }
-        if self.file_comment.starts_with("TDC-") {
-            return ZipStructure::ZipTDC;
+    }
+
+    fn compare_ascii_casefolded_bytes(a: &[u8], b: &[u8]) -> i32 {
+        let len = std::cmp::min(a.len(), b.len());
+        for i in 0..len {
+            let ca = Self::ascii_lower(a[i]);
+            let cb = Self::ascii_lower(b[i]);
+            if ca < cb {
+                return -1;
+            }
+            if ca > cb {
+                return 1;
+            }
         }
-        if self.file_comment.starts_with("RVZSTD-") {
-            return ZipStructure::ZipZSTD;
+        if a.len() < b.len() {
+            -1
+        } else if a.len() > b.len() {
+            1
+        } else {
+            0
         }
-        ZipStructure::None
+    }
+
+    fn trrntzip_string_compare(a: &str, b: &str) -> i32 {
+        Self::compare_ascii_casefolded_bytes(a.as_bytes(), b.as_bytes())
+    }
+
+    fn decode_filename(file_name_bytes: &[u8], general_purpose_bit_flag: u16) -> Option<String> {
+        if (general_purpose_bit_flag & (1 << 11)) != 0 {
+            Some(std::str::from_utf8(file_name_bytes).ok()?.to_string())
+        } else {
+            Some(codepage_437::decode(file_name_bytes))
+        }
+    }
+
+    fn validate_zip_structure(zip_path: &str) -> ZipStructure {
+        let Ok(zip_bytes) = fs::read(zip_path) else {
+            return ZipStructure::None;
+        };
+
+        let eocd_offset = zip_bytes
+            .windows(4)
+            .rposition(|window| window == [0x50, 0x4B, 0x05, 0x06]);
+
+        let Some(eocd_offset) = eocd_offset else {
+            return ZipStructure::None;
+        };
+
+        if eocd_offset + 22 > zip_bytes.len() {
+            return ZipStructure::None;
+        }
+
+        let central_directory_size = u32::from_le_bytes([
+            zip_bytes[eocd_offset + 12],
+            zip_bytes[eocd_offset + 13],
+            zip_bytes[eocd_offset + 14],
+            zip_bytes[eocd_offset + 15],
+        ]) as usize;
+        let central_directory_offset = u32::from_le_bytes([
+            zip_bytes[eocd_offset + 16],
+            zip_bytes[eocd_offset + 17],
+            zip_bytes[eocd_offset + 18],
+            zip_bytes[eocd_offset + 19],
+        ]) as usize;
+        let comment_length = u16::from_le_bytes([
+            zip_bytes[eocd_offset + 20],
+            zip_bytes[eocd_offset + 21],
+        ]) as usize;
+
+        if eocd_offset + 22 + comment_length != zip_bytes.len() {
+            return ZipStructure::None;
+        }
+
+        if central_directory_offset + central_directory_size > zip_bytes.len() {
+            return ZipStructure::None;
+        }
+
+        let mut crc = Crc32Hasher::new();
+        crc.update(&zip_bytes[central_directory_offset..central_directory_offset + central_directory_size]);
+        let cd_crc = format!("{:08X}", crc.finalize());
+
+        let comment_bytes = &zip_bytes[eocd_offset + 22..eocd_offset + 22 + comment_length];
+        let comment = String::from_utf8_lossy(comment_bytes);
+
+        let zip_struct = if comment.starts_with("TORRENTZIPPED-") {
+            ZipStructure::ZipTrrnt
+        } else if comment.starts_with("TDC-") {
+            ZipStructure::ZipTDC
+        } else if comment.starts_with("RVZSTD-") {
+            ZipStructure::ZipZSTD
+        } else {
+            ZipStructure::None
+        };
+
+        if zip_struct == ZipStructure::None {
+            return ZipStructure::None;
+        }
+
+        let expected_prefix = match zip_struct {
+            ZipStructure::ZipTrrnt => "TORRENTZIPPED-",
+            ZipStructure::ZipTDC => "TDC-",
+            ZipStructure::ZipZSTD => "RVZSTD-",
+            _ => "",
+        };
+
+        if comment.len() != expected_prefix.len() + 8 {
+            return ZipStructure::None;
+        }
+        if &comment[expected_prefix.len()..] != cd_crc {
+            return ZipStructure::None;
+        }
+
+        if !Self::validate_files_structure(&zip_bytes, central_directory_offset, central_directory_size, zip_struct) {
+            return ZipStructure::None;
+        }
+
+        zip_struct
+    }
+
+    fn validate_files_structure(
+        zip_bytes: &[u8],
+        central_directory_offset: usize,
+        central_directory_size: usize,
+        zip_struct: ZipStructure,
+    ) -> bool {
+        let expected_compression = get_compression_type(zip_struct);
+        let date_type = get_zip_date_time_type(zip_struct);
+        let central_end = central_directory_offset + central_directory_size;
+        let mut central_offset = central_directory_offset;
+
+        let mut last_name: Option<String> = None;
+        let saw_directory_entry_needing_check = matches!(zip_struct, ZipStructure::ZipTrrnt | ZipStructure::ZipZSTD);
+
+        while central_offset + 46 <= central_end {
+            if zip_bytes[central_offset..central_offset + 4] != [0x50, 0x4B, 0x01, 0x02] {
+                return false;
+            }
+
+            let flags = u16::from_le_bytes([zip_bytes[central_offset + 8], zip_bytes[central_offset + 9]]);
+            let compression_method = u16::from_le_bytes([zip_bytes[central_offset + 10], zip_bytes[central_offset + 11]]);
+            let last_mod_time = u16::from_le_bytes([zip_bytes[central_offset + 12], zip_bytes[central_offset + 13]]);
+            let last_mod_date = u16::from_le_bytes([zip_bytes[central_offset + 14], zip_bytes[central_offset + 15]]);
+            let file_name_length = u16::from_le_bytes([zip_bytes[central_offset + 28], zip_bytes[central_offset + 29]]) as usize;
+            let extra_length = u16::from_le_bytes([zip_bytes[central_offset + 30], zip_bytes[central_offset + 31]]) as usize;
+            let comment_length = u16::from_le_bytes([zip_bytes[central_offset + 32], zip_bytes[central_offset + 33]]) as usize;
+            let relative_offset = u32::from_le_bytes([
+                zip_bytes[central_offset + 42],
+                zip_bytes[central_offset + 43],
+                zip_bytes[central_offset + 44],
+                zip_bytes[central_offset + 45],
+            ]) as usize;
+
+            let name_start = central_offset + 46;
+            let name_end = name_start + file_name_length;
+            if name_end > zip_bytes.len() {
+                return false;
+            }
+            let file_name_bytes = &zip_bytes[name_start..name_end];
+            let name = match Self::decode_filename(file_name_bytes, flags) {
+                Some(v) => v,
+                None => return false,
+            };
+
+            if name.contains('\\') {
+                return false;
+            }
+
+            let utf8_flag_set = (flags & (1 << 11)) != 0;
+            let is_cp437 = codepage_437::is_code_page_437(&name);
+            if is_cp437 == utf8_flag_set {
+                return false;
+            }
+
+            if extra_length != 0 {
+                return false;
+            }
+
+            if expected_compression != 8 && expected_compression != 93 {
+                return false;
+            }
+            if compression_method != expected_compression {
+                return false;
+            }
+
+            match date_type {
+                ZipDateType::DateTime => {}
+                ZipDateType::None => {
+                    if last_mod_time != 0 || last_mod_date != 0 {
+                        return false;
+                    }
+                }
+                ZipDateType::TrrntZip => {
+                    if last_mod_time != Self::TORRENTZIP_DOS_TIME || last_mod_date != Self::TORRENTZIP_DOS_DATE {
+                        return false;
+                    }
+                }
+                ZipDateType::Undefined => return false,
+            }
+
+            if relative_offset + 30 > zip_bytes.len() {
+                return false;
+            }
+            if zip_bytes[relative_offset..relative_offset + 4] != [0x50, 0x4B, 0x03, 0x04] {
+                return false;
+            }
+
+            let local_flags = u16::from_le_bytes([zip_bytes[relative_offset + 6], zip_bytes[relative_offset + 7]]);
+            let local_compression = u16::from_le_bytes([zip_bytes[relative_offset + 8], zip_bytes[relative_offset + 9]]);
+            let local_time = u16::from_le_bytes([zip_bytes[relative_offset + 10], zip_bytes[relative_offset + 11]]);
+            let local_date = u16::from_le_bytes([zip_bytes[relative_offset + 12], zip_bytes[relative_offset + 13]]);
+            let local_name_length = u16::from_le_bytes([zip_bytes[relative_offset + 26], zip_bytes[relative_offset + 27]]) as usize;
+            let local_extra_length = u16::from_le_bytes([zip_bytes[relative_offset + 28], zip_bytes[relative_offset + 29]]) as usize;
+
+            if local_extra_length != 0 {
+                return false;
+            }
+
+            if local_name_length != file_name_length {
+                return false;
+            }
+
+            if local_flags != flags || local_compression != compression_method || local_time != last_mod_time || local_date != last_mod_date {
+                return false;
+            }
+
+            if let Some(prev) = last_name.as_ref() {
+                if Self::trrntzip_string_compare(prev, &name) >= 0 {
+                    return false;
+                }
+            }
+
+            last_name = Some(name);
+
+            central_offset += 46 + file_name_length + extra_length + comment_length;
+        }
+
+        if saw_directory_entry_needing_check {
+            let mut central_offset = central_directory_offset;
+
+            loop {
+                if central_offset + 46 > central_end {
+                    break;
+                }
+                if zip_bytes[central_offset..central_offset + 4] != [0x50, 0x4B, 0x01, 0x02] {
+                    break;
+                }
+
+                let flags = u16::from_le_bytes([zip_bytes[central_offset + 8], zip_bytes[central_offset + 9]]);
+                let file_name_length = u16::from_le_bytes([zip_bytes[central_offset + 28], zip_bytes[central_offset + 29]]) as usize;
+                let extra_length = u16::from_le_bytes([zip_bytes[central_offset + 30], zip_bytes[central_offset + 31]]) as usize;
+                let comment_length = u16::from_le_bytes([zip_bytes[central_offset + 32], zip_bytes[central_offset + 33]]) as usize;
+                let name_start = central_offset + 46;
+                let name_end = name_start + file_name_length;
+                if name_end > zip_bytes.len() {
+                    return false;
+                }
+                let Some(dir_name) = Self::decode_filename(&zip_bytes[name_start..name_end], flags) else {
+                    return false;
+                };
+
+                let next_offset = central_offset + 46 + file_name_length + extra_length + comment_length;
+                if next_offset + 46 > central_end {
+                    break;
+                }
+                if zip_bytes[next_offset..next_offset + 4] != [0x50, 0x4B, 0x01, 0x02] {
+                    break;
+                }
+                let next_flags = u16::from_le_bytes([zip_bytes[next_offset + 8], zip_bytes[next_offset + 9]]);
+                let next_name_len = u16::from_le_bytes([zip_bytes[next_offset + 28], zip_bytes[next_offset + 29]]) as usize;
+                let next_name_start = next_offset + 46;
+                let next_name_end = next_name_start + next_name_len;
+                if next_name_end > zip_bytes.len() {
+                    return false;
+                }
+                let Some(next_name) = Self::decode_filename(&zip_bytes[next_name_start..next_name_end], next_flags) else {
+                    return false;
+                };
+
+                if dir_name.ends_with('/') && next_name.len() > dir_name.len() {
+                    let dir_bytes = dir_name.as_bytes();
+                    let next_bytes = next_name.as_bytes();
+                    if next_bytes.len() >= dir_bytes.len()
+                        && Self::compare_ascii_casefolded_bytes(dir_bytes, &next_bytes[..dir_bytes.len()]) == 0
+                    {
+                        return false;
+                    }
+                }
+
+                central_offset = next_offset;
+            }
+        }
+
+        true
     }
 
     fn zip_datetime_from_i64(value: i64) -> Option<DateTime> {
@@ -252,6 +547,7 @@ impl ICompress for ZipFile {
 
         self.zip_filename = new_filename.to_string();
         self.time_stamp = timestamp;
+        self.zip_struct = Self::validate_zip_structure(&self.zip_filename);
         self.archive = Some(archive);
         self.zip_open_type = ZipOpenType::OpenRead;
 
@@ -269,6 +565,7 @@ impl ICompress for ZipFile {
         }
         self.pending_write = None;
         self.zip_open_type = ZipOpenType::Closed;
+        self.zip_struct = ZipStructure::None;
         self.file_headers.clear();
     }
 
@@ -307,7 +604,7 @@ impl ICompress for ZipFile {
     }
 
     fn zip_struct(&self) -> ZipStructure {
-        self.detect_zip_structure()
+        self.zip_struct
     }
 
     fn zip_filename(&self) -> &str {
@@ -336,6 +633,7 @@ impl ICompress for ZipFile {
         self.zip_open_type = ZipOpenType::OpenWrite;
         self.file_headers.clear();
         self.pending_write = None;
+        self.zip_struct = ZipStructure::None;
 
         ZipReturn::ZipGood
     }
@@ -354,6 +652,29 @@ impl ICompress for ZipFile {
 
         if self.pending_write.is_some() {
             return Err(ZipReturn::ZipErrorOpeningFile);
+        }
+
+        if let Some(last) = self.file_headers.last() {
+            // Enforce TorrentZip-style order when writing multiple files in a session
+            // If the last entry is lexicographically after the new filename (case-insensitive),
+            // declare incorrect order.
+            if Self::compare_ascii_casefolded_bytes(
+                last.filename.as_bytes(),
+                _filename.as_bytes(),
+            ) >= 0
+            {
+                return Err(ZipReturn::ZipTrrntzipIncorrectFileOrder);
+            }
+            // Prevent adding a directory marker that is immediately followed by an entry within that directory
+            if last.filename.ends_with('/') {
+                let dir_bytes = last.filename.as_bytes();
+                let next_bytes = _filename.as_bytes();
+                if next_bytes.len() > dir_bytes.len()
+                    && Self::compare_ascii_casefolded_bytes(dir_bytes, &next_bytes[..dir_bytes.len()]) == 0
+                {
+                    return Err(ZipReturn::ZipTrrntzipIncorrectDirectoryAddedToZip);
+                }
+            }
         }
 
         let buffer = Rc::new(RefCell::new(Vec::with_capacity(uncompressed_size as usize)));

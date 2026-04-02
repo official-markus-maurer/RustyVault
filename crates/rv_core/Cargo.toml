@@ -23,11 +23,7 @@ tracing = "0.1.44"
 trrntzip = { path = "../trrntzip" }
 sevenz-rust = { package = "sevenz-rust2", version = "0.19.3", features = ["compress", "zstd"] }
 flate2 = "1.0"
-libc = "0.2"
 file_header_reader = { path = "../file_header_reader" }
-
-[build-dependencies]
-cc = "1.2"
 
 [dev-dependencies]
 tempfile = "3.10.1"

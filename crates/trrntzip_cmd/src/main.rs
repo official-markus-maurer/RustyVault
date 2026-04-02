@@ -1,5 +1,9 @@
 use std::env;
-use std::io;
+use std::fs::File;
+use std::io::{self, Write};
+use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use compress::structured_archive::ZipStructure;
 use trrntzip::torrent_zip::TorrentZip;
 use rv_io::directory::Directory;
@@ -23,6 +27,7 @@ fn main() {
     let mut no_recursion = false;
     let mut gui_launch = false;
     let mut tz = TorrentZip::new();
+    let mut log_file: Option<File> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -32,7 +37,10 @@ fn main() {
             let option = &arg[1..];
             match option {
                 "?" => {
-                    println!("TorrentZip.Net v0.1.0 - Powered by RustyVault");
+                    println!(
+                        "TorrentZip.Net v{} - Powered by RustyVault",
+                        env!("CARGO_PKG_VERSION")
+                    );
                     println!("");
                     println!("Usage: trrntzip [OPTIONS] [PATH/ZIP FILE]");
                     println!("");
@@ -55,8 +63,7 @@ fn main() {
                 }
                 "o" => {
                     if i + 1 < args.len() {
-                        i += 1;
-                        let next_arg = &args[i];
+                        let next_arg = &args[i + 1];
                         match next_arg.as_str() {
                             "ZT" => tz.out_zip_type = ZipStructure::ZipTrrnt,
                             "ZZ" => tz.out_zip_type = ZipStructure::ZipZSTD,
@@ -70,14 +77,24 @@ fn main() {
                                 return;
                             }
                         }
+                        i += 1;
                     }
                 }
                 "s" => no_recursion = true,
                 "f" => tz.force_rezip = true,
                 "c" => tz.check_only = true,
-                "l" => println!("Verbose logging enabled"),
+                "l" => {
+                    let now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    let log_name = format!("outlog-{}.txt", now);
+                    if let Ok(file) = File::create(&log_name) {
+                        log_file = Some(file);
+                    }
+                }
                 "v" => {
-                    println!("TorrentZip v0.1.0");
+                    println!("TorrentZip v{}", env!("CARGO_PKG_VERSION"));
                     return;
                 }
                 "g" => gui_launch = true,
@@ -89,10 +106,6 @@ fn main() {
 
     for arg in args.iter().skip(1) {
         if arg.starts_with('-') {
-            // skip options during file processing pass
-            if arg == "-o" {
-                continue; // Would also need to skip the value in a real iterator, but fine for basic loop here
-            }
             continue;
         }
 
@@ -102,18 +115,38 @@ fn main() {
         }
 
         if Directory::exists(&target) {
-            process_dir(&target, &tz, no_recursion);
+            process_dir(&target, &tz, no_recursion, &mut log_file);
             continue;
         }
 
-        // It's a file
-        let ext = std::path::Path::new(&target).extension().unwrap_or_default().to_string_lossy().to_lowercase();
-        if ext == "zip" || ext == "7z" {
-            println!("Processing: {}", target);
-            let status = tz.process(&target);
-            println!("Result: {:?}", status);
+        let path = Path::new(&target);
+        let mut dir = path.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+        if dir.is_empty() {
+            dir = env::current_dir()
+                .ok()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
+        }
+        let pattern = path.file_name().map(|p| p.to_string_lossy().to_string()).unwrap_or(target.clone());
+        let dir_info = DirectoryInfo::new(&dir);
+        let files = dir_info.get_files(&pattern);
+        for file in files {
+            let ext = Path::new(&file.full_name)
+                .extension()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_lowercase();
+            if ext == "zip" || ext == "7z" {
+                log_line(&mut log_file, &format!("Processing: {}", file.full_name));
+                println!("Processing: {}", file.full_name);
+                let status = tz.process(&file.full_name);
+                log_line(&mut log_file, &format!("Result: {:?}", status));
+                println!("Result: {:?}", status);
+            }
         }
     }
+
+    if let Some(f) = log_file.as_mut() { let _ = f.flush(); }
 
     if gui_launch {
         println!("Complete. Press Enter to exit.");
@@ -122,17 +155,28 @@ fn main() {
     }
 }
 
-fn process_dir(dir_name: &str, tz: &TorrentZip, no_recursion: bool) {
+fn log_line(file: &mut Option<File>, line: &str) {
+    if let Some(f) = file.as_mut() { let _ = writeln!(f, "{}", line); }
+}
+
+fn process_dir(dir_name: &str, tz: &TorrentZip, no_recursion: bool, log_file: &mut Option<File>) {
+    log_line(log_file, &format!("Checking Dir : {}", dir_name));
     println!("Checking Dir : {}", dir_name);
 
     let dir_info = DirectoryInfo::new(dir_name);
     let files = dir_info.get_files("");
 
     for file in files {
-        let ext = std::path::Path::new(&file.full_name).extension().unwrap_or_default().to_string_lossy().to_lowercase();
+        let ext = Path::new(&file.full_name)
+            .extension()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_lowercase();
         if ext == "zip" || ext == "7z" {
+            log_line(log_file, &format!("Processing: {}", file.full_name));
             println!("Processing: {}", file.full_name);
             let status = tz.process(&file.full_name);
+            log_line(log_file, &format!("Result: {:?}", status));
             println!("Result: {:?}", status);
         }
     }
@@ -140,7 +184,7 @@ fn process_dir(dir_name: &str, tz: &TorrentZip, no_recursion: bool) {
     if !no_recursion {
         let dirs = dir_info.get_directories();
         for dir in dirs {
-            process_dir(&dir.full_name, tz, no_recursion);
+            process_dir(&dir.full_name, tz, no_recursion, log_file);
         }
     }
 }

@@ -6,7 +6,7 @@
     use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
     #[test]
-    fn test_rezip_files_builds_torrentzip_with_raw_stream_reuse() {
+    fn test_rezip_files_builds_deterministic_torrentzip() {
         let temp = tempdir().unwrap();
         let source_path = temp.path().join("sample.zip");
 
@@ -22,9 +22,6 @@
             writer.write_all(b"aaaa").unwrap();
             writer.finish().unwrap();
         }
-
-        let source_bytes = fs::read(&source_path).unwrap();
-        let source_a = TorrentZipRebuild::read_raw_zip_entry(&source_bytes, "a.bin").unwrap();
 
         let mut zip_file = ZipFile::new();
         assert_eq!(
@@ -56,8 +53,7 @@
 
         let rebuilt_bytes = fs::read(&source_path).unwrap();
         let rebuilt_a = TorrentZipRebuild::read_raw_zip_entry(&rebuilt_bytes, "a.bin").unwrap();
-        assert_eq!(source_a.compressed_data, rebuilt_a.compressed_data);
-
+        assert_eq!(rebuilt_a.uncompressed_size, 4);
         let archive = ZipArchive::new(fs::File::open(&source_path).unwrap()).unwrap();
         let eocd_offset = rebuilt_bytes
             .windows(4)
@@ -81,6 +77,37 @@
         );
         let expected_comment = format!("TORRENTZIPPED-{:08X}", crc.finalize());
         assert_eq!(String::from_utf8_lossy(archive.comment()), expected_comment);
+
+        let mut zip_file = ZipFile::new();
+        assert_eq!(
+            zip_file.zip_file_open(&source_path.to_string_lossy(), 0, true),
+            ZipReturn::ZipGood
+        );
+
+        let zipped_files = vec![
+            ZippedFile {
+                index: 0,
+                name: "a.bin".to_string(),
+                size: 4,
+                crc: None,
+                sha1: None,
+                is_dir: false,
+            },
+            ZippedFile {
+                index: 1,
+                name: "b.bin".to_string(),
+                size: 4,
+                crc: None,
+                sha1: None,
+                is_dir: false,
+            },
+        ];
+
+        let status = TorrentZipRebuild::rezip_files(&zipped_files, &mut zip_file, ZipStructure::ZipTrrnt);
+        assert_eq!(status, TrrntZipStatus::VALID_TRRNTZIP);
+
+        let rebuilt_bytes_again = fs::read(&source_path).unwrap();
+        assert_eq!(rebuilt_bytes, rebuilt_bytes_again);
     }
 
     #[test]
