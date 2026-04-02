@@ -28,8 +28,8 @@
         assert!(SAM_INPUT_OPTIONS.iter().any(|option| option.label() == "Mixed"));
         assert!(SAM_OUTPUT_OPTIONS.iter().any(|option| option.label() == "TorrentZip"));
         assert!(SAM_OUTPUT_OPTIONS.iter().any(|option| option.label() == "7z Zstd"));
-        assert!(!crate::RomVaultApp::sam_output_kind_supported(SamOutputKind::SevenZipZstd));
-        assert!(crate::RomVaultApp::sam_output_kind_support_message(SamOutputKind::SevenZipZstd).is_some());
+        assert!(crate::RomVaultApp::sam_output_kind_supported(SamOutputKind::SevenZipZstd));
+        assert!(crate::RomVaultApp::sam_output_kind_support_message(SamOutputKind::SevenZipZstd).is_none());
     }
 
     #[test]

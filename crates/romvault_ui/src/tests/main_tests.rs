@@ -2,9 +2,11 @@
     use rv_core::rv_file::RvFile;
     use dat_reader::enums::FileType;
     use std::fs;
+    use std::fs::File;
     use std::path::Path;
     use std::rc::Rc;
     use std::cell::RefCell;
+    use sevenz_rust::{Archive, EncoderMethod, Password};
     use tempfile::tempdir;
     use crate::utils::get_full_node_path;
 
@@ -162,7 +164,10 @@
         .unwrap();
 
         assert!(output.ends_with("SetDir.7z"));
-        assert!(RomVaultApp::sam_output_extension(crate::dialogs::SamOutputKind::SevenZipZstd).is_none());
+        assert_eq!(
+            RomVaultApp::sam_output_extension(crate::dialogs::SamOutputKind::SevenZipZstd),
+            Some("7z")
+        );
     }
 
     #[test]
@@ -197,6 +202,7 @@
             &source_dir,
             SamSourceKind::Directory,
             &output_path,
+            crate::dialogs::SamOutputKind::SevenZipLzma,
             true,
             &ProcessControl::new(),
         )
@@ -205,4 +211,74 @@
         assert_eq!(status, "SEVENZIP_LZMA_CREATED");
         assert!(output_path.exists());
         assert!(RomVaultApp::sam_verify_7z_output(&output_path).is_ok());
+
+        let mut archive_file = File::open(&output_path).unwrap();
+        let password = Password::empty();
+        let archive = Archive::read(&mut archive_file, &password).unwrap();
+        assert!(archive.is_solid);
+        assert_eq!(archive.blocks[0].coders[0].encoder_method_id(), EncoderMethod::ID_LZMA);
+    }
+
+    #[test]
+    fn test_sam_process_7z_zstd_item_creates_archive_from_directory_source() {
+        let temp = tempdir().unwrap();
+        let source_dir = temp.path().join("SetDir");
+        fs::create_dir_all(source_dir.join("sub")).unwrap();
+        fs::write(source_dir.join("a.bin"), b"aaaa").unwrap();
+        fs::write(source_dir.join("sub").join("b.bin"), b"bbbb").unwrap();
+        let output_path = temp.path().join("SetDir.7z");
+
+        let status = RomVaultApp::sam_process_7z_item(
+            &source_dir,
+            SamSourceKind::Directory,
+            &output_path,
+            crate::dialogs::SamOutputKind::SevenZipZstd,
+            true,
+            &ProcessControl::new(),
+        )
+        .unwrap();
+
+        assert_eq!(status, "SEVENZIP_ZSTD_CREATED");
+        assert!(output_path.exists());
+        assert!(RomVaultApp::sam_verify_7z_output(&output_path).is_ok());
+
+        let mut archive_file = File::open(&output_path).unwrap();
+        let password = Password::empty();
+        let archive = Archive::read(&mut archive_file, &password).unwrap();
+        assert!(archive.is_solid);
+        assert_eq!(archive.blocks[0].coders[0].encoder_method_id(), EncoderMethod::ID_ZSTD);
+    }
+
+    #[test]
+    fn test_sam_process_7z_zstd_item_is_byte_stable_for_same_input() {
+        let temp = tempdir().unwrap();
+        let source_dir = temp.path().join("SetDir");
+        fs::create_dir_all(source_dir.join("sub")).unwrap();
+        fs::write(source_dir.join("a.bin"), b"aaaa").unwrap();
+        fs::write(source_dir.join("sub").join("b.bin"), b"bbbb").unwrap();
+        let first_output = temp.path().join("SetDir-a.7z");
+        let second_output = temp.path().join("SetDir-b.7z");
+
+        let first_status = RomVaultApp::sam_process_7z_item(
+            &source_dir,
+            SamSourceKind::Directory,
+            &first_output,
+            crate::dialogs::SamOutputKind::SevenZipZstd,
+            true,
+            &ProcessControl::new(),
+        )
+        .unwrap();
+        let second_status = RomVaultApp::sam_process_7z_item(
+            &source_dir,
+            SamSourceKind::Directory,
+            &second_output,
+            crate::dialogs::SamOutputKind::SevenZipZstd,
+            true,
+            &ProcessControl::new(),
+        )
+        .unwrap();
+
+        assert_eq!(first_status, "SEVENZIP_ZSTD_CREATED");
+        assert_eq!(second_status, "SEVENZIP_ZSTD_CREATED");
+        assert_eq!(fs::read(first_output).unwrap(), fs::read(second_output).unwrap());
     }

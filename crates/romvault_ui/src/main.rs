@@ -18,7 +18,8 @@ use dat_reader::enums::FileType;
 use rv_core::db::{init_db, GLOBAL_DB};
 use rv_core::rv_file::{RvFile, TreeSelect};
 use dat_reader::enums::DatStatus;
-use sevenz_rust::{SevenZArchiveEntry, SevenZWriter};
+use sevenz_rust::encoder_options::ZstandardOptions;
+use sevenz_rust::{ArchiveEntry, ArchiveWriter, EncoderConfiguration, EncoderMethod, Password, SourceReader};
 use trrntzip::{ProcessControl, StopMode, TorrentZip, TorrentZipRebuild, TrrntZipStatus};
 use zip::read::ZipArchive;
 use zip::write::FileOptions;
@@ -277,6 +278,8 @@ impl<R: Read> Read for SamInterruptReader<R> {
 }
 
 impl RomVaultApp {
+    const SAM_7Z_ZSTD_LEVEL: u32 = 19;
+
     fn new() -> Self {
         rv_core::settings::load_settings_from_file();
 
@@ -439,18 +442,33 @@ impl RomVaultApp {
             crate::dialogs::SamOutputKind::TorrentZip
             | crate::dialogs::SamOutputKind::Zip
             | crate::dialogs::SamOutputKind::ZipZstd => Some("zip"),
-            crate::dialogs::SamOutputKind::SevenZipLzma => Some("7z"),
-            crate::dialogs::SamOutputKind::SevenZipZstd => None,
+            crate::dialogs::SamOutputKind::SevenZipLzma
+            | crate::dialogs::SamOutputKind::SevenZipZstd => Some("7z"),
         }
     }
 
     pub(crate) fn sam_output_kind_supported(output_kind: crate::dialogs::SamOutputKind) -> bool {
-        !matches!(output_kind, crate::dialogs::SamOutputKind::SevenZipZstd)
+        let _ = output_kind;
+        true
     }
 
     pub(crate) fn sam_output_kind_support_message(output_kind: crate::dialogs::SamOutputKind) -> Option<&'static str> {
+        let _ = output_kind;
+        None
+    }
+
+    fn sam_7z_content_methods(
+        output_kind: crate::dialogs::SamOutputKind,
+    ) -> Option<Vec<EncoderConfiguration>> {
         match output_kind {
-            crate::dialogs::SamOutputKind::SevenZipZstd => Some("7z Zstd is visible for reference parity, but the current archive backend cannot write stop-safe 7z Zstd output yet."),
+            crate::dialogs::SamOutputKind::SevenZipLzma => {
+                Some(vec![EncoderConfiguration::new(EncoderMethod::LZMA)])
+            }
+            crate::dialogs::SamOutputKind::SevenZipZstd => {
+                Some(vec![EncoderConfiguration::from(ZstandardOptions::from_level(
+                    Self::SAM_7Z_ZSTD_LEVEL,
+                ))])
+            }
             _ => None,
         }
     }
@@ -601,6 +619,19 @@ impl RomVaultApp {
             .join(format!("__{}.samtmp.dir", file_name))
     }
 
+    fn sam_normalize_archive_entry_name(relative_path: &Path) -> String {
+        relative_path.to_string_lossy().replace('\\', "/")
+    }
+
+    fn sam_deterministic_7z_entry(relative_path: &Path, is_dir: bool) -> ArchiveEntry {
+        let entry_name = Self::sam_normalize_archive_entry_name(relative_path);
+        if is_dir {
+            ArchiveEntry::new_directory(&entry_name)
+        } else {
+            ArchiveEntry::new_file(&entry_name)
+        }
+    }
+
     fn sam_hard_stop_requested(control: &ProcessControl) -> bool {
         control.is_hard_stop_requested()
     }
@@ -727,10 +758,11 @@ impl RomVaultApp {
             stage_dir,
             |entry, reader, dest| {
                 if control.is_hard_stop_requested() {
-                    return Err(sevenz_rust::Error::io(std::io::Error::new(
+                    return Err(std::io::Error::new(
                         std::io::ErrorKind::Interrupted,
                         "USER_ABORTED_HARD",
-                    )));
+                    )
+                    .into());
                 }
                 let out_path = dest.to_path_buf();
                 if entry.name().ends_with('/') {
@@ -743,10 +775,11 @@ impl RomVaultApp {
                     let mut buffer = [0u8; 64 * 1024];
                     loop {
                         if control.is_hard_stop_requested() {
-                            return Err(sevenz_rust::Error::io(std::io::Error::new(
+                            return Err(std::io::Error::new(
                                 std::io::ErrorKind::Interrupted,
                                 "USER_ABORTED_HARD",
-                            )));
+                            )
+                            .into());
                         }
                         let read = reader.read(&mut buffer)?;
                         if read == 0 {
@@ -798,7 +831,8 @@ impl RomVaultApp {
 
     fn sam_verify_7z_output(output_path: &Path) -> Result<(), String> {
         let mut file = File::open(output_path).map_err(|err| err.to_string())?;
-        sevenz_rust::Archive::read(&mut file, 0, sevenz_rust::Password::empty().as_slice())
+        let password = Password::empty();
+        sevenz_rust::Archive::read(&mut file, &password)
             .map_err(|err| err.to_string())?;
         Ok(())
     }
@@ -807,6 +841,7 @@ impl RomVaultApp {
         source_path: &Path,
         source_kind: SamSourceKind,
         output_path: &Path,
+        output_kind: crate::dialogs::SamOutputKind,
         verify_output: bool,
         control: &ProcessControl,
     ) -> Result<String, String> {
@@ -821,31 +856,43 @@ impl RomVaultApp {
             let mut entries = Vec::new();
             Self::sam_collect_stage_entries(source_dir, source_dir, &mut entries)?;
 
-            let mut writer = SevenZWriter::create(&temp_archive).map_err(|err| err.to_string())?;
+            let Some(content_methods) = Self::sam_7z_content_methods(output_kind) else {
+                return Err("The selected 7z output type is not available.".to_string());
+            };
+            let mut writer: ArchiveWriter<File> =
+                ArchiveWriter::create(&temp_archive).map_err(|err| err.to_string())?;
+            writer.set_content_methods(content_methods);
+            let mut solid_entries = Vec::new();
+            let mut solid_readers: Vec<SourceReader<SamInterruptReader<File>>> = Vec::new();
             for (relative_path, is_dir) in entries {
                 if control.is_hard_stop_requested() {
                     return Err("USER_ABORTED_HARD".to_string());
                 }
 
                 let disk_path = source_dir.join(&relative_path);
-                let entry_name = relative_path.to_string_lossy().replace('\\', "/");
-                let entry = SevenZArchiveEntry::from_path(&disk_path, entry_name);
+                let entry = Self::sam_deterministic_7z_entry(&relative_path, is_dir);
                 if is_dir {
-                    writer.push_archive_entry::<&[u8]>(entry, None).map_err(|err| err.to_string())?;
+                    writer
+                        .push_archive_entry::<&[u8]>(entry, None)
+                        .map_err(|err: sevenz_rust::Error| err.to_string())?;
                 } else {
                     let file = File::open(&disk_path).map_err(|err| err.to_string())?;
-                    let reader = SamInterruptReader {
+                    let reader = SourceReader::new(SamInterruptReader {
                         inner: file,
                         control: control.clone(),
-                    };
-                    writer.push_archive_entry(entry, Some(reader)).map_err(|err| {
-                        if control.is_hard_stop_requested() {
-                            "USER_ABORTED_HARD".to_string()
-                        } else {
-                            err.to_string()
-                        }
-                    })?;
+                    });
+                    solid_entries.push(entry);
+                    solid_readers.push(reader);
                 }
+            }
+            if !solid_entries.is_empty() {
+                writer.push_archive_entries(solid_entries, solid_readers).map_err(|err: sevenz_rust::Error| {
+                    if control.is_hard_stop_requested() {
+                        "USER_ABORTED_HARD".to_string()
+                    } else {
+                        err.to_string()
+                    }
+                })?;
             }
             writer.finish().map_err(|err| err.to_string())?;
 
@@ -857,7 +904,11 @@ impl RomVaultApp {
                 let _ = fs::remove_file(output_path);
             }
             fs::rename(&temp_archive, output_path).map_err(|err| err.to_string())?;
-            Ok("SEVENZIP_LZMA_CREATED".to_string())
+            Ok(match output_kind {
+                crate::dialogs::SamOutputKind::SevenZipLzma => "SEVENZIP_LZMA_CREATED".to_string(),
+                crate::dialogs::SamOutputKind::SevenZipZstd => "SEVENZIP_ZSTD_CREATED".to_string(),
+                _ => unreachable!(),
+            })
         })();
 
         if result.is_err() {
@@ -1044,16 +1095,15 @@ impl RomVaultApp {
                     request.verify_output,
                     &control,
                 ),
-                crate::dialogs::SamOutputKind::SevenZipLzma => Self::sam_process_7z_item(
+                crate::dialogs::SamOutputKind::SevenZipLzma
+                | crate::dialogs::SamOutputKind::SevenZipZstd => Self::sam_process_7z_item(
                     source_path,
                     source_kind,
                     &output_path,
+                    request.output_kind,
                     request.verify_output,
                     &control,
                 ),
-                crate::dialogs::SamOutputKind::SevenZipZstd => {
-                    Err("7z output is not yet available through the stop-safe SAM backend.".to_string())
-                }
             };
 
             match result {

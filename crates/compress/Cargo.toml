@@ -7,7 +7,7 @@ authors.workspace = true
 [dependencies]
 bitflags = "2.4"
 zip = "0.6"
-sevenz-rust = "0.6"
+sevenz-rust = { package = "sevenz-rust2", version = "0.19.3", features = ["compress", "zstd"] }
 flate2 = "1.0"
 time = "0.3"
 

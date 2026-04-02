@@ -7,8 +7,7 @@ use crate::i_compress::ICompress;
 use crate::structured_archive::ZipStructure;
 use crate::zip_enums::{ZipOpenType, ZipReturn};
 
-// Using sevenz-rust crate
-use sevenz_rust::{Archive, Password, SevenZArchiveEntry};
+use sevenz_rust::{Archive, ArchiveEntry, Password};
 
 /// ICompress wrapper for `.7z` archives.
 /// 
@@ -66,10 +65,7 @@ impl SevenZipFile {
             // We would need to read it or see if it's available in future versions
             // Currently skipping CRC population at header level for 7z
             
-            let dt_opt: Option<sevenz_rust::nt_time::FileTime> = Some(file.last_modified_date());
-            if let Some(_dt) = dt_opt {
-                // Not standard DateTime struct, sevenz-rust uses nt_time::time::OffsetDateTime
-                // Approximate fallback or use internal
+            if file.has_last_modified_date {
                 fh.header_last_modified = 0;
             }
             
@@ -106,7 +102,8 @@ impl ICompress for SevenZipFile {
             Err(_) => return ZipReturn::ZipErrorOpeningFile,
         };
         
-        let archive = match sevenz_rust::Archive::read(&mut file, 0, Password::empty().as_slice()) {
+        let password = Password::empty();
+        let archive = match sevenz_rust::Archive::read(&mut file, &password) {
             Ok(a) => a,
             Err(_) => return ZipReturn::ZipErrorOpeningFile,
         };
@@ -141,7 +138,7 @@ impl ICompress for SevenZipFile {
             None => return Err(ZipReturn::ZipErrorOpeningFile),
         };
 
-        let file_entry: &SevenZArchiveEntry = match archive.files.get(index) {
+        let file_entry: &ArchiveEntry = match archive.files.get(index) {
             Some(f) => f,
             None => return Err(ZipReturn::ZipErrorGettingDataStream),
         };
