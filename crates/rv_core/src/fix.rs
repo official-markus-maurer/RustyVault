@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use flate2::write::DeflateEncoder;
 use flate2::Compression;
+use compress::{apply_romvault7z_marker, ZipStructure as CompressZipStructure};
 use sevenz_rust::compress_to_path as compress_to_7z_path;
 use tracing::{info, debug, trace};
 use crate::enums::RepStatus;
@@ -62,6 +63,111 @@ struct TorrentZipBuiltEntry {
 }
 
 impl Fix {
+    fn double_check_delete_should_skip(file: &RvFile) -> bool {
+        if !crate::settings::get_settings().double_check_delete {
+            return true;
+        }
+        if matches!(file.dat_status(), DatStatus::InToSort) && file.name.to_ascii_lowercase().ends_with(".cue") {
+            return true;
+        }
+        if file.size == Some(0) {
+            return true;
+        }
+        false
+    }
+
+    fn timestamp_matches(path: &PathBuf, expected_secs: i64) -> bool {
+        if expected_secs == i64::MIN {
+            return true;
+        }
+        let Ok(meta) = fs::metadata(path) else { return false; };
+        let Ok(modified) = meta.modified() else { return false; };
+        let Ok(dur) = modified.duration_since(std::time::UNIX_EPOCH) else { return false; };
+        dur.as_secs() as i64 == expected_secs
+    }
+
+    fn identity_can_fix(deleting: &RvFile, candidate: &RvFile) -> bool {
+        if candidate.got_status() != GotStatus::Got {
+            return false;
+        }
+        if matches!(candidate.rep_status(), RepStatus::Delete | RepStatus::Deleted) {
+            return false;
+        }
+        if deleting.size.is_some() && deleting.size != candidate.size {
+            return false;
+        }
+
+        let mut has_any = false;
+
+        if let Some(ref crc) = deleting.crc {
+            has_any = true;
+            if candidate.crc.as_ref() != Some(crc) && candidate.alt_crc.as_ref() != Some(crc) {
+                return false;
+            }
+        }
+        if let Some(ref sha1) = deleting.sha1 {
+            has_any = true;
+            if candidate.sha1.as_ref() != Some(sha1) && candidate.alt_sha1.as_ref() != Some(sha1) {
+                return false;
+            }
+        }
+        if let Some(ref md5) = deleting.md5 {
+            has_any = true;
+            if candidate.md5.as_ref() != Some(md5) && candidate.alt_md5.as_ref() != Some(md5) {
+                return false;
+            }
+        }
+
+        has_any
+    }
+
+    fn find_delete_check_candidate(root: Rc<RefCell<RvFile>>, deleting: Rc<RefCell<RvFile>>) -> Option<Rc<RefCell<RvFile>>> {
+        let deleting_path = Self::build_physical_path(Rc::clone(&deleting), true);
+        let deleting_ref = deleting.borrow();
+        let deleting_ts = deleting_ref.file_mod_time_stamp;
+        let deleting_size = deleting_ref.size;
+        drop(deleting_ref);
+
+        let mut stack = vec![root];
+        while let Some(node) = stack.pop() {
+            let (children, is_dir, got_status, rep_status, ts, ok_identity) = {
+                let b = node.borrow();
+                (
+                    b.children.clone(),
+                    b.is_directory(),
+                    b.got_status(),
+                    b.rep_status(),
+                    b.file_mod_time_stamp,
+                    Self::identity_can_fix(&deleting.borrow(), &b),
+                )
+            };
+
+            if is_dir {
+                for c in children {
+                    stack.push(c);
+                }
+                continue;
+            }
+
+            if got_status == GotStatus::Got && !matches!(rep_status, RepStatus::Delete | RepStatus::Deleted) && ok_identity {
+                let cand_path = Self::build_physical_path(Rc::clone(&node), true);
+                if Self::physical_path_eq_for_rename(&cand_path, &deleting_path) {
+                    continue;
+                }
+                if deleting_size.is_some() && !cand_path.exists() {
+                    continue;
+                }
+                if !Self::timestamp_matches(&cand_path, ts) {
+                    continue;
+                }
+                if deleting_ts != i64::MIN && !Self::timestamp_matches(&deleting_path, deleting_ts) {
+                    continue;
+                }
+                return Some(node);
+            }
+        }
+        None
+    }
     const TORRENTZIP_DOS_TIME: u16 = 48128;
     const TORRENTZIP_DOS_DATE: u16 = 8600;
 
@@ -2019,6 +2125,14 @@ impl Fix {
             let _ = fs::remove_file(&temp_archive_path);
             return false;
         }
+        let compress_struct = match desired_zip_struct {
+            ZipStructure::SevenZipSLZMA => CompressZipStructure::SevenZipSLZMA,
+            ZipStructure::SevenZipNLZMA => CompressZipStructure::SevenZipNLZMA,
+            ZipStructure::SevenZipSZSTD => CompressZipStructure::SevenZipSZSTD,
+            ZipStructure::SevenZipNZSTD => CompressZipStructure::SevenZipNZSTD,
+            _ => CompressZipStructure::None,
+        };
+        let _ = apply_romvault7z_marker(Path::new(&temp_archive_path), compress_struct);
 
         if Path::new(&archive_path).exists() {
             let _ = fs::remove_file(&archive_path);
@@ -2291,6 +2405,12 @@ impl Fix {
                     file_mut.set_got_status(GotStatus::NotGot);
                     file_mut.rep_status_reset();
                     return;
+                }
+                if !Self::double_check_delete_should_skip(&file.borrow()) {
+                    let tree_root = Self::find_tree_root(Rc::clone(&file));
+                    if Self::find_delete_check_candidate(tree_root, Rc::clone(&file)).is_none() {
+                        tracing::warn!("DoubleCheckDelete: no retained candidate found, deleting anyway for {}", name);
+                    }
                 }
                 if current_path.exists() {
                     let _ = fs::remove_file(&current_path);

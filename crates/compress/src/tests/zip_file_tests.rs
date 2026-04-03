@@ -53,7 +53,7 @@
             let file = File::create(&path).unwrap();
             let mut writer = ZipWriter::new(file);
             let dt = zip::DateTime::from_date_and_time(1996, 12, 24, 23, 32, 0).unwrap();
-            let options = FileOptions::default()
+            let options = FileOptions::<()>::default()
                 .compression_method(CompressionMethod::Deflated)
                 .compression_level(Some(9))
                 .last_modified_time(dt);
@@ -113,7 +113,7 @@
         {
             let file = File::create(&path).unwrap();
             let mut writer = ZipWriter::new(file);
-            let options = FileOptions::default().compression_method(CompressionMethod::Deflated);
+            let options = FileOptions::<()>::default().compression_method(CompressionMethod::Deflated);
             writer.start_file("a.txt", options).unwrap();
             writer.write_all(b"aaa").unwrap();
             writer.start_file("b.txt", options).unwrap();
@@ -190,7 +190,7 @@
         {
             let file = File::create(&path).unwrap();
             let mut writer = ZipWriter::new(file);
-            let options = FileOptions::default().compression_method(CompressionMethod::Stored);
+            let options = FileOptions::<()>::default().compression_method(CompressionMethod::Stored);
             writer.start_file("a.bin", options).unwrap();
             writer.write_all(b"hello").unwrap();
             writer.finish().unwrap();
@@ -232,7 +232,7 @@
         {
             let file = File::create(&path).unwrap();
             let mut writer = ZipWriter::new(file);
-            let options = FileOptions::default().compression_method(CompressionMethod::Stored);
+            let options = FileOptions::<()>::default().compression_method(CompressionMethod::Stored);
             writer.start_file("a.bin", options).unwrap();
             writer.write_all(b"hello").unwrap();
             writer.finish().unwrap();
@@ -260,4 +260,77 @@
         zip_file.zip_file_close();
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_open_read_stream_from_local_header_pointer_supports_bzip2_and_zstd() {
+        let path = unique_temp_zip("compress_zip_localptr_more");
+        {
+            let file = File::create(&path).unwrap();
+            let mut writer = ZipWriter::new(file);
+
+            let bz = FileOptions::<()>::default().compression_method(CompressionMethod::Bzip2);
+            writer.start_file("a.bz2", bz).unwrap();
+            writer.write_all(b"hello").unwrap();
+
+            let zs = FileOptions::<()>::default().compression_method(CompressionMethod::Zstd);
+            writer.start_file("b.zst", zs).unwrap();
+            writer.write_all(b"world").unwrap();
+
+            writer.finish().unwrap();
+        }
+
+        let mut zip_file = ZipFile::new();
+        assert_eq!(zip_file.zip_file_open(&path, 0, true), ZipReturn::ZipGood);
+
+        let local_a = zip_file.get_file_header(0).unwrap().local_head.unwrap();
+        let local_b = zip_file.get_file_header(1).unwrap().local_head.unwrap();
+
+        {
+            let (mut stream, size, method) = zip_file
+                .zip_file_open_read_stream_from_local_header_pointer(local_a, false)
+                .unwrap();
+            let mut out = Vec::new();
+            stream.read_to_end(&mut out).unwrap();
+            assert_eq!(method, 12);
+            assert_eq!(size, 5);
+            assert_eq!(out, b"hello");
+        }
+
+        {
+            let (mut stream, size, method) = zip_file
+                .zip_file_open_read_stream_from_local_header_pointer(local_b, false)
+                .unwrap();
+            let mut out = Vec::new();
+            stream.read_to_end(&mut out).unwrap();
+            assert_eq!(method, 93);
+            assert_eq!(size, 5);
+            assert_eq!(out, b"world");
+        }
+
+        zip_file.zip_file_close();
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_zip_fake_memory_stream_roundtrip() {
+        let mut zip = ZipFile::new();
+        zip.zip_create_fake();
+        assert_eq!(zip.zip_file_fake_open_memory_stream(), ZipReturn::ZipGood);
+
+        let local_header = zip
+            .zip_file_add_fake(
+                "a.bin",
+                0,
+                5,
+                5,
+                &[0x36, 0x10, 0xA6, 0x86],
+                0,
+                19961224233200,
+            )
+            .unwrap();
+        assert!(local_header.starts_with(&[0x50, 0x4B, 0x03, 0x04]));
+
+        let bytes = zip.zip_file_fake_close_memory_stream().unwrap();
+        assert!(!bytes.is_empty());
     }

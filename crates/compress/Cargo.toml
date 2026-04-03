@@ -6,12 +6,15 @@ authors.workspace = true
 
 [dependencies]
 bitflags = "2.4"
-zip = "0.6"
+zip = { version = "8.4.0", default-features = false, features = ["deflate", "deflate64", "bzip2", "zstd", "lzma", "ppmd", "xz", "time", "legacy-zip"] }
 sevenz-rust = { package = "sevenz-rust2", version = "0.19.3", features = ["compress", "zstd"] }
 flate2 = "1.0"
 time = "0.3"
 libc = "0.2"
 crc32fast = "1.3"
+zstd = "0.13"
+bzip2 = "0.4"
+deflate64 = "0.1"
 
 [build-dependencies]
 cc = "1.2"

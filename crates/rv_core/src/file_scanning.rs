@@ -346,10 +346,12 @@ impl FileScanning {
         db_child.crc = scanned_file.crc.clone();
         db_child.sha1 = scanned_file.sha1.clone();
         db_child.md5 = scanned_file.md5.clone();
+        db_child.sha256 = scanned_file.sha256.clone();
         db_child.alt_size = scanned_file.alt_size;
         db_child.alt_crc = scanned_file.alt_crc.clone();
         db_child.alt_sha1 = scanned_file.alt_sha1.clone();
         db_child.alt_md5 = scanned_file.alt_md5.clone();
+        db_child.alt_sha256 = scanned_file.alt_sha256.clone();
         db_child.chd_version = scanned_file.chd_version;
     }
 

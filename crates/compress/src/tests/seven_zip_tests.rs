@@ -1,4 +1,6 @@
 use super::*;
+use crate::ICompress;
+use crc32fast::Hasher as Crc32Hasher;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -75,4 +77,43 @@ fn detects_torrent7z_trailer() {
 
     let _ = fs::remove_file(&base_path);
     let _ = fs::remove_dir_all(&stage_dir);
+}
+
+#[test]
+fn seven_zip_write_stream_creates_readable_archive_and_sets_romvault_marker() {
+    let base_path = unique_temp_7z("compress_sevenzip_write");
+
+    let mut sz = SevenZipFile::new();
+    assert_eq!(sz.zip_file_create(&base_path), ZipReturn::ZipGood);
+
+    let data = b"hello";
+    let mut crc = Crc32Hasher::new();
+    crc.update(data);
+    let crc_be = crc.finalize().to_be_bytes();
+
+    {
+        let mut w = sz
+            .zip_file_open_write_stream(false, "a.bin", data.len() as u64, 14, None)
+            .unwrap();
+        w.write_all(data).unwrap();
+    }
+    assert_eq!(sz.zip_file_close_write_stream(&crc_be), ZipReturn::ZipGood);
+    sz.zip_file_close();
+
+    let mut sz = SevenZipFile::new();
+    assert_eq!(sz.zip_file_open(&base_path, 0, true), ZipReturn::ZipGood);
+    assert_eq!(sz.zip_struct(), ZipStructure::SevenZipSLZMA);
+    assert!(sz.local_files_count() >= 1);
+    let idx = (0..sz.local_files_count())
+        .find(|&i| sz.get_file_header(i).unwrap().filename.ends_with("a.bin"))
+        .unwrap();
+
+    let (mut r, size) = sz.zip_file_open_read_stream(idx).unwrap();
+    assert_eq!(size, data.len() as u64);
+    let mut out = Vec::new();
+    r.read_to_end(&mut out).unwrap();
+    assert_eq!(out, data);
+    sz.zip_file_close();
+
+    let _ = fs::remove_file(&base_path);
 }

@@ -13,7 +13,7 @@
         {
             let file = fs::File::create(&source_path).unwrap();
             let mut writer = ZipWriter::new(file);
-            let options = FileOptions::default()
+            let options = FileOptions::<()>::default()
                 .compression_method(CompressionMethod::Deflated)
                 .compression_level(Some(9));
             writer.start_file("b.bin", options).unwrap();
@@ -118,7 +118,7 @@
         {
             let file = fs::File::create(&source_path).unwrap();
             let mut writer = ZipWriter::new(file);
-            let options = FileOptions::default().compression_method(CompressionMethod::Stored);
+            let options = FileOptions::<()>::default().compression_method(CompressionMethod::Stored);
             writer.start_file("a.bin", options).unwrap();
             writer.write_all(b"aaaa").unwrap();
             writer.finish().unwrap();

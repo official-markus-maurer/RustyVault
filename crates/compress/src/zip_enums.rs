@@ -16,7 +16,7 @@ pub enum ZipReturn {
     ZipLocalFileHeaderError,
     ZipCentralDirError,
     ZipEndOfCentralDirectoryError,
-    Zip64EndOfCentralDirError,
+    Zip64EndOfCentralDirectoryError,
     Zip64EndOfCentralDirectoryLocatorError,
     ZipReadingFromOutputFile,
     ZipWritingToInputFile,

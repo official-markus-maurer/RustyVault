@@ -138,6 +138,9 @@ impl DatUpdate {
         if existing.md5.is_some() {
             new_rv.md5 = existing.md5.clone();
         }
+        if existing.sha256.is_some() {
+            new_rv.sha256 = existing.sha256.clone();
+        }
         if existing.alt_size.is_some() {
             new_rv.alt_size = existing.alt_size;
         }
@@ -149,6 +152,9 @@ impl DatUpdate {
         }
         if existing.alt_md5.is_some() {
             new_rv.alt_md5 = existing.alt_md5.clone();
+        }
+        if existing.alt_sha256.is_some() {
+            new_rv.alt_sha256 = existing.alt_sha256.clone();
         }
         if existing.chd_version.is_some() {
             new_rv.chd_version = existing.chd_version;
@@ -434,6 +440,7 @@ impl DatUpdate {
             new_rv.crc = d_file.crc.clone();
             new_rv.sha1 = d_file.sha1.clone();
             new_rv.md5 = d_file.md5.clone();
+            new_rv.sha256 = d_file.sha256.clone();
             if new_rv.size.is_some() {
                 new_rv.file_status_set(FileStatus::SIZE_FROM_DAT);
             }
@@ -445,6 +452,9 @@ impl DatUpdate {
             }
             if new_rv.md5.is_some() {
                 new_rv.file_status_set(FileStatus::MD5_FROM_DAT);
+            }
+            if new_rv.sha256.is_some() {
+                new_rv.file_status_set(FileStatus::SHA256_FROM_DAT);
             }
             
             if let Some(ref m) = d_file.merge {

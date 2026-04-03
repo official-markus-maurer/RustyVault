@@ -1,6 +1,11 @@
+use std::cell::RefCell;
+use std::fs;
 use std::fs::File;
-use std::io::{Read, Write, Seek};
-use std::path::Path;
+use std::io::{Read, Write, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
+
+use crc32fast::Hasher as Crc32Hasher;
 
 use crate::file_header::FileHeader;
 use crate::i_compress::ICompress;
@@ -8,6 +13,26 @@ use crate::structured_archive::ZipStructure;
 use crate::zip_enums::{ZipOpenType, ZipReturn};
 
 use sevenz_rust::{Archive, ArchiveEntry, Password};
+
+struct SevenZipPendingWrite {
+    header_index: usize,
+    file: Rc<RefCell<File>>,
+    mod_time: Option<i64>,
+}
+
+struct SharedFileWriter {
+    file: Rc<RefCell<File>>,
+}
+
+impl Write for SharedFileWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.file.borrow_mut().write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.borrow_mut().flush()
+    }
+}
 
 /// ICompress wrapper for `.7z` archives.
 /// 
@@ -29,6 +54,9 @@ pub struct SevenZipFile {
     // In read mode, we hold the loaded archive
     archive: Option<Archive>,
     file: Option<File>,
+    staging_dir: Option<PathBuf>,
+    pending_write: Option<SevenZipPendingWrite>,
+    temp_open_path: Option<PathBuf>,
     
     file_headers: Vec<FileHeader>,
     file_comment: String,
@@ -43,10 +71,154 @@ impl SevenZipFile {
             time_stamp: 0,
             archive: None,
             file: None,
+            staging_dir: None,
+            pending_write: None,
+            temp_open_path: None,
             file_headers: Vec::new(),
             file_comment: String::new(),
             zip_struct: ZipStructure::None,
         }
+    }
+
+    pub fn zip_file_open_stream<R: Read + Seek>(&mut self, mut stream: R, read_headers: bool) -> ZipReturn {
+        self.zip_file_close();
+        let mut bytes = Vec::new();
+        if stream.seek(SeekFrom::Start(0)).is_err() {
+            return ZipReturn::ZipErrorOpeningFile;
+        }
+        if stream.read_to_end(&mut bytes).is_err() {
+            return ZipReturn::ZipErrorReadingFile;
+        }
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let tmp_path = std::env::temp_dir().join(format!("rv_7z_stream_{}.7z", unique));
+        if fs::write(&tmp_path, bytes).is_err() {
+            return ZipReturn::ZipErrorOpeningFile;
+        }
+
+        self.temp_open_path = Some(tmp_path.clone());
+        self.zip_file_open(tmp_path.to_string_lossy().as_ref(), 0, read_headers)
+    }
+
+    pub fn header_report(&self) -> String {
+        String::new()
+    }
+
+    pub fn zip_file_create_with_structure(&mut self, new_filename: &str, zip_struct: ZipStructure) -> ZipReturn {
+        if self.zip_open_type != ZipOpenType::Closed {
+            return ZipReturn::ZipFileAlreadyOpen;
+        }
+
+        let path = Path::new(new_filename);
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() && fs::create_dir_all(parent).is_err() {
+                return ZipReturn::ZipErrorOpeningFile;
+            }
+        }
+
+        let staging_dir = PathBuf::from(format!("{}.rv7z.dir", new_filename));
+        let _ = fs::remove_dir_all(&staging_dir);
+        if fs::create_dir_all(&staging_dir).is_err() {
+            return ZipReturn::ZipErrorOpeningFile;
+        }
+
+        self.zip_filename = new_filename.to_string();
+        self.zip_open_type = ZipOpenType::OpenWrite;
+        self.zip_struct = zip_struct;
+        self.file_headers.clear();
+        self.file_comment.clear();
+        self.archive = None;
+        self.file = None;
+        self.staging_dir = Some(staging_dir);
+        self.pending_write = None;
+
+        ZipReturn::ZipGood
+    }
+
+    fn expected_compression_for_struct(zip_struct: ZipStructure) -> u16 {
+        match zip_struct {
+            ZipStructure::SevenZipSZSTD | ZipStructure::SevenZipNZSTD => 93,
+            _ => 14,
+        }
+    }
+
+    fn verify_next_header_crc(file: &mut File) -> ZipReturn {
+        let mut sig = [0u8; 32];
+        if file.seek(SeekFrom::Start(0)).is_err() {
+            return ZipReturn::ZipErrorReadingFile;
+        }
+        if file.read_exact(&mut sig).is_err() {
+            return ZipReturn::ZipErrorReadingFile;
+        }
+        if sig[0..6] != [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C] {
+            return ZipReturn::ZipSignatureError;
+        }
+
+        let next_header_offset = u64::from_le_bytes(sig[12..20].try_into().unwrap());
+        let next_header_size = u64::from_le_bytes(sig[20..28].try_into().unwrap());
+        let next_header_crc = u32::from_le_bytes(sig[28..32].try_into().unwrap());
+
+        let header_pos = 32u64.saturating_add(next_header_offset);
+        let Ok(file_len) = file.metadata().map(|m| m.len()) else {
+            return ZipReturn::ZipErrorReadingFile;
+        };
+        if header_pos > file_len {
+            return ZipReturn::ZipErrorReadingFile;
+        }
+        if next_header_size > (file_len - header_pos) {
+            return ZipReturn::ZipErrorReadingFile;
+        }
+
+        if next_header_size == 0 {
+            return ZipReturn::ZipGood;
+        }
+
+        if file.seek(SeekFrom::Start(header_pos)).is_err() {
+            return ZipReturn::ZipErrorReadingFile;
+        }
+        let mut header_bytes = vec![0u8; next_header_size as usize];
+        if file.read_exact(&mut header_bytes).is_err() {
+            return ZipReturn::ZipErrorReadingFile;
+        }
+        let mut hasher = Crc32Hasher::new();
+        hasher.update(&header_bytes);
+        if hasher.finalize() != next_header_crc {
+            return ZipReturn::Zip64EndOfCentralDirectoryError;
+        }
+        ZipReturn::ZipGood
+    }
+
+    fn finalize_write(&mut self) -> ZipReturn {
+        let Some(staging_dir) = self.staging_dir.as_ref() else {
+            return ZipReturn::ZipErrorOpeningFile;
+        };
+        if self.zip_filename.is_empty() {
+            return ZipReturn::ZipErrorOpeningFile;
+        }
+
+        let temp_path = format!("{}.rv7z.tmp", self.zip_filename);
+        let _ = fs::remove_file(&temp_path);
+        if sevenz_rust::compress_to_path(staging_dir, &temp_path).is_err() {
+            let _ = fs::remove_file(&temp_path);
+            return ZipReturn::ZipErrorWritingToOutputStream;
+        }
+
+        let _ = apply_romvault7z_marker(Path::new(&temp_path), self.zip_struct);
+
+        let _ = fs::remove_file(&self.zip_filename);
+        if fs::rename(&temp_path, &self.zip_filename).is_err() {
+            if fs::copy(&temp_path, &self.zip_filename).is_err() {
+                let _ = fs::remove_file(&temp_path);
+                return ZipReturn::ZipErrorWritingToOutputStream;
+            }
+            let _ = fs::remove_file(&temp_path);
+        }
+
+        ZipReturn::ZipGood
     }
 
     fn read_headers(&mut self) -> ZipReturn {
@@ -230,6 +402,94 @@ impl SevenZipFile {
     }
 }
 
+pub fn apply_romvault7z_marker(path: &Path, zip_struct: ZipStructure) -> std::io::Result<()> {
+    let variant = match zip_struct {
+        ZipStructure::SevenZipSLZMA => b'1',
+        ZipStructure::SevenZipNLZMA => b'2',
+        ZipStructure::SevenZipSZSTD => b'3',
+        ZipStructure::SevenZipNZSTD => b'4',
+        _ => return Ok(()),
+    };
+
+    let mut input = File::open(path)?;
+    let mut signature = [0u8; 32];
+    input.read_exact(&mut signature)?;
+    if signature[0..6] != [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C] {
+        return Ok(());
+    }
+
+    let next_header_offset = u64::from_le_bytes(signature[12..20].try_into().unwrap());
+    let next_header_size = u64::from_le_bytes(signature[20..28].try_into().unwrap());
+    let next_header_crc = u32::from_le_bytes(signature[28..32].try_into().unwrap());
+
+    let original_header_pos = 32u64.saturating_add(next_header_offset);
+    let file_len = input.metadata()?.len();
+    if original_header_pos > file_len {
+        return Ok(());
+    }
+
+    let mut marker = [0u8; 32];
+    marker[..11].copy_from_slice(b"RomVault7Z0");
+    marker[11] = variant;
+
+    let mut already_has_marker = false;
+    if original_header_pos >= 32 {
+        if input.seek(SeekFrom::Start(original_header_pos - 32)).is_ok() {
+            let mut existing = [0u8; 32];
+            if input.read_exact(&mut existing).is_ok() && &existing[..11] == b"RomVault7Z0" {
+                already_has_marker = true;
+            }
+        }
+    }
+
+    if already_has_marker {
+        marker[12..16].copy_from_slice(&next_header_crc.to_le_bytes());
+        marker[16..24].copy_from_slice(&original_header_pos.to_le_bytes());
+        marker[24..32].copy_from_slice(&next_header_size.to_le_bytes());
+
+        let mut io = File::options().write(true).open(path)?;
+        io.seek(SeekFrom::Start(original_header_pos - 32))?;
+        io.write_all(&marker)?;
+        io.flush()?;
+        return Ok(());
+    }
+
+    let new_next_header_offset = next_header_offset.saturating_add(32);
+    let new_header_pos = 32u64.saturating_add(new_next_header_offset);
+
+    marker[12..16].copy_from_slice(&next_header_crc.to_le_bytes());
+    marker[16..24].copy_from_slice(&new_header_pos.to_le_bytes());
+    marker[24..32].copy_from_slice(&next_header_size.to_le_bytes());
+
+    signature[12..20].copy_from_slice(&new_next_header_offset.to_le_bytes());
+    let mut crc = crc32fast::Hasher::new();
+    crc.update(&signature[12..32]);
+    signature[8..12].copy_from_slice(&crc.finalize().to_le_bytes());
+
+    let tmp_path = path.with_extension(format!(
+        "{}.rv7ztmp",
+        path.extension().and_then(|e| e.to_str()).unwrap_or("")
+    ));
+    let mut output = File::create(&tmp_path)?;
+
+    output.write_all(&signature)?;
+    input.seek(SeekFrom::Start(32))?;
+    let to_copy = original_header_pos.saturating_sub(32);
+    std::io::copy(&mut std::io::Read::by_ref(&mut input).take(to_copy), &mut output)?;
+    output.write_all(&marker)?;
+    input.seek(SeekFrom::Start(original_header_pos))?;
+    std::io::copy(&mut input, &mut output)?;
+    output.flush()?;
+    drop(output);
+
+    if std::fs::rename(&tmp_path, path).is_err() {
+        std::fs::copy(&tmp_path, path)?;
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+
+    Ok(())
+}
+
 impl ICompress for SevenZipFile {
     fn local_files_count(&self) -> usize {
         self.file_headers.len()
@@ -251,10 +511,31 @@ impl ICompress for SevenZipFile {
             return ZipReturn::ZipErrorFileNotFound;
         }
 
+        let file_secs = fs::metadata(path)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        if timestamp > 0 && file_secs != timestamp {
+            return ZipReturn::ZipErrorTimeStamp;
+        }
+
         let mut file = match File::open(path) {
             Ok(f) => f,
-            Err(_) => return ZipReturn::ZipErrorOpeningFile,
+            Err(e) => {
+                let code = e.raw_os_error().unwrap_or(0);
+                if code == 32 || code == 33 {
+                    return ZipReturn::ZipFileLocked;
+                }
+                return ZipReturn::ZipErrorOpeningFile;
+            }
         };
+
+        let crc_status = Self::verify_next_header_crc(&mut file);
+        if crc_status != ZipReturn::ZipGood {
+            return crc_status;
+        }
         
         let password = Password::empty();
         let archive = match sevenz_rust::Archive::read(&mut file, &password) {
@@ -263,9 +544,11 @@ impl ICompress for SevenZipFile {
         };
 
         self.zip_filename = new_filename.to_string();
-        self.time_stamp = timestamp;
+        self.time_stamp = file_secs;
         self.archive = Some(archive);
         self.file = Some(file);
+        self.staging_dir = None;
+        self.pending_write = None;
         self.zip_open_type = ZipOpenType::OpenRead;
         self.zip_struct = self.detect_zip_structure();
 
@@ -277,11 +560,27 @@ impl ICompress for SevenZipFile {
     }
 
     fn zip_file_close(&mut self) {
+        if self.zip_open_type == ZipOpenType::OpenWrite {
+            if let Some(pending) = self.pending_write.take() {
+                let _ = pending.file.borrow_mut().flush();
+            }
+            let _ = self.finalize_write();
+            if let Some(staging) = self.staging_dir.take() {
+                let _ = fs::remove_dir_all(staging);
+            }
+        }
+
         self.archive = None;
         self.file = None;
+        self.staging_dir = None;
+        self.pending_write = None;
+        if let Some(tmp) = self.temp_open_path.take() {
+            let _ = fs::remove_file(tmp);
+        }
         self.zip_open_type = ZipOpenType::Closed;
         self.file_headers.clear();
         self.zip_struct = ZipStructure::None;
+        self.file_comment.clear();
     }
 
     fn zip_file_open_read_stream(&mut self, index: usize) -> Result<(Box<dyn Read>, u64), ZipReturn> {
@@ -340,29 +639,138 @@ impl ICompress for SevenZipFile {
     }
 
     fn zip_file_create(&mut self, _new_filename: &str) -> ZipReturn {
-        // sevenz-rust crate currently only supports reading, not writing
-        // For faithful port we'd need to implement or wrap a 7z writer,
-        // or just return unsupported for now.
-        ZipReturn::ZipWritingToInputFile
+        self.zip_file_create_with_structure(_new_filename, ZipStructure::SevenZipSLZMA)
     }
 
     fn zip_file_open_write_stream(
         &mut self,
-        _raw: bool,
-        _filename: &str,
-        _uncompressed_size: u64,
-        _compression_method: u16,
-        _mod_time: Option<i64>,
+        raw: bool,
+        filename: &str,
+        uncompressed_size: u64,
+        compression_method: u16,
+        mod_time: Option<i64>,
     ) -> Result<Box<dyn Write>, ZipReturn> {
-        Err(ZipReturn::ZipWritingToInputFile)
+        if self.zip_open_type != ZipOpenType::OpenWrite {
+            return Err(ZipReturn::ZipWritingToInputFile);
+        }
+        if raw {
+            return Err(ZipReturn::ZipTrrntZipIncorrectDataStream);
+        }
+        if self.pending_write.is_some() {
+            return Err(ZipReturn::ZipErrorOpeningFile);
+        }
+
+        let expected = Self::expected_compression_for_struct(self.zip_struct);
+        if compression_method != expected {
+            return Err(ZipReturn::ZipTrrntzipIncorrectCompressionUsed);
+        }
+
+        let Some(staging_dir) = self.staging_dir.as_ref() else {
+            return Err(ZipReturn::ZipErrorOpeningFile);
+        };
+
+        let is_directory = uncompressed_size == 0 && filename.ends_with('/');
+        if is_directory {
+            let mut fh = FileHeader::new();
+            fh.filename = filename.trim_end_matches('/').to_string();
+            fh.uncompressed_size = 0;
+            fh.is_directory = true;
+            if let Some(m) = mod_time {
+                fh.header_last_modified = m;
+            }
+            self.file_headers.push(fh);
+            return Ok(Box::new(std::io::sink()));
+        }
+
+        let staged_path = staging_dir.join(filename);
+        if let Some(parent) = staged_path.parent() {
+            if fs::create_dir_all(parent).is_err() {
+                return Err(ZipReturn::ZipErrorOpeningFile);
+            }
+        }
+
+        if uncompressed_size == 0 {
+            if File::create(&staged_path).is_err() {
+                return Err(ZipReturn::ZipErrorOpeningFile);
+            }
+            let mut fh = FileHeader::new();
+            fh.filename = filename.to_string();
+            fh.uncompressed_size = 0;
+            fh.is_directory = false;
+            if let Some(m) = mod_time {
+                fh.header_last_modified = m;
+            }
+            self.file_headers.push(fh);
+            return Ok(Box::new(std::io::sink()));
+        }
+
+        let file = match File::create(&staged_path) {
+            Ok(f) => f,
+            Err(_) => return Err(ZipReturn::ZipErrorOpeningFile),
+        };
+
+        let mut fh = FileHeader::new();
+        fh.filename = filename.to_string();
+        fh.uncompressed_size = uncompressed_size;
+        fh.is_directory = false;
+        if let Some(m) = mod_time {
+            fh.header_last_modified = m;
+        }
+        self.file_headers.push(fh);
+        let header_index = self.file_headers.len() - 1;
+
+        let rc = Rc::new(RefCell::new(file));
+        self.pending_write = Some(SevenZipPendingWrite {
+            header_index,
+            file: Rc::clone(&rc),
+            mod_time,
+        });
+
+        Ok(Box::new(SharedFileWriter { file: rc }))
     }
 
     fn zip_file_close_write_stream(&mut self, _crc32: &[u8]) -> ZipReturn {
-        ZipReturn::ZipWritingToInputFile
+        if self.zip_open_type != ZipOpenType::OpenWrite {
+            return ZipReturn::ZipWritingToInputFile;
+        }
+        let Some(pending) = self.pending_write.take() else {
+            return ZipReturn::ZipErrorOpeningFile;
+        };
+
+        let _ = pending.file.borrow_mut().flush();
+
+        if let Some(h) = self.file_headers.get_mut(pending.header_index) {
+            if _crc32.len() == 4 {
+                h.crc = Some(_crc32.to_vec());
+            }
+            if let Some(m) = pending.mod_time {
+                h.header_last_modified = m;
+            }
+        }
+
+        ZipReturn::ZipGood
     }
 
     fn zip_file_close_failed(&mut self) {
-        self.zip_file_close();
+        if self.zip_open_type == ZipOpenType::OpenWrite {
+            if let Some(pending) = self.pending_write.take() {
+                let _ = pending.file.borrow_mut().flush();
+            }
+            if let Some(staging) = self.staging_dir.take() {
+                let _ = fs::remove_dir_all(staging);
+            }
+            if !self.zip_filename.is_empty() {
+                let _ = fs::remove_file(&self.zip_filename);
+            }
+        }
+        self.archive = None;
+        self.file = None;
+        self.staging_dir = None;
+        self.pending_write = None;
+        self.zip_open_type = ZipOpenType::Closed;
+        self.file_headers.clear();
+        self.zip_struct = ZipStructure::None;
+        self.file_comment.clear();
     }
 }
 

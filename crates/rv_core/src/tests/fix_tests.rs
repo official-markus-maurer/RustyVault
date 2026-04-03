@@ -3798,6 +3798,13 @@
         ));
         assert_eq!(Fix::read_seven_zip_entry_bytes(&target_path.to_string_lossy(), "a.bin").unwrap(), b"data");
         assert_eq!(target_archive.borrow().zip_struct, ZipStructure::SevenZipSLZMA);
+        let mut check = compress::SevenZipFile::new();
+        assert_eq!(
+            compress::ICompress::zip_file_open(&mut check, &target_path.to_string_lossy(), 0, true),
+            compress::ZipReturn::ZipGood
+        );
+        assert_eq!(compress::ICompress::zip_struct(&check), compress::ZipStructure::SevenZipSLZMA);
+        compress::ICompress::zip_file_close(&mut check);
         assert_eq!(target_archive.borrow().rep_status(), RepStatus::Correct);
         assert_eq!(target_archive.borrow().got_status(), GotStatus::Got);
     }

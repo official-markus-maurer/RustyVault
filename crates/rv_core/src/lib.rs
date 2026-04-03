@@ -42,6 +42,13 @@ pub mod compare;
 pub mod external_dat_converter_to;
 /// Module containing Fix DAT report generation
 pub mod fix_dat_report;
+pub mod chd;
+pub mod relative_path;
+pub mod arr_byte;
+pub mod db_type_get;
+pub mod is_file_only;
+pub mod ulong_utils;
+pub mod clean_partial;
 
 /// Module containing Cache serialization
 pub mod cache;
@@ -65,6 +72,22 @@ pub use file_scanning::*;
 pub use compare::*;
 pub use external_dat_converter_to::*;
 pub use fix_dat_report::*;
+pub use chd::*;
+pub use relative_path::*;
+pub use arr_byte::{
+    b_compare,
+    copy_bytes,
+    copy_bytes_range,
+    e_compare,
+    i_compare as bytes_i_compare,
+    read_byte_array,
+    to_hex_string,
+    write_byte_array,
+};
+pub use db_type_get::*;
+pub use is_file_only::*;
+pub use ulong_utils::{i_compare as u64_i_compare, i_compare_null};
+pub use clean_partial::*;
 pub use cache::*;
 pub use byte_sorted_list::*;
 pub use fast_array_sort::*;

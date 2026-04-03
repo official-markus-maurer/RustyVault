@@ -39,6 +39,10 @@ bitflags::bitflags! {
         const SHA1_FROM_DAT = 1 << 10;
         /// MD5 metadata was specified by the DAT
         const MD5_FROM_DAT = 1 << 11;
+        /// SHA256 metadata was specified by the DAT
+        const SHA256_FROM_DAT = 1 << 20;
+        /// SHA256 metadata was sourced from an archive header
+        const SHA256_FROM_HEADER = 1 << 22;
         
         /// Alternate Size metadata was specified by the DAT
         const ALT_SIZE_FROM_DAT = 1 << 12;
@@ -48,6 +52,10 @@ bitflags::bitflags! {
         const ALT_SHA1_FROM_DAT = 1 << 14;
         /// Alternate MD5 metadata was specified by the DAT
         const ALT_MD5_FROM_DAT = 1 << 15;
+        /// Alternate SHA256 metadata was specified by the DAT
+        const ALT_SHA256_FROM_DAT = 1 << 21;
+        /// Alternate SHA256 metadata was sourced from an archive header
+        const ALT_SHA256_FROM_HEADER = 1 << 23;
 
         /// Date was specified by the DAT
         const DATE_FROM_DAT = 1 << 16;
@@ -141,6 +149,9 @@ pub struct RvFile {
     pub sha1: Option<Vec<u8>>,
     /// MD5 Hash
     pub md5: Option<Vec<u8>>,
+    /// SHA256 Hash
+    #[serde(default)]
+    pub sha256: Option<Vec<u8>>,
     /// Headerless size
     pub alt_size: Option<u64>,
     /// Headerless CRC32
@@ -149,6 +160,9 @@ pub struct RvFile {
     pub alt_sha1: Option<Vec<u8>>,
     /// Headerless MD5
     pub alt_md5: Option<Vec<u8>>,
+    /// Headerless SHA256
+    #[serde(default)]
+    pub alt_sha256: Option<Vec<u8>>,
     /// MAME CHD Version
     pub chd_version: Option<u32>,
     /// File Merge logic
@@ -210,10 +224,12 @@ impl RvFile {
             crc: None,
             sha1: None,
             md5: None,
+            sha256: None,
             alt_size: None,
             alt_crc: None,
             alt_sha1: None,
             alt_md5: None,
+            alt_sha256: None,
             merge: String::new(),
             status: None,
             tree_expanded: false,

@@ -1047,6 +1047,8 @@ impl FindFixes {
                 got_ref.cached_stats = None;
             }
         }
+
+        crate::clean_partial::apply_complete_only(root);
     }
 
     fn reset_status(node: Rc<RefCell<RvFile>>) {

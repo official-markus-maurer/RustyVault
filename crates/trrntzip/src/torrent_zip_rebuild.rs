@@ -35,6 +35,8 @@ struct RawZipEntry {
     compressed_size: u32,
     uncompressed_size: u32,
     flags: u16,
+    compression_method: u16,
+    external_attributes: u32,
 }
 
 impl TorrentZipRebuild {
@@ -239,7 +241,6 @@ impl TorrentZipRebuild {
         removed
     }
 
-    #[cfg(test)]
     fn read_raw_zip_entry(zip_bytes: &[u8], entry_name: &str) -> Option<RawZipEntry> {
         let eocd_offset = zip_bytes
             .windows(4)
@@ -328,6 +329,9 @@ impl TorrentZipRebuild {
                 if compression_method != 8 {
                     return None;
                 }
+                if (flags & 8) == 8 {
+                    return None;
+                }
 
                 if relative_offset + 30 > zip_bytes.len()
                     || zip_bytes[relative_offset..relative_offset + 4] != [0x50, 0x4B, 0x03, 0x04]
@@ -357,6 +361,8 @@ impl TorrentZipRebuild {
                     compressed_size,
                     uncompressed_size,
                     flags: 0x0002 | (flags & 0x0800),
+                    compression_method: 8,
+                    external_attributes: 0,
                 });
             }
 
@@ -377,7 +383,7 @@ impl TorrentZipRebuild {
             archive_bytes.extend_from_slice(&0x04034B50u32.to_le_bytes());
             archive_bytes.extend_from_slice(&20u16.to_le_bytes());
             archive_bytes.extend_from_slice(&entry.flags.to_le_bytes());
-            archive_bytes.extend_from_slice(&8u16.to_le_bytes());
+            archive_bytes.extend_from_slice(&entry.compression_method.to_le_bytes());
             archive_bytes.extend_from_slice(&Self::TORRENTZIP_DOS_TIME.to_le_bytes());
             archive_bytes.extend_from_slice(&Self::TORRENTZIP_DOS_DATE.to_le_bytes());
             archive_bytes.extend_from_slice(&entry.crc.to_le_bytes());
@@ -392,7 +398,7 @@ impl TorrentZipRebuild {
             central_directory.extend_from_slice(&0u16.to_le_bytes());
             central_directory.extend_from_slice(&20u16.to_le_bytes());
             central_directory.extend_from_slice(&entry.flags.to_le_bytes());
-            central_directory.extend_from_slice(&8u16.to_le_bytes());
+            central_directory.extend_from_slice(&entry.compression_method.to_le_bytes());
             central_directory.extend_from_slice(&Self::TORRENTZIP_DOS_TIME.to_le_bytes());
             central_directory.extend_from_slice(&Self::TORRENTZIP_DOS_DATE.to_le_bytes());
             central_directory.extend_from_slice(&entry.crc.to_le_bytes());
@@ -403,7 +409,7 @@ impl TorrentZipRebuild {
             central_directory.extend_from_slice(&0u16.to_le_bytes());
             central_directory.extend_from_slice(&0u16.to_le_bytes());
             central_directory.extend_from_slice(&0u16.to_le_bytes());
-            central_directory.extend_from_slice(&0u32.to_le_bytes());
+            central_directory.extend_from_slice(&entry.external_attributes.to_le_bytes());
             central_directory.extend_from_slice(&local_offset.to_le_bytes());
             central_directory.extend_from_slice(name_bytes);
         }
@@ -442,8 +448,36 @@ impl TorrentZipRebuild {
         }
 
         let mut entries = Vec::with_capacity(zipped_files.len());
+        let source_bytes = fs::read(source_path).ok()?;
 
         for file in zipped_files {
+            if file.is_dir || file.name.ends_with('/') {
+                let name = if file.name.ends_with('/') {
+                    file.name.clone()
+                } else {
+                    format!("{}/", file.name)
+                };
+                entries.push(RawZipEntry {
+                    name: name.clone(),
+                    compressed_data: Vec::new(),
+                    crc: 0,
+                    compressed_size: 0,
+                    uncompressed_size: 0,
+                    flags: Self::torrentzip_flags(&name),
+                    compression_method: 0,
+                    external_attributes: 0x10,
+                });
+                continue;
+            }
+
+            if let Some(mut raw) = Self::read_raw_zip_entry(&source_bytes, &file.name) {
+                raw.flags = Self::torrentzip_flags(&file.name);
+                raw.compression_method = 8;
+                raw.external_attributes = 0;
+                entries.push(raw);
+                continue;
+            }
+
             let mut entry_bytes = Vec::new();
             if file.size > 0 {
                 let (mut read_stream, _) = original_zip_file
@@ -470,6 +504,8 @@ impl TorrentZipRebuild {
                 compressed_data,
                 crc,
                 flags: Self::torrentzip_flags(&file.name),
+                compression_method: 8,
+                external_attributes: 0,
             });
         }
 

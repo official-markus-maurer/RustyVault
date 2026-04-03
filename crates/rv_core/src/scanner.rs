@@ -1,10 +1,13 @@
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
+use std::sync::Arc;
 use md5::{Md5, Digest};
 use sha1::Sha1;
+use sha2::Sha256;
 use crc32fast::Hasher as Crc32Hasher;
 use rayon::prelude::*;
+use crate::chd::{parse_chd_header_from_reader, parse_chd_header_from_bytes};
 
 use dat_reader::enums::{FileType, GotStatus, HeaderFileType};
 use compress::i_compress::ICompress;
@@ -30,6 +33,64 @@ use crate::scanned_file::ScannedFile;
 ///   recursive directory scanning and file hashing across all available CPU cores, providing 
 ///   equivalent or faster throughput without manual thread pool management.
 pub struct Scanner;
+
+fn wildcard_match(pattern: &str, text: &str) -> bool {
+    let p = pattern.as_bytes();
+    let t = text.as_bytes();
+    let mut pi = 0usize;
+    let mut ti = 0usize;
+    let mut star: Option<usize> = None;
+    let mut star_match_ti = 0usize;
+
+    while ti < t.len() {
+        if pi < p.len() && (p[pi] == b'?' || p[pi] == t[ti]) {
+            pi += 1;
+            ti += 1;
+            continue;
+        }
+        if pi < p.len() && p[pi] == b'*' {
+            star = Some(pi);
+            pi += 1;
+            star_match_ti = ti;
+            continue;
+        }
+        if let Some(star_pi) = star {
+            pi = star_pi + 1;
+            star_match_ti += 1;
+            ti = star_match_ti;
+            continue;
+        }
+        return false;
+    }
+
+    while pi < p.len() && p[pi] == b'*' {
+        pi += 1;
+    }
+    pi == p.len()
+}
+
+fn is_ignored_file_name(file_name: &str, patterns: &[String]) -> bool {
+    #[cfg(windows)]
+    let name = file_name.to_ascii_lowercase();
+    #[cfg(not(windows))]
+    let name = file_name.to_string();
+
+    for pat in patterns {
+        #[cfg(windows)]
+        let p = pat.to_ascii_lowercase();
+        #[cfg(not(windows))]
+        let p = pat.to_string();
+
+        if p.contains('*') || p.contains('?') {
+            if wildcard_match(&p, &name) {
+                return true;
+            }
+        } else if p == name {
+            return true;
+        }
+    }
+    false
+}
 
 impl Scanner {
     /// Opens an archive (or raw file) and scans its internal directory structure.
@@ -113,6 +174,11 @@ impl Scanner {
                 scanned_file.crc = Some(vec![0, 0, 0, 0]);
                 scanned_file.sha1 = Some(vec![0xda, 0x39, 0xa3, 0xee, 0x5e, 0x6b, 0x4b, 0x0d, 0x32, 0x55, 0xbf, 0xef, 0x95, 0x60, 0x18, 0x90, 0xaf, 0xd8, 0x07, 0x09]);
                 scanned_file.md5 = Some(vec![0xd4, 0x1d, 0x8c, 0xd9, 0x8f, 0x00, 0xb2, 0x04, 0xe9, 0x80, 0x09, 0x98, 0xec, 0xf8, 0x42, 0x7e]);
+                scanned_file.sha256 = Some(vec![
+                    0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f,
+                    0xb9, 0x24, 0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b,
+                    0x78, 0x52, 0xb8, 0x55,
+                ]);
             } else {
                 scanned_file.size = Some(lf.uncompressed_size);
                 scanned_file.crc = lf.crc.clone();
@@ -149,6 +215,22 @@ impl Scanner {
                                                 FileHeaders::get_file_type_from_buffer(&header_probe);
                                             header_file_type = detected_type;
                                             header_size = detected_size;
+                                            if header_file_type == HeaderFileType::CHD
+                                                && crate::settings::get_settings().check_chd_version
+                                                && scanned_file.chd_version.is_none()
+                                            {
+                                                if let Some(info) = parse_chd_header_from_bytes(&header_probe) {
+                                                    scanned_file.chd_version = Some(info.version);
+                                                    if let Some(sha1) = info.sha1 {
+                                                        scanned_file.alt_sha1 = Some(sha1);
+                                                        scanned_file.status_flags.insert(FileStatus::ALT_SHA1_FROM_HEADER);
+                                                    }
+                                                    if let Some(md5) = info.md5 {
+                                                        scanned_file.alt_md5 = Some(md5);
+                                                        scanned_file.status_flags.insert(FileStatus::ALT_MD5_FROM_HEADER);
+                                                    }
+                                                }
+                                            }
                                         }
 
                                         if header_size > 0 {
@@ -203,9 +285,11 @@ impl Scanner {
                         Ok((mut stream, _size)) => {
                             let mut md5_hasher = Md5::new();
                             let mut sha1_hasher = Sha1::new();
+                            let mut sha256_hasher = Sha256::new();
                             let mut crc_hasher = Crc32Hasher::new();
                             let mut alt_md5_hasher = Md5::new();
                             let mut alt_sha1_hasher = Sha1::new();
+                            let mut alt_sha256_hasher = Sha256::new();
                             let mut alt_crc_hasher = Crc32Hasher::new();
                             let mut header_probe = Vec::with_capacity(512);
                             let mut header_file_type = HeaderFileType::NOTHING;
@@ -224,10 +308,27 @@ impl Scanner {
                                                 FileHeaders::get_file_type_from_buffer(&header_probe);
                                             header_file_type = detected_type;
                                             header_size = detected_size;
+                                            if header_file_type == HeaderFileType::CHD
+                                                && crate::settings::get_settings().check_chd_version
+                                                && scanned_file.chd_version.is_none()
+                                            {
+                                                if let Some(info) = parse_chd_header_from_bytes(&header_probe) {
+                                                    scanned_file.chd_version = Some(info.version);
+                                                    if let Some(sha1) = info.sha1 {
+                                                        scanned_file.alt_sha1 = Some(sha1);
+                                                        scanned_file.status_flags.insert(FileStatus::ALT_SHA1_FROM_HEADER);
+                                                    }
+                                                    if let Some(md5) = info.md5 {
+                                                        scanned_file.alt_md5 = Some(md5);
+                                                        scanned_file.status_flags.insert(FileStatus::ALT_MD5_FROM_HEADER);
+                                                    }
+                                                }
+                                            }
                                         }
 
                                         md5_hasher.update(&buffer[..n]);
                                         sha1_hasher.update(&buffer[..n]);
+                                        sha256_hasher.update(&buffer[..n]);
                                         crc_hasher.update(&buffer[..n]);
 
                                         if header_size > 0 {
@@ -237,6 +338,7 @@ impl Scanner {
                                                 let alt_start = header_size.saturating_sub(chunk_start);
                                                 alt_md5_hasher.update(&buffer[alt_start..n]);
                                                 alt_sha1_hasher.update(&buffer[alt_start..n]);
+                                                alt_sha256_hasher.update(&buffer[alt_start..n]);
                                                 alt_crc_hasher.update(&buffer[alt_start..n]);
                                             }
                                         }
@@ -269,15 +371,18 @@ impl Scanner {
                                     scanned_file.alt_crc = Some(alt_crc_hasher.finalize().to_be_bytes().to_vec());
                                     scanned_file.alt_sha1 = Some(alt_sha1_hasher.finalize().to_vec());
                                     scanned_file.alt_md5 = Some(alt_md5_hasher.finalize().to_vec());
+                                    scanned_file.alt_sha256 = Some(alt_sha256_hasher.finalize().to_vec());
                                     scanned_file.status_flags.insert(
                                         FileStatus::ALT_SIZE_FROM_HEADER
                                             | FileStatus::ALT_CRC_FROM_HEADER
                                             | FileStatus::ALT_SHA1_FROM_HEADER
-                                            | FileStatus::ALT_MD5_FROM_HEADER,
+                                            | FileStatus::ALT_MD5_FROM_HEADER
+                                            | FileStatus::ALT_SHA256_FROM_HEADER,
                                     );
                                 }
                                 scanned_file.sha1 = Some(sha1_hasher.finalize().to_vec());
                                 scanned_file.md5 = Some(md5_hasher.finalize().to_vec());
+                                scanned_file.sha256 = Some(sha256_hasher.finalize().to_vec());
                                 if scanned_file.got_status != GotStatus::Corrupt {
                                     scanned_file.got_status = GotStatus::Got;
                                 }
@@ -320,9 +425,11 @@ impl Scanner {
 
         let mut md5_hasher = Md5::new();
         let mut sha1_hasher = Sha1::new();
+        let mut sha256_hasher = Sha256::new();
         let mut crc_hasher = Crc32Hasher::new();
         let mut alt_md5_hasher = Md5::new();
         let mut alt_sha1_hasher = Sha1::new();
+        let mut alt_sha256_hasher = Sha256::new();
         let mut alt_crc_hasher = Crc32Hasher::new();
         let mut total_read = 0usize;
         
@@ -332,6 +439,7 @@ impl Scanner {
             if n == 0 { break; }
             md5_hasher.update(&buffer[..n]);
             sha1_hasher.update(&buffer[..n]);
+            sha256_hasher.update(&buffer[..n]);
             crc_hasher.update(&buffer[..n]);
 
             if header_size > 0 {
@@ -341,6 +449,7 @@ impl Scanner {
                     let alt_start = header_size.saturating_sub(chunk_start);
                     alt_md5_hasher.update(&buffer[alt_start..n]);
                     alt_sha1_hasher.update(&buffer[alt_start..n]);
+                    alt_sha256_hasher.update(&buffer[alt_start..n]);
                     alt_crc_hasher.update(&buffer[alt_start..n]);
                 }
             }
@@ -354,20 +463,42 @@ impl Scanner {
         sf.crc = Some(crc_hasher.finalize().to_be_bytes().to_vec());
         sf.sha1 = Some(sha1_hasher.finalize().to_vec());
         sf.md5 = Some(md5_hasher.finalize().to_vec());
+        sf.sha256 = Some(sha256_hasher.finalize().to_vec());
         if header_size > 0 && metadata.len() >= header_size as u64 {
             sf.alt_size = Some(metadata.len() - header_size as u64);
             sf.alt_crc = Some(alt_crc_hasher.finalize().to_be_bytes().to_vec());
             sf.alt_sha1 = Some(alt_sha1_hasher.finalize().to_vec());
             sf.alt_md5 = Some(alt_md5_hasher.finalize().to_vec());
+            sf.alt_sha256 = Some(alt_sha256_hasher.finalize().to_vec());
             sf.status_flags.insert(
                 FileStatus::ALT_SIZE_FROM_HEADER
                     | FileStatus::ALT_CRC_FROM_HEADER
                     | FileStatus::ALT_SHA1_FROM_HEADER
-                    | FileStatus::ALT_MD5_FROM_HEADER,
+                    | FileStatus::ALT_MD5_FROM_HEADER
+                    | FileStatus::ALT_SHA256_FROM_HEADER,
             );
         }
+
+        if header_file_type == HeaderFileType::CHD && crate::settings::get_settings().check_chd_version {
+            file.seek(SeekFrom::Start(0))?;
+            if let Some(info) = parse_chd_header_from_reader(&mut file) {
+                sf.chd_version = Some(info.version);
+                if let Some(sha1) = info.sha1 {
+                    sf.alt_sha1 = Some(sha1);
+                    sf.status_flags.insert(FileStatus::ALT_SHA1_FROM_HEADER);
+                }
+                if let Some(md5) = info.md5 {
+                    sf.alt_md5 = Some(md5);
+                    sf.status_flags.insert(FileStatus::ALT_MD5_FROM_HEADER);
+                }
+            } else {
+                sf.got_status = GotStatus::Corrupt;
+            }
+        }
         sf.deep_scanned = true;
-        sf.got_status = GotStatus::Got;
+        if sf.got_status != GotStatus::Corrupt {
+            sf.got_status = GotStatus::Got;
+        }
         
         Ok(sf)
     }
@@ -389,11 +520,23 @@ impl Scanner {
         
         if let Ok(entries) = fs::read_dir(path) {
             let entry_list: Vec<_> = entries.flatten().collect();
+            let ignore_patterns = Arc::new(crate::settings::get_settings().ignore_files.items.clone());
 
             // Parallelize directory entry processing!
-            let results: Vec<ScannedFile> = entry_list.into_par_iter().map(|entry| {
+            let results: Vec<ScannedFile> = entry_list
+                .into_par_iter()
+                .filter_map(|entry| {
                 let metadata = entry.metadata().unwrap();
                 let file_name = entry.file_name().to_string_lossy().to_string();
+
+                if !metadata.is_dir() && file_name.starts_with("__RomVault.") && file_name.ends_with(".tmp") {
+                    let _ = fs::remove_file(entry.path());
+                    return None;
+                }
+
+                if is_ignored_file_name(&file_name, &ignore_patterns) {
+                    return None;
+                }
                 
                 let file_type = if metadata.is_dir() {
                     FileType::Dir
@@ -443,8 +586,9 @@ impl Scanner {
                         sf.children = archive_sf.children;
                     }
                 }
-                sf
-            }).collect();
+                Some(sf)
+            })
+            .collect();
             
             return results;
         }

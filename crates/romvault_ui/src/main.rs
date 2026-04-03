@@ -698,7 +698,7 @@ impl RomVaultApp {
     ) -> Result<(), String> {
         let file = File::create(output_path).map_err(|err| err.to_string())?;
         let mut writer = ZipWriter::new(file);
-        let options = FileOptions::default().compression_method(compression);
+        let options = FileOptions::<()>::default().compression_method(compression);
         let mut entries = Vec::new();
         Self::sam_collect_directory_entries(source_dir, source_dir, &mut entries)?;
 
