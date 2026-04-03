@@ -122,6 +122,54 @@
     }
 
     #[test]
+    fn test_rom_clipboard_text_truncates_hashes_like_reference() {
+        let mut rom = RvFile::new(FileType::File);
+        rom.name = "rom.bin".to_string();
+        rom.size = Some(123);
+        rom.crc = Some(vec![0x12, 0x34, 0x56, 0x78, 0x9A]);
+        rom.sha1 = Some(vec![0xAA; 25]);
+        rom.md5 = Some(vec![0xBB; 20]);
+
+        let crc = rom_clipboard_text(&rom, RomGridCopyColumn::Crc32).unwrap();
+        assert_eq!(crc.len(), 8);
+
+        let sha1 = rom_clipboard_text(&rom, RomGridCopyColumn::Sha1).unwrap();
+        assert_eq!(sha1.len(), 40);
+
+        let md5 = rom_clipboard_text(&rom, RomGridCopyColumn::Md5).unwrap();
+        assert_eq!(md5.len(), 32);
+
+        let got = rom_clipboard_text(&rom, RomGridCopyColumn::Got).unwrap();
+        assert!(got.contains("Name : rom.bin"));
+        assert!(got.contains("Size : 123"));
+        assert!(got.contains("CRC32: "));
+    }
+
+    #[test]
+    fn test_game_clipboard_text_matches_reference_columns() {
+        let mut node = RvFile::new(FileType::Dir);
+        node.name = "GameA".to_string();
+        node.file_mod_time_stamp = 19961224233200;
+
+        let type_text = game_clipboard_text(&node, "Desc", GameGridCopyColumn::Type).unwrap();
+        assert!(type_text.contains("GameA"));
+        assert!(type_text.ends_with('\n'));
+
+        let status_text = game_clipboard_text(&node, "MyDesc", GameGridCopyColumn::RomStatus).unwrap();
+        assert!(status_text.contains("Name : GameA"));
+        assert!(status_text.contains("Desc : MyDesc"));
+
+        let desc_text = game_clipboard_text(&node, "MyDesc", GameGridCopyColumn::Description).unwrap();
+        assert_eq!(desc_text, "MyDesc");
+    }
+
+    #[test]
+    fn test_split_args_windows_style_respects_quotes() {
+        let args = split_args_windows_style(r#"-a "hello world" -b \"x\""#);
+        assert_eq!(args, vec!["-a", "hello world", "-b", "\"x\""]);
+    }
+
+    #[test]
     fn test_grid_visibility_flags_from_stats_keeps_fix_and_merged_separate_from_missing() {
         let mut stats = rv_core::repair_status::RepairStatus::new();
         stats.total_roms = 3;

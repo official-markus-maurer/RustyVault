@@ -272,11 +272,9 @@ impl DatUpdate {
                                 {
                                     let mut cp_mut = current_parent.borrow_mut();
                                     cp_mut.cached_stats = None;
-                                    for child in &cp_mut.children {
-                                        if Self::normalized_path_eq(&child.borrow().name, part) {
-                                            found = Some(Rc::clone(child));
-                                            break;
-                                        }
+                                    let (res, index) = cp_mut.child_name_search(FileType::Dir, part);
+                                    if res == 0 && index < cp_mut.children.len() {
+                                        found = Some(Rc::clone(&cp_mut.children[index]));
                                     }
                                     if found.is_none() {
                                         let mut new_dir = RvFile::new(FileType::Dir);
@@ -303,11 +301,9 @@ impl DatUpdate {
                         rv_dir_mut.cached_stats = None;
                         let mut target_dir = None;
                         
-                        for child in &rv_dir_mut.children {
-                            if Self::normalized_path_eq(&child.borrow().name, &dir_name) {
-                                target_dir = Some(Rc::clone(child));
-                                break;
-                            }
+                        let (res, index) = rv_dir_mut.child_name_search(FileType::Dir, &dir_name);
+                        if res == 0 && index < rv_dir_mut.children.len() {
+                            target_dir = Some(Rc::clone(&rv_dir_mut.children[index]));
                         }
                         
                         let (target_dir, existing_children) = match target_dir {

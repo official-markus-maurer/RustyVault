@@ -67,15 +67,136 @@ pub struct ScannedFile {
 }
 
 impl ScannedFile {
-    fn compare_names(left: &str, right: &str) -> std::cmp::Ordering {
-        #[cfg(windows)]
-        {
-            left.to_ascii_lowercase().cmp(&right.to_ascii_lowercase())
+    fn ascii_lower(byte: u8) -> u8 {
+        if byte >= b'A' && byte <= b'Z' {
+            byte + 0x20
+        } else {
+            byte
         }
-        #[cfg(not(windows))]
-        {
-            left.cmp(right)
+    }
+
+    fn string_compare(a: &str, b: &str) -> i32 {
+        match a.cmp(b) {
+            std::cmp::Ordering::Less => -1,
+            std::cmp::Ordering::Equal => 0,
+            std::cmp::Ordering::Greater => 1,
         }
+    }
+
+    fn directory_name_compare(a: &str, b: &str) -> i32 {
+        Self::string_compare(&a.to_ascii_lowercase(), &b.to_ascii_lowercase())
+    }
+
+    fn directory_name_compare_case(a: &str, b: &str) -> i32 {
+        let res = Self::directory_name_compare(a, b);
+        if res != 0 {
+            return res;
+        }
+        Self::string_compare(a, b)
+    }
+
+    fn trrnt_zip_string_compare(a: &str, b: &str) -> i32 {
+        let bytes_a = a.as_bytes();
+        let bytes_b = b.as_bytes();
+        let len = std::cmp::min(bytes_a.len(), bytes_b.len());
+
+        for i in 0..len {
+            let ca = Self::ascii_lower(bytes_a[i]);
+            let cb = Self::ascii_lower(bytes_b[i]);
+            if ca < cb {
+                return -1;
+            }
+            if ca > cb {
+                return 1;
+            }
+        }
+
+        if bytes_a.len() < bytes_b.len() {
+            -1
+        } else if bytes_a.len() > bytes_b.len() {
+            1
+        } else {
+            0
+        }
+    }
+
+    fn trrnt_zip_string_compare_case(a: &str, b: &str) -> i32 {
+        let res = Self::trrnt_zip_string_compare(a, b);
+        if res != 0 {
+            return res;
+        }
+        Self::string_compare(a, b)
+    }
+
+    fn split_7zip_filename(filename: &str) -> (&str, &str, &str) {
+        let dir_index = filename.rfind('/');
+        let (path, name) = if let Some(i) = dir_index {
+            (&filename[..i], &filename[i + 1..])
+        } else {
+            ("", filename)
+        };
+
+        let ext_index = name.rfind('.');
+        if let Some(i) = ext_index {
+            (path, &name[..i], &name[i + 1..])
+        } else {
+            (path, name, "")
+        }
+    }
+
+    fn trrnt_7zip_string_compare(a: &str, b: &str) -> i32 {
+        let (path_a, name_a, ext_a) = Self::split_7zip_filename(a);
+        let (path_b, name_b, ext_b) = Self::split_7zip_filename(b);
+
+        let res = Self::string_compare(ext_a, ext_b);
+        if res != 0 {
+            return res;
+        }
+        let res = Self::string_compare(name_a, name_b);
+        if res != 0 {
+            return res;
+        }
+        Self::string_compare(path_a, path_b)
+    }
+
+    fn list_search(list: &[ScannedFile], needle: &ScannedFile, cmp: fn(&ScannedFile, &ScannedFile) -> i32) -> usize {
+        let mut bottom = 0usize;
+        let mut top = list.len();
+        let mut mid = 0usize;
+        let mut res = -1i32;
+
+        while bottom < top && res != 0 {
+            mid = (bottom + top) / 2;
+            res = cmp(needle, &list[mid]);
+            if res < 0 {
+                top = mid;
+            } else if res > 0 {
+                bottom = mid + 1;
+            }
+        }
+
+        let mut index = mid;
+        if res == 0 {
+            while index > 0 && cmp(needle, &list[index - 1]) == 0 {
+                index -= 1;
+            }
+        } else if res > 0 {
+            index += 1;
+        }
+
+        index
+    }
+
+    fn compare_name_dir(left: &ScannedFile, right: &ScannedFile) -> i32 {
+        Self::directory_name_compare_case(&left.name, &right.name)
+    }
+
+    fn compare_name_trrntzip(left: &ScannedFile, right: &ScannedFile) -> i32 {
+        Self::trrnt_zip_string_compare_case(&left.name, &right.name)
+    }
+
+    fn compare_name_7zip(left: &ScannedFile, right: &ScannedFile) -> i32 {
+        Self::trrnt_7zip_string_compare(&left.name, &right.name)
     }
 
     /// Instantiates a new empty ScannedFile node
@@ -124,7 +245,18 @@ impl ScannedFile {
 
     /// Alphabetically sorts the internal child files list.
     pub fn sort(&mut self) {
-        self.children.sort_by(|a, b| Self::compare_names(&a.name, &b.name));
+        let cmp: fn(&ScannedFile, &ScannedFile) -> i32 = match self.file_type {
+            FileType::SevenZip => Self::compare_name_7zip,
+            FileType::Zip => Self::compare_name_trrntzip,
+            FileType::Dir => Self::compare_name_dir,
+            _ => return,
+        };
+
+        let files = std::mem::take(&mut self.children);
+        for file in files {
+            let index = Self::list_search(&self.children, &file, cmp);
+            self.children.insert(index, file);
+        }
     }
 }
 

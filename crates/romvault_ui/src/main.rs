@@ -17,7 +17,6 @@ use rv_core::file_scanning::FileScanning;
 use dat_reader::enums::FileType;
 use rv_core::db::{init_db, GLOBAL_DB};
 use rv_core::rv_file::{RvFile, TreeSelect};
-use dat_reader::enums::DatStatus;
 use sevenz_rust::encoder_options::ZstandardOptions;
 use sevenz_rust::{ArchiveEntry, ArchiveWriter, EncoderConfiguration, EncoderMethod, Password, SourceReader};
 use trrntzip::{ProcessControl, StopMode, TorrentZip, TorrentZipRebuild, TrrntZipStatus};
@@ -39,11 +38,16 @@ use zip::{CompressionMethod, ZipWriter};
 #[macro_use]
 mod assets;
 mod panels;
+mod reports;
+mod tree_presets;
 mod utils;
 mod toolbar;
 mod dialogs;
 mod tree;
 mod grids;
+#[cfg(test)]
+#[path = "tests/tree_presets_tests.rs"]
+mod tree_presets_tests;
 use crate::utils::{get_full_node_path, extract_text_from_zip, extract_image_from_zip};
 
 fn ui_missing_count(stats: &rv_core::repair_status::RepairStatus) -> i32 {
@@ -153,6 +157,9 @@ struct RomVaultApp {
     // Current selected node in the tree for the right pane views
     selected_node: Option<Rc<RefCell<RvFile>>>,
     selected_game: Option<Rc<RefCell<RvFile>>>,
+    pending_tree_scroll_to_selected: bool,
+    db_cache_dirty: bool,
+    db_cache_last_write: Option<std::time::Instant>,
 
     // Filter states
     show_complete: bool,
@@ -200,6 +207,7 @@ struct RomVaultApp {
     show_about: bool,
     show_rom_info: bool,
     selected_rom_for_info: Option<Rc<RefCell<RvFile>>>,
+    rom_info_lines: Vec<String>,
 
     // Active Game Info Tab
     active_game_info_tab: usize, // 0 = Info, 1 = Artwork, 2 = Screens
@@ -282,16 +290,20 @@ impl RomVaultApp {
 
     fn new() -> Self {
         rv_core::settings::load_settings_from_file();
+        let initial_settings = rv_core::settings::get_settings();
 
         Self {
             selected_node: None,
             selected_game: None,
-            show_complete: true,
-            show_partial: true,
-            show_empty: true,
-            show_fixes: true,
-            show_mia: true,
-            show_merged: true,
+            pending_tree_scroll_to_selected: false,
+            db_cache_dirty: false,
+            db_cache_last_write: None,
+            show_complete: initial_settings.chk_box_show_complete,
+            show_partial: initial_settings.chk_box_show_partial,
+            show_empty: initial_settings.chk_box_show_empty,
+            show_fixes: initial_settings.chk_box_show_fixes,
+            show_mia: initial_settings.chk_box_show_mia,
+            show_merged: initial_settings.chk_box_show_merged,
             filter_text: String::new(),
             show_filter_panel: true,
             task_logs: Vec::new(),
@@ -328,6 +340,7 @@ impl RomVaultApp {
             show_about: false,
             show_rom_info: false,
             selected_rom_for_info: None,
+            rom_info_lines: Vec::new(),
             active_game_info_tab: 0,
             loaded_info: None,
             loaded_info_type: String::new(),
@@ -337,7 +350,7 @@ impl RomVaultApp {
             loaded_screen: None,
             last_selected_game_path: String::new(),
             active_dat_rule: rv_core::settings::DatRule::default(),
-            global_settings: rv_core::settings::get_settings(),
+            global_settings: initial_settings,
             sort_col: Some("ROM (File)".to_string()),
             sort_desc: false,
             startup_active: true,
@@ -345,6 +358,178 @@ impl RomVaultApp {
             startup_phase: 0,
             startup_done_at: None,
         }
+    }
+
+    pub(crate) fn persist_filter_settings(&mut self) {
+        let mut settings = rv_core::settings::get_settings();
+        settings.chk_box_show_complete = self.show_complete;
+        settings.chk_box_show_partial = self.show_partial;
+        settings.chk_box_show_empty = self.show_empty;
+        settings.chk_box_show_fixes = self.show_fixes;
+        settings.chk_box_show_mia = self.show_mia;
+        settings.chk_box_show_merged = self.show_merged;
+
+        rv_core::settings::update_settings(settings.clone());
+        let _ = rv_core::settings::write_settings_to_file(&settings);
+        self.global_settings = settings;
+    }
+
+    fn prompt_add_tosort(&mut self) {
+        if self.sam_running {
+            return;
+        }
+
+        let Some(folder) = rfd::FileDialog::new()
+            .set_title("Select new ToSort Folder")
+            .pick_folder() else {
+            return;
+        };
+
+        let path = folder.to_string_lossy().to_string();
+        self.task_logs.push(format!("Add ToSort folder requested: {}", path));
+        rv_core::db::GLOBAL_DB.with(|db_ref| {
+            if let Some(db) = db_ref.borrow().as_ref() {
+                let ts = std::rc::Rc::new(std::cell::RefCell::new(
+                    rv_core::rv_file::RvFile::new(dat_reader::enums::FileType::Dir),
+                ));
+                {
+                    let mut t = ts.borrow_mut();
+                    t.name = path;
+                    t.set_dat_status(dat_reader::enums::DatStatus::InToSort);
+                }
+                db.dir_root.borrow_mut().child_add(ts);
+                rv_core::repair_status::RepairStatus::report_status_reset(std::rc::Rc::clone(&db.dir_root));
+            }
+        });
+        self.db_cache_dirty = true;
+    }
+
+    fn prompt_fix_report(&mut self) {
+        if self.sam_running {
+            return;
+        }
+
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Generate Fix Report")
+            .set_file_name("RVFixReport.txt")
+            .add_filter("Rom Vault Fixing Report", &["txt"])
+            .save_file() else {
+            return;
+        };
+
+        let path_str = path.to_string_lossy().to_string();
+        self.launch_task("Generate Reports (Fix)", move |tx| {
+            let _ = tx.send(format!("Generating Fix Report to {path_str}..."));
+            GLOBAL_DB.with(|db_ref| {
+                if let Some(db) = db_ref.borrow().as_ref() {
+                    if let Err(e) = crate::reports::write_fix_report(&path_str, Rc::clone(&db.dir_root)) {
+                        let _ = tx.send(format!("Failed to write Fix Report: {e}"));
+                    }
+                }
+            });
+        });
+    }
+
+    fn prompt_full_report(&mut self) {
+        if self.sam_running {
+            return;
+        }
+
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Generate Full Report")
+            .set_file_name("RVFullReport.txt")
+            .add_filter("Rom Vault Report", &["txt"])
+            .save_file() else {
+            return;
+        };
+
+        let path_str = path.to_string_lossy().to_string();
+        self.launch_task("Generate Reports (Full)", move |tx| {
+            let _ = tx.send(format!("Generating Full Report to {path_str}..."));
+            GLOBAL_DB.with(|db_ref| {
+                if let Some(db) = db_ref.borrow().as_ref() {
+                    if let Err(e) = crate::reports::write_full_report(&path_str, Rc::clone(&db.dir_root)) {
+                        let _ = tx.send(format!("Failed to write Full Report: {e}"));
+                    }
+                }
+            });
+        });
+    }
+
+    pub(crate) fn prompt_fixdat_report(&mut self, red_only: bool) {
+        if self.sam_running {
+            return;
+        }
+
+        let settings = rv_core::settings::get_settings();
+        let mut dlg = rfd::FileDialog::new();
+        dlg = if red_only {
+            dlg.set_title("Select FixDAT output folder (Missing/MIA only)")
+        } else {
+            dlg.set_title("Select FixDAT output folder (Missing/MIA + Fixable)")
+        };
+        if let Some(default_dir) = settings.fix_dat_out_path.as_ref().filter(|p| !p.trim().is_empty()) {
+            dlg = dlg.set_directory(default_dir);
+        }
+
+        let Some(folder) = dlg.pick_folder() else {
+            return;
+        };
+
+        let out_dir = folder.to_string_lossy().to_string();
+        let mut new_settings = settings.clone();
+        if new_settings.fix_dat_out_path.as_deref() != Some(&out_dir) {
+            new_settings.fix_dat_out_path = Some(out_dir.clone());
+            rv_core::settings::update_settings(new_settings.clone());
+            let _ = rv_core::settings::write_settings_to_file(&new_settings);
+            self.global_settings = new_settings;
+        }
+
+        self.launch_task(
+            if red_only {
+                "Generate FixDATs (Missing)"
+            } else {
+                "Generate FixDATs (All)"
+            },
+            move |tx| {
+                let _ = tx.send(format!("Generating FixDATs to {out_dir}..."));
+                GLOBAL_DB.with(|db_ref| {
+                    if let Some(db) = db_ref.borrow().as_ref() {
+                        rv_core::fix_dat_report::FixDatReport::recursive_dat_tree(
+                            &out_dir,
+                            Rc::clone(&db.dir_root),
+                            red_only,
+                        );
+                    }
+                });
+            },
+        );
+    }
+
+    fn flush_db_cache_if_needed(&mut self) {
+        if self.sam_running {
+            return;
+        }
+        if !self.db_cache_dirty {
+            return;
+        }
+
+        let now = std::time::Instant::now();
+        let should_write = self
+            .db_cache_last_write
+            .map(|last| now.duration_since(last) >= std::time::Duration::from_millis(500))
+            .unwrap_or(true);
+        if !should_write {
+            return;
+        }
+
+        GLOBAL_DB.with(|db_ref| {
+            if let Some(db) = db_ref.borrow().as_ref() {
+                db.write_cache();
+            }
+        });
+        self.db_cache_dirty = false;
+        self.db_cache_last_write = Some(now);
     }
 
     pub fn open_dir_mappings(&mut self) {
@@ -1387,104 +1572,40 @@ impl RomVaultApp {
             });
         });
     }
-    // Tree Preset Loading/Saving (simulating DatTreeStatusStore)
     fn load_tree_preset(&mut self, preset_index: i32) {
-        let filename = format!("treeDefault{}.json", preset_index);
-        if let Ok(data) = std::fs::read_to_string(&filename) {
-            if let Ok(preset_data) = serde_json::from_str::<serde_json::Value>(&data) {
-                if let Some(entries) = preset_data.as_array() {
-                    rv_core::GLOBAL_DB.with(|db_ref| {
-                        if let Some(db) = db_ref.borrow().as_ref() {
-                            for entry in entries {
-                                if let (Some(path), Some(selected), Some(expanded)) = (
-                                    entry.get("Path").and_then(|v| v.as_str()),
-                                    entry.get("Selected").and_then(|v| v.as_u64()),
-                                    entry.get("Expanded").and_then(|v| v.as_bool())
-                                ) {
-                                    // Walk the tree to find the matching path
-                                    let path_parts: Vec<&str> = path.split('\\').collect();
-                                    let mut current = Rc::clone(&db.dir_root);
-                                    let mut found = true;
-                                    
-                                    for part in path_parts {
-                                        if part.is_empty() { continue; }
-                                        let mut next = None;
-                                        let n = current.borrow();
-                                        for child in &n.children {
-                                            if child.borrow().name == part {
-                                                next = Some(Rc::clone(child));
-                                                break;
-                                            }
-                                        }
-                                        drop(n);
-                                        
-                                        if let Some(n) = next {
-                                            current = n;
-                                        } else {
-                                            found = false;
-                                            break;
-                                        }
-                                    }
-                                    
-                                    if found {
-                                        let mut n = current.borrow_mut();
-                                        n.tree_checked = match selected {
-                                            0 => TreeSelect::UnSelected,
-                                            1 => TreeSelect::Selected,
-                                            2 => TreeSelect::Locked,
-                                            _ => TreeSelect::Selected,
-                                        };
-                                        n.tree_expanded = expanded;
-                                    }
-                                }
-                            }
-                            db.write_cache();
-                        }
-                    });
-                }
-                self.task_logs.push(format!("Loaded Tree Preset {}", preset_index));
-            }
-        } else {
-            self.task_logs.push(format!("Preset {} not found", preset_index));
+        if self.sam_running {
+            return;
         }
-    }
 
-    fn get_tree_state(node: Rc<RefCell<RvFile>>, path: String, entries: &mut Vec<serde_json::Value>) {
-        let n = node.borrow();
-        if !n.is_directory() { return; }
-        
-        let node_path = if path.is_empty() { n.name.clone() } else { format!("{}\\{}", path, n.name) };
-        
-        let sel_val = match n.tree_checked {
-            TreeSelect::UnSelected => 0,
-            TreeSelect::Selected => 1,
-            TreeSelect::Locked => 2,
+        let filename = format!("treeDefault{}.xml", preset_index);
+        let Some(entries) = crate::tree_presets::read_preset_file(&filename) else {
+            self.task_logs.push(format!("Preset {} not found", preset_index));
+            return;
         };
-        
-        entries.push(serde_json::json!({
-            "Path": node_path,
-            "Selected": sel_val,
-            "Expanded": n.tree_expanded
-        }));
-        
-        let children = n.children.clone();
-        drop(n);
-        
-        for child in children {
-            Self::get_tree_state(child, node_path.clone(), entries);
-        }
+
+        rv_core::GLOBAL_DB.with(|db_ref| {
+            if let Some(db) = db_ref.borrow().as_ref() {
+                crate::tree_presets::apply_tree_state(Rc::clone(&db.dir_root), &entries);
+            }
+        });
+        self.db_cache_dirty = true;
+        self.task_logs.push(format!("Loaded Tree Preset {}", preset_index));
     }
 
     fn save_tree_preset(&mut self, preset_index: i32) {
+        if self.sam_running {
+            return;
+        }
+
         let mut entries = Vec::new();
         rv_core::GLOBAL_DB.with(|db_ref| {
             if let Some(db) = db_ref.borrow().as_ref() {
-                Self::get_tree_state(Rc::clone(&db.dir_root), String::new(), &mut entries);
+                entries = crate::tree_presets::collect_tree_state(Rc::clone(&db.dir_root));
             }
         });
-        
-        let filename = format!("treeDefault{}.json", preset_index);
-        let _ = std::fs::write(&filename, serde_json::to_string_pretty(&entries).unwrap());
+
+        let filename = format!("treeDefault{}.xml", preset_index);
+        let _ = crate::tree_presets::write_preset_file(&filename, &entries);
         self.task_logs.push(format!("Saved Tree Preset {}", preset_index));
     }
 }
@@ -1556,7 +1677,14 @@ impl eframe::App for RomVaultApp {
         self.update_artwork();
         
         // Global Keyboard Shortcuts
-        if ctx.input(|i| i.key_pressed(egui::Key::F5) && i.modifiers.shift) {
+        if ctx.input(|i| i.key_pressed(egui::Key::F1)) {
+            self.show_color_key = true;
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::F2)) {
+            self.show_sam_dialog = true;
+        }
+
+        if !self.sam_running && ctx.input(|i| i.key_pressed(egui::Key::F5) && i.modifiers.shift) {
             self.launch_task("Update All DATs", move |tx| {
                 GLOBAL_DB.with(|db_ref| {
                     if let Some(db) = db_ref.borrow().as_ref() {
@@ -1566,7 +1694,7 @@ impl eframe::App for RomVaultApp {
                     }
                 });
             });
-        } else if ctx.input(|i| i.key_pressed(egui::Key::F5)) {
+        } else if !self.sam_running && ctx.input(|i| i.key_pressed(egui::Key::F5)) {
             self.launch_task("Update DATs", move |tx| {
                 GLOBAL_DB.with(|db_ref| {
                     if let Some(db) = db_ref.borrow().as_ref() {
@@ -1577,19 +1705,19 @@ impl eframe::App for RomVaultApp {
             });
         }
 
-        if ctx.input(|i| i.key_pressed(egui::Key::F6) && i.modifiers.shift) {
+        if !self.sam_running && ctx.input(|i| i.key_pressed(egui::Key::F6) && i.modifiers.shift) {
             self.launch_scan_roms_task(
                 "Scan ROMs (Quick)",
                 "Scanning selected ROM roots (Headers Only)...",
                 rv_core::settings::EScanLevel::Level1,
             );
-        } else if ctx.input(|i| i.key_pressed(egui::Key::F6) && i.modifiers.ctrl) {
+        } else if !self.sam_running && ctx.input(|i| i.key_pressed(egui::Key::F6) && i.modifiers.ctrl) {
             self.launch_scan_roms_task(
                 "Scan ROMs (Full)",
                 "Scanning selected ROM roots (Full Rescan)...",
                 rv_core::settings::EScanLevel::Level3,
             );
-        } else if ctx.input(|i| i.key_pressed(egui::Key::F6)) {
+        } else if !self.sam_running && ctx.input(|i| i.key_pressed(egui::Key::F6)) {
             self.launch_scan_roms_task(
                 "Scan ROMs",
                 "Scanning selected ROM roots...",
@@ -1597,7 +1725,7 @@ impl eframe::App for RomVaultApp {
             );
         }
 
-        if ctx.input(|i| i.key_pressed(egui::Key::F7)) {
+        if !self.sam_running && ctx.input(|i| i.key_pressed(egui::Key::F7)) {
             self.launch_task("Find Fixes", move |tx| {
                 let _ = tx.send("Running FindFixes...".to_string());
                 GLOBAL_DB.with(|db_ref| {
@@ -1608,25 +1736,15 @@ impl eframe::App for RomVaultApp {
             });
         }
 
-        if ctx.input(|i| i.key_pressed(egui::Key::F8)) {
+        if !self.sam_running && ctx.input(|i| i.key_pressed(egui::Key::F8)) {
             self.launch_fix_roms_task();
         }
 
-        if ctx.input(|i| i.key_pressed(egui::Key::F9) && i.modifiers.shift) {
-            self.launch_task("Generate Reports (Full)", |tx| {
-                let _ = tx.send("Generating Full DATs (All ROMs) to Desktop...".to_string());
-                GLOBAL_DB.with(|db_ref| {
-                    if let Some(db) = db_ref.borrow().as_ref() {
-                        let desktop_path = std::path::PathBuf::from(std::env::var("USERPROFILE").unwrap_or_default()).join("Desktop");
-                        FixDatReport::recursive_dat_tree(&desktop_path.to_string_lossy(), Rc::clone(&db.dir_root), false);
-                    }
-                });
-            });
-        } else if ctx.input(|i| i.key_pressed(egui::Key::F9) && i.modifiers.ctrl) {
-            self.launch_task("Generate Reports (Fix)", |tx| {
-                let _ = tx.send("Generating Fix Report...".to_string());
-            });
-        } else if ctx.input(|i| i.key_pressed(egui::Key::F9)) {
+        if !self.sam_running && ctx.input(|i| i.key_pressed(egui::Key::F9) && i.modifiers.shift) {
+            self.prompt_full_report();
+        } else if !self.sam_running && ctx.input(|i| i.key_pressed(egui::Key::F9) && i.modifiers.ctrl) {
+            self.prompt_fix_report();
+        } else if !self.sam_running && ctx.input(|i| i.key_pressed(egui::Key::F9)) {
             self.launch_task("Generate Reports (Missing)", |tx| {
                 let _ = tx.send("Generating FixDATs (Missing ROMs) to Desktop...".to_string());
                 GLOBAL_DB.with(|db_ref| {
@@ -1638,14 +1756,18 @@ impl eframe::App for RomVaultApp {
             });
         }
 
-        if ctx.input(|i| i.key_pressed(egui::Key::F10) && i.modifiers.shift) {
+        if !self.sam_running && ctx.input(|i| i.key_pressed(egui::Key::F10) && i.modifiers.shift) {
             self.active_dat_rule = rv_core::settings::find_rule("RustyVault");
             self.show_dir_settings = true;
-        } else if ctx.input(|i| i.key_pressed(egui::Key::F10) && i.modifiers.ctrl) {
+        } else if !self.sam_running && ctx.input(|i| i.key_pressed(egui::Key::F10) && i.modifiers.ctrl) {
             self.open_dir_mappings();
-        } else if ctx.input(|i| i.key_pressed(egui::Key::F10)) {
+        } else if !self.sam_running && ctx.input(|i| i.key_pressed(egui::Key::F10)) {
             self.global_settings = rv_core::settings::get_settings();
             self.show_settings = true;
+        }
+
+        if !self.sam_running && ctx.input(|i| i.key_pressed(egui::Key::F11)) {
+            self.prompt_add_tosort();
         }
 
         if ctx.input(|i| i.key_pressed(egui::Key::F12)) {
@@ -1654,30 +1776,10 @@ impl eframe::App for RomVaultApp {
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
+                let is_idle = !self.sam_running;
                 ui.menu_button("File", |ui| {
-                    if ui.button("Add ToSort").clicked() {
-                        if let Some(folder) = rfd::FileDialog::new()
-                            .set_title("Select new ToSort Folder")
-                            .pick_folder()
-                        {
-                            let path = folder.to_string_lossy().to_string();
-                            self.task_logs.push(format!("Add ToSort folder requested: {}", path));
-                            rv_core::db::GLOBAL_DB.with(|db_ref| {
-                                if let Some(db) = db_ref.borrow().as_ref() {
-                                    let ts = std::rc::Rc::new(std::cell::RefCell::new(
-                                        rv_core::rv_file::RvFile::new(dat_reader::enums::FileType::Dir)
-                                    ));
-                                    {
-                                        let mut t = ts.borrow_mut();
-                                        t.name = path;
-                                        t.set_dat_status(dat_reader::enums::DatStatus::InToSort);
-                                    }
-                                    db.dir_root.borrow_mut().child_add(ts);
-                                    rv_core::repair_status::RepairStatus::report_status_reset(std::rc::Rc::clone(&db.dir_root));
-                                    db.write_cache();
-                                }
-                            });
-                        }
+                    if ui.add_enabled(is_idle, egui::Button::new("Add ToSort")).clicked() {
+                        self.prompt_add_tosort();
                         ui.close_menu();
                     }
                     if ui.button("Exit").clicked() {
@@ -1685,7 +1787,7 @@ impl eframe::App for RomVaultApp {
                     }
                 });
                 ui.menu_button("Update DATs", |ui| {
-                    if ui.button("Update New DATs").clicked() {
+                    if ui.add_enabled(is_idle, egui::Button::new("Update New DATs")).clicked() {
                         let is_shift = ui.input(|i| i.modifiers.shift);
                         self.launch_task("Update DATs", move |tx| {
                             GLOBAL_DB.with(|db_ref| {
@@ -1702,7 +1804,7 @@ impl eframe::App for RomVaultApp {
                         });
                         ui.close_menu();
                     }
-                    if ui.button("Refresh All DATs").clicked() {
+                    if ui.add_enabled(is_idle, egui::Button::new("Refresh All DATs")).clicked() {
                         self.launch_task("Update All DATs", move |tx| {
                             GLOBAL_DB.with(|db_ref| {
                                 if let Some(db) = db_ref.borrow().as_ref() {
@@ -1717,7 +1819,10 @@ impl eframe::App for RomVaultApp {
                     }
                 });
                 ui.menu_button("Scan ROMs", |ui| {
-                    if ui.button("Scan Quick (Headers Only)").clicked() {
+                    if ui
+                        .add_enabled(is_idle, egui::Button::new("Scan Quick (Headers Only)"))
+                        .clicked()
+                    {
                         self.launch_scan_roms_task(
                             "Scan ROMs (Quick)",
                             "Scanning selected ROM roots (Headers Only)...",
@@ -1725,7 +1830,7 @@ impl eframe::App for RomVaultApp {
                         );
                         ui.close_menu();
                     }
-                    if ui.button("Scan").clicked() {
+                    if ui.add_enabled(is_idle, egui::Button::new("Scan")).clicked() {
                         self.launch_scan_roms_task(
                             "Scan ROMs",
                             "Scanning selected ROM roots...",
@@ -1733,7 +1838,10 @@ impl eframe::App for RomVaultApp {
                         );
                         ui.close_menu();
                     }
-                    if ui.button("Scan Full (Complete Re-Scan)").clicked() {
+                    if ui
+                        .add_enabled(is_idle, egui::Button::new("Scan Full (Complete Re-Scan)"))
+                        .clicked()
+                    {
                         self.launch_scan_roms_task(
                             "Scan ROMs (Full)",
                             "Scanning selected ROM roots (Full Rescan)...",
@@ -1743,7 +1851,7 @@ impl eframe::App for RomVaultApp {
                     }
                 });
                 ui.menu_button("Find Fixes", |ui| {
-                    if ui.button("Find Fixes").clicked() {
+                    if ui.add_enabled(is_idle, egui::Button::new("Find Fixes")).clicked() {
                         self.launch_task("Find Fixes", |tx| {
                             let _ = tx.send("Running FindFixes...".to_string());
                             GLOBAL_DB.with(|db_ref| {
@@ -1757,53 +1865,57 @@ impl eframe::App for RomVaultApp {
                     }
                 });
                 ui.menu_button("Fix ROMs", |ui| {
-                    if ui.button("Fix ROMs").clicked() {
+                    if ui.add_enabled(is_idle, egui::Button::new("Fix ROMs")).clicked() {
                         self.launch_fix_roms_task();
                         ui.close_menu();
                     }
-                    if ui.button("Scan / Find Fix / Fix").clicked() {
+                    if ui
+                        .add_enabled(is_idle, egui::Button::new("Scan / Find Fix / Fix"))
+                        .clicked()
+                    {
                         self.launch_scan_find_fix_fix_task();
                         ui.close_menu();
                     }
                 });
                 ui.menu_button("Reports", |ui| {
-                    if ui.button("Fix Dat Report").clicked() {
-                        self.launch_task("Generate Reports (Missing)", |tx| {
-                            let _ = tx.send("Generating FixDATs (Missing ROMs) to Desktop...".to_string());
-                            GLOBAL_DB.with(|db_ref| {
-                                if let Some(db) = db_ref.borrow().as_ref() {
-                                    let desktop_path = std::path::PathBuf::from(std::env::var("USERPROFILE").unwrap_or_default()).join("Desktop");
-                                    FixDatReport::recursive_dat_tree(&desktop_path.to_string_lossy(), Rc::clone(&db.dir_root), true);
-                                }
-                            });
-                        });
+                    if ui.add_enabled(is_idle, egui::Button::new("Fix Dat Report")).clicked() {
+                        self.prompt_fixdat_report(true);
                         ui.close_menu();
                     }
-                    if ui.button("Full Report").clicked() {
-                        self.launch_task("Generate Reports (Full)", |tx| {
-                            let _ = tx.send("Generating Full DATs (All ROMs) to Desktop...".to_string());
-                            GLOBAL_DB.with(|db_ref| {
-                                if let Some(db) = db_ref.borrow().as_ref() {
-                                    let desktop_path = std::path::PathBuf::from(std::env::var("USERPROFILE").unwrap_or_default()).join("Desktop");
-                                    FixDatReport::recursive_dat_tree(&desktop_path.to_string_lossy(), Rc::clone(&db.dir_root), false);
-                                }
-                            });
-                        });
+                    if ui.add_enabled(is_idle, egui::Button::new("Full Report")).clicked() {
+                        self.prompt_full_report();
+                        ui.close_menu();
+                    }
+                    if ui.add_enabled(is_idle, egui::Button::new("Fix Report")).clicked() {
+                        self.prompt_fix_report();
+                        ui.close_menu();
+                    }
+                    if ui.add_enabled(is_idle, egui::Button::new("Full DAT Export")).clicked() {
+                        self.prompt_fixdat_report(false);
                         ui.close_menu();
                     }
                 });
                 ui.menu_button("Settings", |ui| {
-                    if ui.button("RustyVault Settings").clicked() {
+                    if ui
+                        .add_enabled(is_idle, egui::Button::new("RustyVault Settings"))
+                        .clicked()
+                    {
                         self.global_settings = rv_core::settings::get_settings();
                         self.show_settings = true;
                         ui.close_menu();
                     }
-                    if ui.button("Directory Settings").clicked() {
+                    if ui
+                        .add_enabled(is_idle, egui::Button::new("Directory Settings"))
+                        .clicked()
+                    {
                         self.active_dat_rule = rv_core::settings::find_rule("RustyVault");
                         self.show_dir_settings = true;
                         ui.close_menu();
                     }
-                    if ui.button("Directory Mappings").clicked() {
+                    if ui
+                        .add_enabled(is_idle, egui::Button::new("Directory Mappings"))
+                        .clicked()
+                    {
                         self.open_dir_mappings();
                         ui.close_menu();
                     }
@@ -1821,29 +1933,8 @@ impl eframe::App for RomVaultApp {
                     }
                 });
                 ui.menu_button("Add ToSort", |ui| {
-                    if ui.button("Add ToSort").clicked() {
-                        if let Some(folder) = rfd::FileDialog::new()
-                            .set_title("Select new ToSort Folder")
-                            .pick_folder()
-                        {
-                            let path = folder.to_string_lossy().to_string();
-                            self.task_logs.push(format!("Add ToSort folder requested: {}", path));
-                            GLOBAL_DB.with(|db_ref| {
-                                if let Some(db) = db_ref.borrow().as_ref() {
-                                    let ts = Rc::new(RefCell::new(
-                                        RvFile::new(FileType::Dir)
-                                    ));
-                                    {
-                                        let mut t = ts.borrow_mut();
-                                        t.name = path;
-                                        t.set_dat_status(DatStatus::InToSort);
-                                    }
-                                    db.dir_root.borrow_mut().child_add(ts);
-                                    rv_core::repair_status::RepairStatus::report_status_reset(Rc::clone(&db.dir_root));
-                                    db.write_cache();
-                                }
-                            });
-                        }
+                    if ui.add_enabled(is_idle, egui::Button::new("Add ToSort")).clicked() {
+                        self.prompt_add_tosort();
                         ui.close_menu();
                     }
                 });
@@ -2119,6 +2210,7 @@ impl eframe::App for RomVaultApp {
 
                 // Directory Tree without group box wrapper to match C# visual style
                 egui::ScrollArea::both().show(ui, |ui| {
+                    self.expand_selected_ancestors();
                     GLOBAL_DB.with(|db_ref| {
                         if let Some(db) = db_ref.borrow().as_ref() {
                             let root = Rc::clone(&db.dir_root);
@@ -2284,6 +2376,8 @@ impl eframe::App for RomVaultApp {
                     self.draw_rom_grid(ui);
                 });
         });
+
+        self.flush_db_cache_if_needed();
     }
 }
 

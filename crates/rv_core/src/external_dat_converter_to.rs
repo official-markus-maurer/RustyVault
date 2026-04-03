@@ -96,7 +96,7 @@ impl ExternalDatConverterTo {
             dat_header.name = Some(rv_file.name.clone());
         }
 
-        dat_header.base_dir = DatDir::new();
+        dat_header.base_dir = DatDir::new(FileType::Dir);
 
         for child in &rv_file.children {
             self.child_add(&mut dat_header.base_dir, Rc::clone(child));

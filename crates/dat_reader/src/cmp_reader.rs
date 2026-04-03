@@ -178,7 +178,7 @@ impl<'a> DatFileLoader<'a> {
 pub fn read_cmp_dat(input: &str, filename: &str) -> Result<DatHeader, String> {
     let mut dfl = DatFileLoader::new(input);
     let mut dat_header = DatHeader {
-        base_dir: DatDir::new(),
+        base_dir: DatDir::new(FileType::Dir),
         filename: Some(filename.to_string()),
         ..Default::default()
     };

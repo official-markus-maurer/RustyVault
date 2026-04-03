@@ -202,6 +202,14 @@ pub fn draw_info_and_filters(app: &mut RomVaultApp, ui: &mut egui::Ui) {
 
         let mut toggle_filter = false;
         let mut clear_filter = false;
+        let mut focus_filter = false;
+        let filter_id = egui::Id::new("romvault_filter_text");
+        let prev_show_complete = app.show_complete;
+        let prev_show_partial = app.show_partial;
+        let prev_show_empty = app.show_empty;
+        let prev_show_fixes = app.show_fixes;
+        let prev_show_mia = app.show_mia;
+        let prev_show_merged = app.show_merged;
 
         ui.allocate_ui_with_layout(
             egui::vec2(filters_width, panel_height),
@@ -226,6 +234,7 @@ pub fn draw_info_and_filters(app: &mut RomVaultApp, ui: &mut egui::Ui) {
                                         }
                                         if ui.button("X").clicked() {
                                             clear_filter = true;
+                                            focus_filter = true;
                                         }
                                     },
                                 );
@@ -240,10 +249,13 @@ pub fn draw_info_and_filters(app: &mut RomVaultApp, ui: &mut egui::Ui) {
                     },
                     |ui| {
                         if app.show_filter_panel {
-                            ui.add_sized(
+                            let filter_resp = ui.add_sized(
                                 [ui.available_width(), 20.0],
-                                egui::TextEdit::singleline(&mut app.filter_text),
+                                egui::TextEdit::singleline(&mut app.filter_text).id(filter_id),
                             );
+                            if filter_resp.changed() {
+                                filter_resp.request_focus();
+                            }
                             ui.add_space(10.0);
 
                             ui.columns(2, |columns| {
@@ -273,6 +285,19 @@ pub fn draw_info_and_filters(app: &mut RomVaultApp, ui: &mut egui::Ui) {
         }
         if clear_filter {
             app.filter_text.clear();
+        }
+        if focus_filter {
+            ui.memory_mut(|mem| mem.request_focus(filter_id));
+        }
+
+        if prev_show_complete != app.show_complete
+            || prev_show_partial != app.show_partial
+            || prev_show_empty != app.show_empty
+            || prev_show_fixes != app.show_fixes
+            || prev_show_mia != app.show_mia
+            || prev_show_merged != app.show_merged
+        {
+            app.persist_filter_settings();
         }
     });
 }

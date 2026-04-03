@@ -1,6 +1,7 @@
 use std::io::{Read, Write};
 use std::fs;
 use std::path::Path;
+use compress::codepage_437;
 use compress::i_compress::ICompress;
 use compress::zip_enums::ZipReturn;
 use compress::structured_archive::{ZipDateType, ZipStructure, get_compression_type, get_zip_comment_id, get_zip_date_time_type};
@@ -44,7 +45,7 @@ impl TorrentZipRebuild {
     const TORRENTZIP_DOS_DATE: u16 = 8600;
 
     fn torrentzip_flags(name: &str) -> u16 {
-        0x0002 | if name.is_ascii() { 0 } else { 0x0800 }
+        0x0002 | if codepage_437::is_code_page_437(name) { 0 } else { 0x0800 }
     }
 
     fn apply_structured_zip_metadata(zip_path: &Path, zip_struct: ZipStructure) -> bool {
@@ -241,6 +242,7 @@ impl TorrentZipRebuild {
         removed
     }
 
+    #[allow(dead_code)]
     fn read_raw_zip_entry(zip_bytes: &[u8], entry_name: &str) -> Option<RawZipEntry> {
         let eocd_offset = zip_bytes
             .windows(4)
@@ -324,7 +326,12 @@ impl TorrentZipRebuild {
                 return None;
             }
 
-            let current_name = String::from_utf8_lossy(&zip_bytes[name_start..name_end]);
+            let name_bytes = &zip_bytes[name_start..name_end];
+            let current_name = if (flags & 0x0800) != 0 {
+                std::str::from_utf8(name_bytes).ok()?.to_string()
+            } else {
+                codepage_437::decode(name_bytes)
+            };
             if current_name == entry_name {
                 if compression_method != 8 {
                     return None;
@@ -377,7 +384,11 @@ impl TorrentZipRebuild {
         let mut central_directory = Vec::new();
 
         for entry in entries {
-            let name_bytes = entry.name.as_bytes();
+            let name_bytes = if (entry.flags & 0x0800) != 0 {
+                entry.name.as_bytes().to_vec()
+            } else {
+                codepage_437::encode(&entry.name).unwrap_or_else(|| entry.name.as_bytes().to_vec())
+            };
             let local_offset = archive_bytes.len() as u32;
 
             archive_bytes.extend_from_slice(&0x04034B50u32.to_le_bytes());
@@ -391,7 +402,7 @@ impl TorrentZipRebuild {
             archive_bytes.extend_from_slice(&entry.uncompressed_size.to_le_bytes());
             archive_bytes.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
             archive_bytes.extend_from_slice(&0u16.to_le_bytes());
-            archive_bytes.extend_from_slice(name_bytes);
+            archive_bytes.extend_from_slice(&name_bytes);
             archive_bytes.extend_from_slice(&entry.compressed_data);
 
             central_directory.extend_from_slice(&0x02014B50u32.to_le_bytes());
@@ -411,7 +422,7 @@ impl TorrentZipRebuild {
             central_directory.extend_from_slice(&0u16.to_le_bytes());
             central_directory.extend_from_slice(&entry.external_attributes.to_le_bytes());
             central_directory.extend_from_slice(&local_offset.to_le_bytes());
-            central_directory.extend_from_slice(name_bytes);
+            central_directory.extend_from_slice(&name_bytes);
         }
 
         let mut comment_crc = Crc32Hasher::new();
@@ -448,38 +459,16 @@ impl TorrentZipRebuild {
         }
 
         let mut entries = Vec::with_capacity(zipped_files.len());
-        let source_bytes = fs::read(source_path).ok()?;
 
         for file in zipped_files {
-            if file.is_dir || file.name.ends_with('/') {
-                let name = if file.name.ends_with('/') {
-                    file.name.clone()
-                } else {
-                    format!("{}/", file.name)
-                };
-                entries.push(RawZipEntry {
-                    name: name.clone(),
-                    compressed_data: Vec::new(),
-                    crc: 0,
-                    compressed_size: 0,
-                    uncompressed_size: 0,
-                    flags: Self::torrentzip_flags(&name),
-                    compression_method: 0,
-                    external_attributes: 0x10,
-                });
-                continue;
-            }
-
-            if let Some(mut raw) = Self::read_raw_zip_entry(&source_bytes, &file.name) {
-                raw.flags = Self::torrentzip_flags(&file.name);
-                raw.compression_method = 8;
-                raw.external_attributes = 0;
-                entries.push(raw);
-                continue;
-            }
-
+            let is_dir = file.is_dir || file.name.ends_with('/');
+            let entry_name = if is_dir && !file.name.ends_with('/') {
+                format!("{}/", file.name)
+            } else {
+                file.name.clone()
+            };
             let mut entry_bytes = Vec::new();
-            if file.size > 0 {
+            if !is_dir && file.size > 0 {
                 let (mut read_stream, _) = original_zip_file
                     .zip_file_open_read_stream(file.index as usize)
                     .ok()?;
@@ -498,12 +487,12 @@ impl TorrentZipRebuild {
             let crc = crc_hasher.finalize();
 
             entries.push(RawZipEntry {
-                name: file.name.clone(),
+                name: entry_name.clone(),
                 compressed_size: compressed_data.len() as u32,
                 uncompressed_size: entry_bytes.len() as u32,
                 compressed_data,
                 crc,
-                flags: Self::torrentzip_flags(&file.name),
+                flags: Self::torrentzip_flags(&entry_name),
                 compression_method: 8,
                 external_attributes: 0,
             });

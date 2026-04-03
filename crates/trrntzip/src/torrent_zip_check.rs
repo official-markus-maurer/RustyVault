@@ -21,42 +21,28 @@ impl TorrentZipCheck {
         }
     }
 
-    fn compare_ascii_casefolded(a: &str, b: &str) -> i32 {
-        let bytes_a = a.as_bytes();
-        let bytes_b = b.as_bytes();
-        let len = std::cmp::min(bytes_a.len(), bytes_b.len());
-
-        for i in 0..len {
-            let ca = Self::ascii_lower(bytes_a[i]);
-            let cb = Self::ascii_lower(bytes_b[i]);
-
-            if ca < cb {
-                return -1;
-            }
-            if ca > cb {
-                return 1;
-            }
-        }
-
-        if bytes_a.len() < bytes_b.len() {
-            -1
-        } else if bytes_a.len() > bytes_b.len() {
-            1
-        } else {
-            0
+    fn string_compare(a: &str, b: &str) -> i32 {
+        match a.cmp(b) {
+            std::cmp::Ordering::Less => -1,
+            std::cmp::Ordering::Equal => 0,
+            std::cmp::Ordering::Greater => 1,
         }
     }
 
-    fn seven_zip_extension_key(name: &str) -> Vec<String> {
-        let trimmed = name.trim_end_matches('/');
-        let file_name = trimmed.rsplit('/').next().unwrap_or(trimmed);
-        let mut parts: Vec<String> = file_name
-            .split('.')
-            .skip(1)
-            .map(|part| part.to_ascii_lowercase())
-            .collect();
-        parts.reverse();
-        parts
+    fn split_7zip_filename(filename: &str) -> (&str, &str, &str) {
+        let dir_index = filename.rfind('/');
+        let (path, name) = if let Some(i) = dir_index {
+            (&filename[..i], &filename[i + 1..])
+        } else {
+            ("", filename)
+        };
+
+        let ext_index = name.rfind('.');
+        if let Some(i) = ext_index {
+            (path, &name[..i], &name[i + 1..])
+        } else {
+            (path, name, "")
+        }
     }
 
     pub fn check_zip_files(zipped_files: &mut Vec<ZippedFile>) -> TrrntZipStatus {
@@ -78,7 +64,7 @@ impl TorrentZipCheck {
         // RULE 2: All Files in a torrentzip should be sorted with a lowercase file compare.
         let mut error2 = false;
         for i in 0..zipped_files.len().saturating_sub(1) {
-            if Self::trrnt_zip_string_compare(&zipped_files[i], &zipped_files[i + 1]) > 0 {
+            if Self::trrnt_zip_string_compare_case(&zipped_files[i], &zipped_files[i + 1]) > 0 {
                 tz_status |= TrrntZipStatus::UNSORTED;
                 error2 = true;
                 // Log incorrect file order
@@ -87,7 +73,7 @@ impl TorrentZipCheck {
         }
 
         if error2 {
-            zipped_files.sort_by(|a, b| Self::trrnt_zip_string_compare(a, b).cmp(&0));
+            zipped_files.sort_by(|a, b| Self::trrnt_zip_string_compare_case(a, b).cmp(&0));
         }
 
         // RULE 3: Directory marker files are only needed if they are empty directories.
@@ -242,30 +228,47 @@ impl TorrentZipCheck {
         0
     }
 
-    pub fn trrnt_7zip_string_compare(a: &ZippedFile, b: &ZippedFile) -> i32 {
-        if a.is_dir || b.is_dir || a.name.ends_with('/') || b.name.ends_with('/') {
-            return Self::trrnt_zip_string_compare(a, b);
+    pub fn trrnt_zip_string_compare_case(a: &ZippedFile, b: &ZippedFile) -> i32 {
+        let res = Self::trrnt_zip_string_compare(a, b);
+        if res != 0 {
+            return res;
         }
 
-        let ext_key_a = Self::seven_zip_extension_key(&a.name);
-        let ext_key_b = Self::seven_zip_extension_key(&b.name);
-        let len = std::cmp::min(ext_key_a.len(), ext_key_b.len());
+        let bytes_a = a.name.as_bytes();
+        let bytes_b = b.name.as_bytes();
+        let len = std::cmp::min(bytes_a.len(), bytes_b.len());
 
         for i in 0..len {
-            let cmp = Self::compare_ascii_casefolded(&ext_key_a[i], &ext_key_b[i]);
-            if cmp != 0 {
-                return cmp;
+            if bytes_a[i] < bytes_b[i] {
+                return -1;
+            }
+            if bytes_a[i] > bytes_b[i] {
+                return 1;
             }
         }
 
-        if ext_key_a.len() < ext_key_b.len() {
-            return -1;
+        if bytes_a.len() < bytes_b.len() {
+            -1
+        } else if bytes_a.len() > bytes_b.len() {
+            1
+        } else {
+            0
         }
-        if ext_key_a.len() > ext_key_b.len() {
-            return 1;
-        }
+    }
 
-        Self::trrnt_zip_string_compare(a, b)
+    pub fn trrnt_7zip_string_compare(a: &ZippedFile, b: &ZippedFile) -> i32 {
+        let (path_a, name_a, ext_a) = Self::split_7zip_filename(&a.name);
+        let (path_b, name_b, ext_b) = Self::split_7zip_filename(&b.name);
+
+        let res = Self::string_compare(ext_a, ext_b);
+        if res != 0 {
+            return res;
+        }
+        let res = Self::string_compare(name_a, name_b);
+        if res != 0 {
+            return res;
+        }
+        Self::string_compare(path_a, path_b)
     }
 }
 

@@ -6,13 +6,13 @@ use std::rc::Rc;
 
 use crate::file_header::FileHeader;
 use crate::i_compress::ICompress;
-use crate::structured_archive::{ZipDateType, ZipStructure, get_compression_type, get_zip_date_time_type};
+use crate::structured_archive::{ZipDateType, ZipStructure, get_compression_type, get_zip_comment_id, get_zip_date_time_type};
 use crate::zip_enums::{ZipOpenType, ZipReturn};
 use crate::codepage_437;
 use crate::zip_extra_field;
+use crate::deflate_raw_best;
 
-use zip::write::FileOptions;
-use zip::{CompressionMethod, DateTime, ZipArchive, ZipWriter};
+use zip::{DateTime, ZipArchive, ZipWriter};
 use crc32fast::Hasher as Crc32Hasher;
 use flate2::read::DeflateDecoder;
 use bzip2::read::BzDecoder;
@@ -44,6 +44,7 @@ pub struct ZipFile {
     
     archive: Option<ZipArchive<Box<dyn ReadSeek>>>,
     writer: Option<ZipWriter<ZipWriterFile>>,
+    manual_writer: Option<ManualZipWriter>,
     
     file_headers: Vec<FileHeader>,
     central_meta: Vec<CentralHeaderMeta>,
@@ -145,7 +146,6 @@ impl ZipFile {
         self.fake_write = false;
         match cursor {
             ZipWriterFile::Memory(c) => Some(c.into_inner()),
-            ZipWriterFile::File(_) => None,
         }
     }
 
@@ -224,21 +224,18 @@ impl ZipFile {
 }
 
 enum ZipWriterFile {
-    File(File),
     Memory(std::io::Cursor<Vec<u8>>),
 }
 
 impl Write for ZipWriterFile {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         match self {
-            ZipWriterFile::File(f) => f.write(buf),
             ZipWriterFile::Memory(c) => c.write(buf),
         }
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
         match self {
-            ZipWriterFile::File(f) => f.flush(),
             ZipWriterFile::Memory(c) => c.flush(),
         }
     }
@@ -247,7 +244,6 @@ impl Write for ZipWriterFile {
 impl Seek for ZipWriterFile {
     fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
         match self {
-            ZipWriterFile::File(f) => f.seek(pos),
             ZipWriterFile::Memory(c) => c.seek(pos),
         }
     }
@@ -257,6 +253,8 @@ struct PendingWrite {
     filename: String,
     compression_method: u16,
     mod_time: Option<i64>,
+    uncompressed_size: u64,
+    raw: bool,
     buffer: Rc<RefCell<Vec<u8>>>,
 }
 
@@ -298,6 +296,352 @@ struct LocalHeaderFull {
     data_offset: u64,
 }
 
+struct ManualZipWriter {
+    file: File,
+    entries: Vec<ManualCentralEntry>,
+    finalized: bool,
+}
+
+#[derive(Clone)]
+struct ManualCentralEntry {
+    filename: String,
+    filename_bytes: Vec<u8>,
+    flags: u16,
+    compression_method: u16,
+    dos_time: u16,
+    dos_date: u16,
+    crc32: u32,
+    compressed_size: u64,
+    uncompressed_size: u64,
+    local_header_offset: u64,
+    is_directory: bool,
+}
+
+impl ManualZipWriter {
+    fn new(file: File) -> Self {
+        Self {
+            file,
+            entries: Vec::new(),
+            finalized: false,
+        }
+    }
+
+    fn write_local_entry(
+        &mut self,
+        filename: &str,
+        compression_method: u16,
+        mod_time: Option<i64>,
+        crc32_be: &[u8],
+        uncompressed_size: u64,
+        mut compressed_data: Vec<u8>,
+    ) -> Result<ManualCentralEntry, ZipReturn> {
+        let (filename_bytes, flags) = Self::encode_filename_and_flags(filename);
+
+        let dt = mod_time.and_then(ZipFile::zip_datetime_from_i64);
+        let (dos_time, dos_date) = dt.map(|t| (t.timepart(), t.datepart())).unwrap_or((0, 0));
+
+        let local_header_offset = self
+            .file
+            .stream_position()
+            .map_err(|_| ZipReturn::ZipErrorOpeningFile)? as u64;
+
+        let crc32 = if crc32_be.len() == 4 {
+            u32::from_be_bytes([crc32_be[0], crc32_be[1], crc32_be[2], crc32_be[3]])
+        } else {
+            0
+        };
+
+        if compressed_data.is_empty() && uncompressed_size == 0 && compression_method == 8 {
+            compressed_data = vec![0x03, 0x00];
+        }
+
+        let compressed_size = compressed_data.len() as u64;
+        let (extra, header_uncompressed_size, header_compressed_size, _header_local_offset) =
+            zip_extra_field::write_zip64_extra(uncompressed_size, compressed_size, local_header_offset, false);
+
+        if filename_bytes.len() > u16::MAX as usize || extra.len() > u16::MAX as usize {
+            return Err(ZipReturn::ZipFileNameToLong);
+        }
+
+        let is_directory = filename.ends_with('/');
+        if is_directory && uncompressed_size != 0 {
+            return Err(ZipReturn::ZipErrorWritingToOutputStream);
+        }
+
+        let version_needed = if compression_method == 93 {
+            63u16
+        } else if header_uncompressed_size == 0xFFFF_FFFF || header_compressed_size == 0xFFFF_FFFF {
+            45u16
+        } else {
+            20u16
+        };
+
+        self.file
+            .write_all(&0x04034B50u32.to_le_bytes())
+            .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+        self.file
+            .write_all(&version_needed.to_le_bytes())
+            .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+        self.file
+            .write_all(&flags.to_le_bytes())
+            .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+        self.file
+            .write_all(&compression_method.to_le_bytes())
+            .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+        self.file
+            .write_all(&dos_time.to_le_bytes())
+            .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+        self.file
+            .write_all(&dos_date.to_le_bytes())
+            .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+        self.file
+            .write_all(&crc32.to_le_bytes())
+            .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+        self.file
+            .write_all(&header_compressed_size.to_le_bytes())
+            .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+        self.file
+            .write_all(&header_uncompressed_size.to_le_bytes())
+            .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+        self.file
+            .write_all(&(filename_bytes.len() as u16).to_le_bytes())
+            .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+        self.file
+            .write_all(&(extra.len() as u16).to_le_bytes())
+            .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+        self.file
+            .write_all(&filename_bytes)
+            .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+        if !extra.is_empty() {
+            self.file
+                .write_all(&extra)
+                .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+        }
+        if !compressed_data.is_empty() {
+            self.file
+                .write_all(&compressed_data)
+                .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+        }
+
+        Ok(ManualCentralEntry {
+            filename: filename.to_string(),
+            filename_bytes,
+            flags,
+            compression_method,
+            dos_time,
+            dos_date,
+            crc32,
+            compressed_size,
+            uncompressed_size,
+            local_header_offset,
+            is_directory,
+        })
+    }
+
+    fn finish(&mut self, zip_struct: ZipStructure, comment: &str) -> Result<(), ZipReturn> {
+        if self.finalized {
+            return Ok(());
+        }
+
+        let _ = self
+            .file
+            .seek(SeekFrom::End(0))
+            .map_err(|_| ZipReturn::ZipErrorOpeningFile)?;
+
+        let central_directory_offset = self
+            .file
+            .stream_position()
+            .map_err(|_| ZipReturn::ZipErrorOpeningFile)? as u64;
+
+        let mut central = Vec::new();
+        for entry in &self.entries {
+            let (extra, header_uncompressed_size, header_compressed_size, header_local_offset) =
+                zip_extra_field::write_zip64_extra(
+                    entry.uncompressed_size,
+                    entry.compressed_size,
+                    entry.local_header_offset,
+                    true,
+                );
+
+            if entry.filename_bytes.len() > u16::MAX as usize || extra.len() > u16::MAX as usize {
+                return Err(ZipReturn::ZipFileNameToLong);
+            }
+
+            let version_needed = if entry.compression_method == 93 {
+                63u16
+            } else if header_uncompressed_size == 0xFFFF_FFFF
+                || header_compressed_size == 0xFFFF_FFFF
+                || header_local_offset == 0xFFFF_FFFF
+            {
+                45u16
+            } else {
+                20u16
+            };
+
+            central.extend_from_slice(&0x02014B50u32.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&version_needed.to_le_bytes());
+            central.extend_from_slice(&entry.flags.to_le_bytes());
+            central.extend_from_slice(&entry.compression_method.to_le_bytes());
+            central.extend_from_slice(&entry.dos_time.to_le_bytes());
+            central.extend_from_slice(&entry.dos_date.to_le_bytes());
+            central.extend_from_slice(&entry.crc32.to_le_bytes());
+            central.extend_from_slice(&header_compressed_size.to_le_bytes());
+            central.extend_from_slice(&header_uncompressed_size.to_le_bytes());
+            central.extend_from_slice(&(entry.filename_bytes.len() as u16).to_le_bytes());
+            central.extend_from_slice(&(extra.len() as u16).to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u32.to_le_bytes());
+            central.extend_from_slice(&header_local_offset.to_le_bytes());
+            central.extend_from_slice(&entry.filename_bytes);
+            if !extra.is_empty() {
+                central.extend_from_slice(&extra);
+            }
+        }
+
+        let central_directory_size = central.len() as u64;
+
+        let effective_comment = if zip_struct != ZipStructure::None {
+            let mut crc = Crc32Hasher::new();
+            crc.update(&central);
+            let crc_hex = format!("{:08X}", crc.finalize());
+            format!("{}{}", get_zip_comment_id(zip_struct), crc_hex)
+        } else {
+            comment.to_string()
+        };
+
+        self.file
+            .write_all(&central)
+            .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+
+        let comment_bytes = effective_comment.as_bytes();
+        if comment_bytes.len() > u16::MAX as usize {
+            return Err(ZipReturn::ZipErrorWritingToOutputStream);
+        }
+        let comment_len = comment_bytes.len() as u16;
+
+        let needs_zip64 = self.entries.len() > u16::MAX as usize
+            || central_directory_offset > u32::MAX as u64
+            || central_directory_size > u32::MAX as u64;
+
+        if needs_zip64 {
+            let zip64_eocd_offset = self
+                .file
+                .stream_position()
+                .map_err(|_| ZipReturn::ZipErrorOpeningFile)? as u64;
+
+            self.file
+                .write_all(&0x06064B50u32.to_le_bytes())
+                .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+            self.file
+                .write_all(&44u64.to_le_bytes())
+                .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+            self.file
+                .write_all(&45u16.to_le_bytes())
+                .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+            self.file
+                .write_all(&45u16.to_le_bytes())
+                .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+            self.file
+                .write_all(&0u32.to_le_bytes())
+                .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+            self.file
+                .write_all(&0u32.to_le_bytes())
+                .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+            self.file
+                .write_all(&(self.entries.len() as u64).to_le_bytes())
+                .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+            self.file
+                .write_all(&(self.entries.len() as u64).to_le_bytes())
+                .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+            self.file
+                .write_all(&central_directory_size.to_le_bytes())
+                .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+            self.file
+                .write_all(&central_directory_offset.to_le_bytes())
+                .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+
+            self.file
+                .write_all(&0x07064B50u32.to_le_bytes())
+                .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+            self.file
+                .write_all(&0u32.to_le_bytes())
+                .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+            self.file
+                .write_all(&zip64_eocd_offset.to_le_bytes())
+                .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+            self.file
+                .write_all(&1u32.to_le_bytes())
+                .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+        }
+
+        let entries_u16 = if self.entries.len() > u16::MAX as usize {
+            0xFFFFu16
+        } else {
+            self.entries.len() as u16
+        };
+        let cd_size_u32 = if central_directory_size > u32::MAX as u64 {
+            0xFFFF_FFFFu32
+        } else {
+            central_directory_size as u32
+        };
+        let cd_offset_u32 = if central_directory_offset > u32::MAX as u64 {
+            0xFFFF_FFFFu32
+        } else {
+            central_directory_offset as u32
+        };
+
+        self.file
+            .write_all(&0x06054B50u32.to_le_bytes())
+            .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+        self.file
+            .write_all(&0u16.to_le_bytes())
+            .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+        self.file
+            .write_all(&0u16.to_le_bytes())
+            .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+        self.file
+            .write_all(&entries_u16.to_le_bytes())
+            .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+        self.file
+            .write_all(&entries_u16.to_le_bytes())
+            .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+        self.file
+            .write_all(&cd_size_u32.to_le_bytes())
+            .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+        self.file
+            .write_all(&cd_offset_u32.to_le_bytes())
+            .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+        self.file
+            .write_all(&comment_len.to_le_bytes())
+            .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+        if !comment_bytes.is_empty() {
+            self.file
+                .write_all(comment_bytes)
+                .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+        }
+
+        self.file
+            .flush()
+            .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+        self.finalized = true;
+        Ok(())
+    }
+
+    fn encode_filename_and_flags(name: &str) -> (Vec<u8>, u16) {
+        let mut flags = 0x0002u16;
+        let bytes = if let Some(cp) = codepage_437::encode(name) {
+            cp
+        } else {
+            flags |= 0x0800;
+            name.as_bytes().to_vec()
+        };
+        (bytes, flags)
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/zip_file_tests.rs"]
 mod tests;
@@ -314,6 +658,7 @@ impl ZipFile {
             zip_struct: ZipStructure::None,
             archive: None,
             writer: None,
+            manual_writer: None,
             file_headers: Vec::new(),
             central_meta: Vec::new(),
             file_comment: String::new(),
@@ -321,6 +666,63 @@ impl ZipFile {
             fake_write: false,
             zip_memory: None,
         }
+    }
+
+    pub fn zip_file_create_with_structure(&mut self, new_filename: &str, zip_struct: ZipStructure) -> ZipReturn {
+        let zr = self.zip_file_create(new_filename);
+        if zr == ZipReturn::ZipGood {
+            self.zip_struct = zip_struct;
+        }
+        zr
+    }
+
+    fn validate_structured_write(zip_struct: ZipStructure, entries: &[ManualCentralEntry]) -> bool {
+        let expected_compression = get_compression_type(zip_struct);
+        if expected_compression != 8 && expected_compression != 93 {
+            return false;
+        }
+
+        for entry in entries {
+            if entry.compression_method != expected_compression {
+                return false;
+            }
+            if entry.filename.contains('\\') {
+                return false;
+            }
+        }
+
+        for i in 0..entries.len().saturating_sub(1) {
+            if Self::compare_ascii_casefolded_bytes(
+                entries[i].filename.as_bytes(),
+                entries[i + 1].filename.as_bytes(),
+            ) >= 0
+            {
+                return false;
+            }
+        }
+
+        if matches!(zip_struct, ZipStructure::ZipTrrnt | ZipStructure::ZipZSTD) {
+            for i in 0..entries.len().saturating_sub(1) {
+                let filename0 = &entries[i].filename;
+                if !filename0.ends_with('/') {
+                    continue;
+                }
+                let filename1 = &entries[i + 1].filename;
+                if filename1.len() <= filename0.len() {
+                    continue;
+                }
+
+                if Self::compare_ascii_casefolded_bytes(
+                    filename0.as_bytes(),
+                    &filename1.as_bytes()[..filename0.len()],
+                ) == 0
+                {
+                    return false;
+                }
+            }
+        }
+
+        true
     }
 
     pub fn zip_file_open_stream<R: Read + Seek + 'static>(
@@ -821,15 +1223,6 @@ impl ZipFile {
         let second = (value % 100) as u8;
 
         DateTime::from_date_and_time(year, month, day, hour, minute, second).ok()
-    }
-
-    fn compression_method_from_u16(value: u16) -> CompressionMethod {
-        match value {
-            0 => CompressionMethod::Stored,
-            8 => CompressionMethod::Deflated,
-            93 => CompressionMethod::Zstd,
-            _ => CompressionMethod::Deflated,
-        }
     }
 
     #[cfg(test)]
@@ -1464,6 +1857,22 @@ impl ICompress for ZipFile {
 
     fn zip_file_close(&mut self) {
         self.archive = None;
+        let mut effective_struct = self.zip_struct;
+        if effective_struct != ZipStructure::None {
+            let valid = self
+                .manual_writer
+                .as_ref()
+                .map(|mw| Self::validate_structured_write(effective_struct, &mw.entries))
+                .unwrap_or(true);
+            if !valid {
+                effective_struct = ZipStructure::None;
+                self.file_comment.clear();
+            }
+        }
+
+        if let Some(mut mw) = self.manual_writer.take() {
+            let _ = mw.finish(effective_struct, &self.file_comment);
+        }
         if let Some(w) = self.writer.take() {
             let _ = w.finish();
         }
@@ -1555,7 +1964,8 @@ impl ICompress for ZipFile {
             Err(_) => return ZipReturn::ZipErrorOpeningFile,
         };
 
-        self.writer = Some(ZipWriter::new(ZipWriterFile::File(file)));
+        self.manual_writer = Some(ManualZipWriter::new(file));
+        self.writer = None;
         self.zip_filename = new_filename.to_string();
         self.zip_open_type = ZipOpenType::OpenWrite;
         self.file_headers.clear();
@@ -1579,10 +1989,6 @@ impl ICompress for ZipFile {
             return Err(ZipReturn::ZipWritingToInputFile);
         }
 
-        if raw {
-            return Err(ZipReturn::ZipTrrntZipIncorrectDataStream);
-        }
-
         if !matches!(compression_method, 0 | 8 | 93) {
             return Err(ZipReturn::ZipUnsupportedCompression);
         }
@@ -1591,25 +1997,36 @@ impl ICompress for ZipFile {
             return Err(ZipReturn::ZipErrorOpeningFile);
         }
 
-        if let Some(last) = self.file_headers.last() {
-            // Enforce TorrentZip-style order when writing multiple files in a session
-            // If the last entry is lexicographically after the new filename (case-insensitive),
-            // declare incorrect order.
-            if Self::compare_ascii_casefolded_bytes(
-                last.filename.as_bytes(),
-                filename.as_bytes(),
-            ) >= 0
-            {
-                return Err(ZipReturn::ZipTrrntzipIncorrectFileOrder);
+        let expected_compression_method = get_compression_type(self.zip_struct);
+        if self.zip_struct != ZipStructure::None && compression_method != expected_compression_method {
+            return Err(ZipReturn::ZipTrrntzipIncorrectCompressionUsed);
+        }
+
+        let mut mod_time = mod_time;
+        match get_zip_date_time_type(self.zip_struct) {
+            ZipDateType::TrrntZip => {
+                mod_time = Some(19961224233200);
             }
-            // Prevent adding a directory marker that is immediately followed by an entry within that directory
-            if last.filename.ends_with('/') {
-                let dir_bytes = last.filename.as_bytes();
-                let next_bytes = filename.as_bytes();
-                if next_bytes.len() > dir_bytes.len()
-                    && Self::compare_ascii_casefolded_bytes(dir_bytes, &next_bytes[..dir_bytes.len()]) == 0
-                {
-                    return Err(ZipReturn::ZipTrrntzipIncorrectDirectoryAddedToZip);
+            ZipDateType::None => {
+                mod_time = Some(0);
+            }
+            _ => {}
+        }
+
+        if matches!(self.zip_struct, ZipStructure::ZipTrrnt | ZipStructure::ZipTDC | ZipStructure::ZipZSTD) {
+            if let Some(last) = self.file_headers.last() {
+                if Self::compare_ascii_casefolded_bytes(last.filename.as_bytes(), filename.as_bytes()) > 0 {
+                    return Err(ZipReturn::ZipTrrntzipIncorrectFileOrder);
+                }
+
+                if matches!(self.zip_struct, ZipStructure::ZipTrrnt | ZipStructure::ZipZSTD) && last.filename.ends_with('/') {
+                    let dir_bytes = last.filename.as_bytes();
+                    let next_bytes = filename.as_bytes();
+                    if next_bytes.len() > dir_bytes.len()
+                        && Self::compare_ascii_casefolded_bytes(dir_bytes, &next_bytes[..dir_bytes.len()]) == 0
+                    {
+                        return Err(ZipReturn::ZipTrrntzipIncorrectDirectoryAddedToZip);
+                    }
                 }
             }
         }
@@ -1619,6 +2036,8 @@ impl ICompress for ZipFile {
             filename: filename.to_string(),
             compression_method,
             mod_time,
+            uncompressed_size,
+            raw,
             buffer: Rc::clone(&buffer),
         });
 
@@ -1630,35 +2049,78 @@ impl ICompress for ZipFile {
             return ZipReturn::ZipErrorOpeningFile;
         };
 
-        let Some(writer) = self.writer.as_mut() else {
+        let Some(writer) = self.manual_writer.as_mut() else {
             return ZipReturn::ZipErrorOpeningFile;
         };
 
-        let mut options = FileOptions::<()>::default()
-            .compression_method(Self::compression_method_from_u16(pending_write.compression_method));
-
-        if let Some(mod_time) = pending_write.mod_time.and_then(Self::zip_datetime_from_i64) {
-            options = options.last_modified_time(mod_time);
-        }
-
-        if writer.start_file(&pending_write.filename, options).is_err() {
-            return ZipReturn::ZipErrorOpeningFile;
-        }
-
         let buffer = pending_write.buffer.borrow();
-        if writer.write_all(&buffer).is_err() {
-            return ZipReturn::ZipErrorOpeningFile;
-        }
+        let mut uncompressed = Vec::new();
+        let mut compressed = Vec::new();
 
-        let mut fh = FileHeader::new();
-        fh.filename = pending_write.filename;
-        fh.uncompressed_size = buffer.len() as u64;
-        fh.is_directory = fh.filename.ends_with('/');
-        if fh.is_directory && fh.uncompressed_size != 0 {
+        let crc_be = if _crc32.len() == 4 {
+            _crc32.to_vec()
+        } else if pending_write.raw {
+            Vec::new()
+        } else {
+            let mut hasher = Crc32Hasher::new();
+            hasher.update(&buffer);
+            hasher.finalize().to_be_bytes().to_vec()
+        };
+
+        let uncompressed_size = if pending_write.raw {
+            pending_write.uncompressed_size
+        } else {
+            buffer.len() as u64
+        };
+
+        if !pending_write.raw && pending_write.uncompressed_size != uncompressed_size {
             return ZipReturn::ZipErrorWritingToOutputStream;
         }
-        if !_crc32.is_empty() {
-            fh.crc = Some(_crc32.to_vec());
+
+        if pending_write.raw {
+            compressed.extend_from_slice(&buffer);
+        } else {
+            uncompressed.extend_from_slice(&buffer);
+            match pending_write.compression_method {
+                0 => {
+                    compressed = uncompressed.clone();
+                }
+                8 => {
+                    compressed = match deflate_raw_best(&uncompressed) {
+                        Some(v) => v,
+                        None => return ZipReturn::ZipErrorWritingToOutputStream,
+                    };
+                }
+                93 => {
+                    compressed = match zstd::stream::encode_all(&uncompressed[..], 19) {
+                        Ok(v) => v,
+                        Err(_) => return ZipReturn::ZipErrorWritingToOutputStream,
+                    };
+                }
+                _ => return ZipReturn::ZipUnsupportedCompression,
+            }
+        }
+
+        let entry = match writer.write_local_entry(
+            &pending_write.filename,
+            pending_write.compression_method,
+            pending_write.mod_time,
+            &crc_be,
+            uncompressed_size,
+            compressed,
+        ) {
+            Ok(e) => e,
+            Err(zr) => return zr,
+        };
+
+        writer.entries.push(entry.clone());
+
+        let mut fh = FileHeader::new();
+        fh.filename = entry.filename;
+        fh.uncompressed_size = entry.uncompressed_size;
+        fh.is_directory = entry.is_directory;
+        if !crc_be.is_empty() {
+            fh.crc = Some(crc_be);
         }
         if let Some(mod_time) = pending_write.mod_time {
             fh.header_last_modified = mod_time;

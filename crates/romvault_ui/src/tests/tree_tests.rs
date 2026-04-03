@@ -236,3 +236,95 @@
 
         assert_eq!(tree_icon_idx_from_stats(&stats), 4);
     }
+
+    #[test]
+    fn test_set_descendants_expanded_does_not_change_root_and_sets_all_directory_descendants() {
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        let child0 = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        let child1 = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        let grandchild = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+
+        child0.borrow_mut().tree_expanded = false;
+        child1.borrow_mut().tree_expanded = true;
+        grandchild.borrow_mut().tree_expanded = false;
+
+        child0.borrow_mut().children.push(Rc::clone(&grandchild));
+        root.borrow_mut().children.push(Rc::clone(&child0));
+        root.borrow_mut().children.push(Rc::clone(&child1));
+
+        RomVaultApp::set_descendants_expanded(&root, true);
+
+        assert_eq!(root.borrow().tree_expanded, false);
+        assert_eq!(child0.borrow().tree_expanded, true);
+        assert_eq!(child1.borrow().tree_expanded, true);
+        assert_eq!(grandchild.borrow().tree_expanded, true);
+    }
+
+    #[test]
+    fn test_expand_descendants_target_uses_first_directory_child_state() {
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        let child0 = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        let child1 = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+
+        child0.borrow_mut().tree_expanded = false;
+        child1.borrow_mut().tree_expanded = true;
+
+        root.borrow_mut().children.push(Rc::clone(&child0));
+        root.borrow_mut().children.push(Rc::clone(&child1));
+
+        assert_eq!(RomVaultApp::expand_descendants_target(&root), Some(true));
+    }
+
+    #[test]
+    fn test_set_tree_checked_locked_skips_to_sort_primary_and_cache() {
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        let primary = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        let cache = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        let normal = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+
+        primary
+            .borrow_mut()
+            .to_sort_status_set(rv_core::enums::ToSortDirType::TO_SORT_PRIMARY);
+        cache
+            .borrow_mut()
+            .to_sort_status_set(rv_core::enums::ToSortDirType::TO_SORT_CACHE);
+
+        primary.borrow_mut().tree_checked = TreeSelect::UnSelected;
+        cache.borrow_mut().tree_checked = TreeSelect::UnSelected;
+        normal.borrow_mut().tree_checked = TreeSelect::UnSelected;
+
+        root.borrow_mut().children.push(Rc::clone(&primary));
+        root.borrow_mut().children.push(Rc::clone(&cache));
+        root.borrow_mut().children.push(Rc::clone(&normal));
+
+        RomVaultApp::set_tree_checked_locked(&root, true);
+
+        assert_eq!(primary.borrow().tree_checked, TreeSelect::UnSelected);
+        assert_eq!(cache.borrow().tree_checked, TreeSelect::UnSelected);
+        assert_eq!(normal.borrow().tree_checked, TreeSelect::Locked);
+    }
+
+    #[test]
+    fn test_expand_selected_ancestors_sets_tree_expanded_on_parent_chain() {
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        let child = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        let grandchild = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+
+        child.borrow_mut().parent = Some(Rc::downgrade(&root));
+        grandchild.borrow_mut().parent = Some(Rc::downgrade(&child));
+
+        root.borrow_mut().children.push(Rc::clone(&child));
+        child.borrow_mut().children.push(Rc::clone(&grandchild));
+
+        root.borrow_mut().tree_expanded = false;
+        child.borrow_mut().tree_expanded = false;
+        grandchild.borrow_mut().tree_expanded = false;
+
+        let mut app = RomVaultApp::new();
+        app.selected_node = Some(Rc::clone(&grandchild));
+        app.expand_selected_ancestors();
+
+        assert_eq!(root.borrow().tree_expanded, true);
+        assert_eq!(child.borrow().tree_expanded, true);
+        assert_eq!(grandchild.borrow().tree_expanded, false);
+    }

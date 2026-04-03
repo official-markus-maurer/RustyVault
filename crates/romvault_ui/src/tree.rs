@@ -121,6 +121,91 @@ fn tree_icon_idx_from_report_status(report_status: rv_core::enums::ReportStatus)
 ///   in memory every frame. It relies entirely on `node.cached_stats` (computed by `RepairStatus`) 
 ///   to instantaneously color-code folders without deep recursion on the UI thread.
 impl RomVaultApp {
+    fn ui_working(&self) -> bool {
+        self.sam_running
+    }
+
+    fn expand_descendants_target(node_rc: &Rc<RefCell<RvFile>>) -> Option<bool> {
+        let children = node_rc.borrow().children.clone();
+        for child in children {
+            let cb = child.borrow();
+            if cb.is_directory() && cb.game.is_none() {
+                return Some(!cb.tree_expanded);
+            }
+        }
+        None
+    }
+
+    fn set_descendants_expanded(node_rc: &Rc<RefCell<RvFile>>, expanded: bool) {
+        let children = node_rc.borrow().children.clone();
+        let mut stack: Vec<Rc<RefCell<RvFile>>> = children
+            .into_iter()
+            .filter(|c| {
+                let cb = c.borrow();
+                cb.is_directory() && cb.game.is_none()
+            })
+            .collect();
+
+        while let Some(current) = stack.pop() {
+            let grandchildren = {
+                let mut n = current.borrow_mut();
+                n.tree_expanded = expanded;
+                n.children.clone()
+            };
+            for gc in grandchildren {
+                let gcb = gc.borrow();
+                if gcb.is_directory() && gcb.game.is_none() {
+                    drop(gcb);
+                    stack.push(gc);
+                }
+            }
+        }
+    }
+
+    fn set_tree_checked_locked(node_rc: &Rc<RefCell<RvFile>>, recurse: bool) {
+        let mut stack = vec![Rc::clone(node_rc)];
+        while let Some(current) = stack.pop() {
+            let children = {
+                let mut n = current.borrow_mut();
+                if n.to_sort_status_is(rv_core::enums::ToSortDirType::TO_SORT_PRIMARY)
+                    || n.to_sort_status_is(rv_core::enums::ToSortDirType::TO_SORT_CACHE)
+                {
+                    Vec::new()
+                } else {
+                    n.tree_checked = TreeSelect::Locked;
+                    n.children.clone()
+                }
+            };
+            if recurse {
+                for child in children {
+                    stack.push(child);
+                }
+            }
+        }
+    }
+
+    pub fn expand_selected_ancestors(&mut self) {
+        let Some(selected) = &self.selected_node else {
+            return;
+        };
+
+        let mut current = selected.borrow().parent.as_ref().and_then(|p| p.upgrade());
+        while let Some(node_rc) = current {
+            let next = {
+                let mut n = node_rc.borrow_mut();
+                n.tree_expanded = true;
+                n.parent.as_ref().and_then(|p| p.upgrade())
+            };
+            current = next;
+        }
+    }
+
+    pub fn select_node(&mut self, node_rc: Rc<RefCell<RvFile>>) {
+        self.selected_node = Some(node_rc);
+        self.pending_tree_scroll_to_selected = true;
+        self.expand_selected_ancestors();
+    }
+
     /// Recursively draws a single `RvFile` node and its children in the UI tree.
     pub fn draw_tree_node(&mut self, ui: &mut egui::Ui, node_rc: Rc<RefCell<RvFile>>, parent_path: String) {
         let is_file;
@@ -312,6 +397,7 @@ impl RomVaultApp {
 
         let _node_id = ui.make_persistent_id(&node_path);
         let mut toggle_expanded = false;
+        let mut expand_descendants = None;
         let mut clicked_label = false;
         let row_height = 18.0;
         let current_y = ui.cursor().min.y;
@@ -322,6 +408,15 @@ impl RomVaultApp {
 
         let row_rect = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_height), egui::Sense::click());
         let np_clone = node_path.clone();
+
+        let is_selected_for_scroll = self
+            .selected_node
+            .as_ref()
+            .map_or(false, |n| Rc::ptr_eq(n, &node_rc));
+        if is_selected_for_scroll && self.pending_tree_scroll_to_selected {
+            ui.scroll_to_rect(row_rect.0, Some(egui::Align::Center));
+            self.pending_tree_scroll_to_selected = false;
+        }
 
         if is_visible {
             let mut ui_builder = ui.child_ui(row_rect.0, *ui.layout());
@@ -339,6 +434,8 @@ impl RomVaultApp {
                         ui.add_sized([9.0, 9.0], egui::ImageButton::new(expand_icon).frame(false));
                     if expand_resp.clicked() {
                         toggle_expanded = true;
+                    } else if expand_resp.secondary_clicked() {
+                        expand_descendants = Self::expand_descendants_target(&node_rc);
                     }
                 } else {
                     ui.add_space(9.0);
@@ -349,8 +446,11 @@ impl RomVaultApp {
                     TreeSelect::UnSelected => include_asset!("TickBoxUnTicked.png"),
                     TreeSelect::Locked => include_asset!("TickBoxLocked.png"),
                 };
-                let checkbox_resp =
-                    ui.add_sized([13.0, 13.0], egui::ImageButton::new(checkbox_img).frame(false));
+                let checkbox_resp = ui
+                    .add_enabled_ui(!self.ui_working(), |ui| {
+                        ui.add_sized([13.0, 13.0], egui::ImageButton::new(checkbox_img).frame(false))
+                    })
+                    .inner;
                 if checkbox_resp.clicked() {
                     let is_shift = ui.input(|i| i.modifiers.shift);
                     let new_state = match tree_checked {
@@ -370,22 +470,14 @@ impl RomVaultApp {
                             }
                         }
                     }
+                    if !self.ui_working() {
+                        self.db_cache_dirty = true;
+                    }
                 } else if checkbox_resp.secondary_clicked() {
                     let is_shift = ui.input(|i| i.modifiers.shift);
-                    let mut stack = vec![Rc::clone(&node_rc)];
-                    while let Some(current) = stack.pop() {
-                        let mut n = current.borrow_mut();
-                        if n.to_sort_status_is(rv_core::enums::ToSortDirType::TO_SORT_PRIMARY) {
-                            continue;
-                        }
-                        n.tree_checked = TreeSelect::Locked;
-                        let children = n.children.clone();
-                        drop(n);
-                        if !is_shift {
-                            for child in children {
-                                stack.push(Rc::clone(&child));
-                            }
-                        }
+                    Self::set_tree_checked_locked(&node_rc, !is_shift);
+                    if !self.ui_working() {
+                        self.db_cache_dirty = true;
                     }
                 }
 
@@ -408,7 +500,7 @@ impl RomVaultApp {
                     ui.add(egui::Label::new(label_text).sense(egui::Sense::click()))
                 };
 
-                if label_resp.clicked() {
+                if label_resp.clicked() || label_resp.secondary_clicked() {
                     clicked_label = true;
                 }
 
@@ -452,12 +544,21 @@ impl RomVaultApp {
 
                     if is_in_to_sort {
                         if ui.button("Open ToSort Directory").clicked() {
-                            self.task_logs.push(format!("Opening ToSort Directory: {}", np_clone));
-                            let _ = std::process::Command::new("explorer").arg(&np_clone).spawn();
+                            if std::path::Path::new(&np_clone).is_dir() {
+                                self.task_logs.push(format!("Opening ToSort Directory: {}", np_clone));
+                                let _ = std::process::Command::new("cmd")
+                                    .args(["/C", "start", "", &np_clone])
+                                    .spawn();
+                            } else {
+                                self.task_logs.push(format!("Directory not found: {}", np_clone));
+                            }
                             ui.close_menu();
                         }
                         ui.separator();
-                        if ui.button("Move Up").clicked() {
+                        if ui
+                            .add_enabled(!self.ui_working(), egui::Button::new("Move Up"))
+                            .clicked()
+                        {
                             self.task_logs.push(format!("Move ToSort Up: {}", node_rc.borrow().name));
                             GLOBAL_DB.with(|db_ref| {
                                 if let Some(db) = db_ref.borrow().as_ref() {
@@ -477,12 +578,17 @@ impl RomVaultApp {
                                         }
                                     }
                                     drop(dir_root);
-                                    db.write_cache();
                                 }
                             });
+                            if !self.ui_working() {
+                                self.db_cache_dirty = true;
+                            }
                             ui.close_menu();
                         }
-                        if ui.button("Move Down").clicked() {
+                        if ui
+                            .add_enabled(!self.ui_working(), egui::Button::new("Move Down"))
+                            .clicked()
+                        {
                             self.task_logs.push(format!("Move ToSort Down: {}", node_rc.borrow().name));
                             GLOBAL_DB.with(|db_ref| {
                                 if let Some(db) = db_ref.borrow().as_ref() {
@@ -500,62 +606,147 @@ impl RomVaultApp {
                                         }
                                     }
                                     drop(dir_root);
-                                    db.write_cache();
                                 }
                             });
+                            if !self.ui_working() {
+                                self.db_cache_dirty = true;
+                            }
                             ui.close_menu();
                         }
-                        if ui.button("Set To Primary ToSort").clicked() {
+                        if ui
+                            .add_enabled(!self.ui_working(), egui::Button::new("Set To Primary ToSort"))
+                            .clicked()
+                        {
                             self.task_logs.push(format!("Set To Primary ToSort: {}", node_rc.borrow().name));
-                            node_rc
-                                .borrow_mut()
-                                .to_sort_status_set(rv_core::enums::ToSortDirType::TO_SORT_PRIMARY);
                             GLOBAL_DB.with(|db_ref| {
                                 if let Some(db) = db_ref.borrow().as_ref() {
-                                    db.write_cache();
+                                    let mut clicked = node_rc.borrow_mut();
+                                    if clicked.tree_checked == TreeSelect::Locked {
+                                        clicked.tree_checked = TreeSelect::Selected;
+                                    }
+                                    drop(clicked);
+
+                                    let root = db.dir_root.borrow();
+                                    let mut old_primary: Option<Rc<RefCell<RvFile>>> = None;
+                                    for child in root.children.iter().skip(1) {
+                                        if child.borrow().to_sort_status_is(
+                                            rv_core::enums::ToSortDirType::TO_SORT_PRIMARY,
+                                        ) {
+                                            old_primary = Some(Rc::clone(child));
+                                            break;
+                                        }
+                                    }
+                                    drop(root);
+
+                                    let was_cache = old_primary
+                                        .as_ref()
+                                        .map(|n| n.borrow().to_sort_status_is(rv_core::enums::ToSortDirType::TO_SORT_CACHE))
+                                        .unwrap_or(false);
+                                    if let Some(op) = old_primary {
+                                        let mut opm = op.borrow_mut();
+                                        opm.to_sort_status_clear(
+                                            rv_core::enums::ToSortDirType::TO_SORT_PRIMARY
+                                                | rv_core::enums::ToSortDirType::TO_SORT_CACHE,
+                                        );
+                                    }
+
+                                    let mut clicked = node_rc.borrow_mut();
+                                    clicked.to_sort_status_set(rv_core::enums::ToSortDirType::TO_SORT_PRIMARY);
+                                    if was_cache {
+                                        clicked.to_sort_status_set(rv_core::enums::ToSortDirType::TO_SORT_CACHE);
+                                    }
                                 }
                             });
+                            if !self.ui_working() {
+                                self.db_cache_dirty = true;
+                            }
                             ui.close_menu();
                         }
-                        if ui.button("Set To Cache ToSort").clicked() {
+                        if ui
+                            .add_enabled(!self.ui_working(), egui::Button::new("Set To Cache ToSort"))
+                            .clicked()
+                        {
                             self.task_logs.push(format!("Set To Cache ToSort: {}", node_rc.borrow().name));
-                            node_rc
-                                .borrow_mut()
-                                .to_sort_status_set(rv_core::enums::ToSortDirType::TO_SORT_CACHE);
                             GLOBAL_DB.with(|db_ref| {
                                 if let Some(db) = db_ref.borrow().as_ref() {
-                                    db.write_cache();
+                                    let mut clicked = node_rc.borrow_mut();
+                                    if clicked.tree_checked == TreeSelect::Locked {
+                                        clicked.tree_checked = TreeSelect::Selected;
+                                    }
+                                    drop(clicked);
+
+                                    let root = db.dir_root.borrow();
+                                    let mut old_cache: Option<Rc<RefCell<RvFile>>> = None;
+                                    for child in root.children.iter().skip(1) {
+                                        if child.borrow().to_sort_status_is(
+                                            rv_core::enums::ToSortDirType::TO_SORT_CACHE,
+                                        ) {
+                                            old_cache = Some(Rc::clone(child));
+                                            break;
+                                        }
+                                    }
+                                    drop(root);
+
+                                    if let Some(oc) = old_cache {
+                                        oc.borrow_mut().to_sort_status_clear(
+                                            rv_core::enums::ToSortDirType::TO_SORT_CACHE,
+                                        );
+                                    }
+                                    node_rc
+                                        .borrow_mut()
+                                        .to_sort_status_set(rv_core::enums::ToSortDirType::TO_SORT_CACHE);
                                 }
                             });
+                            if !self.ui_working() {
+                                self.db_cache_dirty = true;
+                            }
                             ui.close_menu();
                         }
-                        if ui.button("Set To File Only ToSort").clicked() {
+                        if ui
+                            .add_enabled(!self.ui_working(), egui::Button::new("Set To File Only ToSort"))
+                            .clicked()
+                        {
                             self.task_logs.push(format!("Set To File Only ToSort: {}", node_rc.borrow().name));
-                            node_rc
-                                .borrow_mut()
-                                .to_sort_status_set(rv_core::enums::ToSortDirType::TO_SORT_FILE_ONLY);
-                            GLOBAL_DB.with(|db_ref| {
-                                if let Some(db) = db_ref.borrow().as_ref() {
-                                    db.write_cache();
+                            let is_primary_or_cache = {
+                                let n = node_rc.borrow();
+                                n.to_sort_status_is(rv_core::enums::ToSortDirType::TO_SORT_PRIMARY)
+                                    || n.to_sort_status_is(rv_core::enums::ToSortDirType::TO_SORT_CACHE)
+                            };
+                            if is_primary_or_cache {
+                                self.task_logs.push("Primary/Cache Directory Cannot be File Only.".to_string());
+                            } else {
+                                if node_rc.borrow().tree_checked == TreeSelect::Locked {
+                                    node_rc.borrow_mut().tree_checked = TreeSelect::Selected;
                                 }
-                            });
+                                node_rc
+                                    .borrow_mut()
+                                    .to_sort_status_set(rv_core::enums::ToSortDirType::TO_SORT_FILE_ONLY);
+                                if !self.ui_working() {
+                                    self.db_cache_dirty = true;
+                                }
+                            }
                             ui.close_menu();
                         }
-                        if ui.button("Clear File Only ToSort").clicked() {
+                        if ui
+                            .add_enabled(!self.ui_working(), egui::Button::new("Clear File Only ToSort"))
+                            .clicked()
+                        {
                             self.task_logs.push(format!("Clear File Only ToSort: {}", node_rc.borrow().name));
                             node_rc
                                 .borrow_mut()
                                 .to_sort_status_clear(rv_core::enums::ToSortDirType::TO_SORT_FILE_ONLY);
-                            GLOBAL_DB.with(|db_ref| {
-                                if let Some(db) = db_ref.borrow().as_ref() {
-                                    db.write_cache();
-                                }
-                            });
+                            if !self.ui_working() {
+                                self.db_cache_dirty = true;
+                            }
                             ui.close_menu();
                         }
                         ui.separator();
-                        if ui.button("Remove").clicked() {
+                        if ui
+                            .add_enabled(!self.ui_working(), egui::Button::new("Remove"))
+                            .clicked()
+                        {
                             self.task_logs.push(format!("Remove ToSort Directory: {}", node_rc.borrow().name));
+                            let mut select_after_remove: Option<Rc<RefCell<RvFile>>> = None;
                             GLOBAL_DB.with(|db_ref| {
                                 if let Some(db) = db_ref.borrow().as_ref() {
                                     let mut dir_root = db.dir_root.borrow_mut();
@@ -567,12 +758,27 @@ impl RomVaultApp {
                                         }
                                     }
                                     if let Some(idx) = idx_to_remove {
+                                        if idx > 0 && idx - 1 < dir_root.children.len() {
+                                            select_after_remove = Some(Rc::clone(&dir_root.children[idx - 1]));
+                                        }
                                         dir_root.child_remove(idx);
                                     }
                                     drop(dir_root);
-                                    db.write_cache();
+
+                                    rv_core::repair_status::RepairStatus::report_status_reset(Rc::clone(&db.dir_root));
                                 }
                             });
+                            if let Some(selected) = &self.selected_node {
+                                if Rc::ptr_eq(selected, &node_rc) {
+                                    self.selected_node = None;
+                                }
+                            }
+                            if let Some(new_sel) = select_after_remove {
+                                self.select_node(new_sel);
+                            }
+                            if !self.ui_working() {
+                                self.db_cache_dirty = true;
+                            }
                             ui.close_menu();
                         }
                     } else {
@@ -683,17 +889,30 @@ impl RomVaultApp {
                 }
 
                 if clicked_label {
-                    self.selected_node = Some(Rc::clone(&node_rc));
+                    self.select_node(Rc::clone(&node_rc));
                 }
 
                 if toggle_expanded {
                     let mut n = node_rc.borrow_mut();
                     n.tree_expanded = !n.tree_expanded;
+                    if !self.ui_working() {
+                        self.db_cache_dirty = true;
+                    }
                 }
             });
         } else if toggle_expanded {
             let mut n = node_rc.borrow_mut();
             n.tree_expanded = !n.tree_expanded;
+            if !self.ui_working() {
+                self.db_cache_dirty = true;
+            }
+        }
+
+        if let Some(expanded) = expand_descendants {
+            Self::set_descendants_expanded(&node_rc, expanded);
+            if !self.ui_working() {
+                self.db_cache_dirty = true;
+            }
         }
 
         if tree_expanded && has_expandable_children {

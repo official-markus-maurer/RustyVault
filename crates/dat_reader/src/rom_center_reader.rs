@@ -15,7 +15,7 @@ use crate::var_fix;
 pub fn read_rom_center_dat(input: &str, filename: &str) -> Result<DatHeader, String> {
     let mut dfl = DatFileLoader::new(input);
     let mut dat_header = DatHeader {
-        base_dir: DatDir::new(),
+        base_dir: DatDir::new(FileType::Dir),
         filename: Some(filename.to_string()),
         ..Default::default()
     };

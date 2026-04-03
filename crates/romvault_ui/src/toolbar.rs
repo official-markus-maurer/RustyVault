@@ -3,7 +3,6 @@ use std::rc::Rc;
 
 use crate::RomVaultApp;
 use rv_core::db::GLOBAL_DB;
-use rv_core::fix_dat_report::FixDatReport;
 use rv_core::find_fixes::FindFixes;
 use rv_core::read_dat::DatUpdate;
 
@@ -82,6 +81,7 @@ pub fn draw_left_toolbar(app: &mut RomVaultApp, ctx: &egui::Context) {
                                 app.show_fixes = true;
                                 app.show_mia = true;
                                 app.show_merged = true;
+                                app.persist_filter_settings();
                             } else if resp1.secondary_clicked() {
                                 app.save_tree_preset(1);
                             }
@@ -103,6 +103,7 @@ pub fn draw_left_toolbar(app: &mut RomVaultApp, ctx: &egui::Context) {
                                 app.show_fixes = false;
                                 app.show_mia = false;
                                 app.show_merged = true;
+                                app.persist_filter_settings();
                             } else if resp2.secondary_clicked() {
                                 app.save_tree_preset(2);
                             }
@@ -127,6 +128,7 @@ pub fn draw_left_toolbar(app: &mut RomVaultApp, ctx: &egui::Context) {
                                 app.show_fixes = true;
                                 app.show_mia = true;
                                 app.show_merged = false;
+                                app.persist_filter_settings();
                             } else if resp3.secondary_clicked() {
                                 app.save_tree_preset(3);
                             }
@@ -148,6 +150,7 @@ pub fn draw_left_toolbar(app: &mut RomVaultApp, ctx: &egui::Context) {
                                 app.show_fixes = true;
                                 app.show_mia = false;
                                 app.show_merged = false;
+                                app.persist_filter_settings();
                             } else if resp4.secondary_clicked() {
                                 app.save_tree_preset(4);
                             }
@@ -160,7 +163,7 @@ pub fn draw_left_toolbar(app: &mut RomVaultApp, ctx: &egui::Context) {
                 .show_inside(ui, |ui| {
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         ui.vertical_centered_justified(|ui| {
-                            let is_idle = true;
+                            let is_idle = !app.sam_running;
                             ui.add_enabled_ui(is_idle, |ui| {
                                 let btn_update_img = if is_idle {
                                     include_toolbar_image!("btnUpdateDats_Enabled.png")
@@ -206,12 +209,11 @@ pub fn draw_left_toolbar(app: &mut RomVaultApp, ctx: &egui::Context) {
                                         });
                                     }
                                 } else if update_resp.secondary_clicked() {
-                                    let dat_root_path = std::env::current_dir()
-                                        .unwrap_or_default()
-                                        .join("DatRoot");
+                                    let dat_root = rv_core::settings::get_settings().dat_root;
+                                    let dat_root_path = if dat_root.is_empty() { "DatRoot" } else { &dat_root };
                                     app.task_logs.push("Opening DatVault".to_string());
-                                    let _ = std::process::Command::new("explorer")
-                                        .arg(&dat_root_path)
+                                    let _ = std::process::Command::new("cmd")
+                                        .args(["/C", "start", "", dat_root_path])
                                         .spawn();
                                 }
 
@@ -311,42 +313,12 @@ pub fn draw_left_toolbar(app: &mut RomVaultApp, ctx: &egui::Context) {
                                         .frame(false),
                                     )
                                     .on_hover_text(
-                                        "Left Click: Generate FixDATs (Missing ROMs only)\nRight Click: Generate Full DATs (All ROMs)",
+                                        "Left Click: Generate FixDATs (Missing/MIA only)\nRight Click: Generate FixDATs (Missing/MIA + Fixable)",
                                     );
                                 if report_resp.clicked() {
-                                    app.launch_task("Generate Reports (Missing)", |tx| {
-                                        let _ = tx.send("Generating FixDATs (Missing ROMs) to Desktop...".to_string());
-                                        GLOBAL_DB.with(|db_ref| {
-                                            if let Some(db) = db_ref.borrow().as_ref() {
-                                                let desktop_path = std::path::PathBuf::from(
-                                                    std::env::var("USERPROFILE").unwrap_or_default(),
-                                                )
-                                                .join("Desktop");
-                                                FixDatReport::recursive_dat_tree(
-                                                    &desktop_path.to_string_lossy(),
-                                                    Rc::clone(&db.dir_root),
-                                                    true,
-                                                );
-                                            }
-                                        });
-                                    });
+                                    app.prompt_fixdat_report(true);
                                 } else if report_resp.secondary_clicked() {
-                                    app.launch_task("Generate Reports (Full)", |tx| {
-                                        let _ = tx.send("Generating Full DATs (All ROMs) to Desktop...".to_string());
-                                        GLOBAL_DB.with(|db_ref| {
-                                            if let Some(db) = db_ref.borrow().as_ref() {
-                                                let desktop_path = std::path::PathBuf::from(
-                                                    std::env::var("USERPROFILE").unwrap_or_default(),
-                                                )
-                                                .join("Desktop");
-                                                FixDatReport::recursive_dat_tree(
-                                                    &desktop_path.to_string_lossy(),
-                                                    Rc::clone(&db.dir_root),
-                                                    false,
-                                                );
-                                            }
-                                        });
-                                    });
+                                    app.prompt_fixdat_report(false);
                                 }
                             });
                         });

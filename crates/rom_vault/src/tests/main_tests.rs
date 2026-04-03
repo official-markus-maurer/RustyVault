@@ -16,7 +16,7 @@
 
         assert!(lines.iter().any(|line| line == "Correct:    2"));
         assert!(lines.iter().any(|line| line == "Missing:    2"));
-        assert!(lines.iter().any(|line| line == "Can Fix:    3"));
+        assert!(lines.iter().any(|line| line == "Can Fix:    4"));
         assert!(lines.iter().any(|line| line == "Not Collected: 2"));
         assert!(lines.iter().any(|line| line == "Unneeded:   1"));
     }

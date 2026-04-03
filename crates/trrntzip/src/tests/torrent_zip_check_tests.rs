@@ -22,13 +22,28 @@
     }
 
     #[test]
+    fn test_trrnt_zip_string_compare_case_tiebreaks_on_ordinal_bytes() {
+        assert_eq!(TorrentZipCheck::trrnt_zip_string_compare_case(&make_zf("A.txt"), &make_zf("a.txt")), -1);
+        assert_eq!(TorrentZipCheck::trrnt_zip_string_compare_case(&make_zf("a.txt"), &make_zf("A.txt")), 1);
+    }
+
+    #[test]
+    fn test_check_zip_files_detects_case_tiebreak_unsorted() {
+        let mut files = vec![make_zf("a.txt"), make_zf("A.txt")];
+        let status = TorrentZipCheck::check_zip_files(&mut files);
+        assert!(status.contains(TrrntZipStatus::UNSORTED));
+        assert_eq!(files[0].name, "A.txt");
+        assert_eq!(files[1].name, "a.txt");
+    }
+
+    #[test]
     fn test_trrnt_7zip_string_compare() {
         // Sorts by extension first
         assert_eq!(TorrentZipCheck::trrnt_7zip_string_compare(&make_zf("b.aaa"), &make_zf("a.zzz")), -1);
         assert_eq!(TorrentZipCheck::trrnt_7zip_string_compare(&make_zf("z.aaa"), &make_zf("a.aaa")), 1);
         assert_eq!(TorrentZipCheck::trrnt_7zip_string_compare(&make_zf("a.tar.gz"), &make_zf("b.zip")), -1);
         assert_eq!(TorrentZipCheck::trrnt_7zip_string_compare(&make_zf("a"), &make_zf("b.txt")), -1);
-        assert_eq!(TorrentZipCheck::trrnt_7zip_string_compare(&make_zf("folder/"), &make_zf("file.bin")), 1);
+        assert_eq!(TorrentZipCheck::trrnt_7zip_string_compare(&make_zf("folder/"), &make_zf("file.bin")), -1);
     }
 
     #[test]

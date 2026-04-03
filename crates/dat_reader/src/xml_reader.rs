@@ -18,7 +18,7 @@ pub fn read_xml_dat(xml: &str, filename: &str) -> Result<DatHeader, String> {
     let root = doc.root_element();
 
     let mut dat_header = DatHeader {
-        base_dir: DatDir::new(),
+        base_dir: DatDir::new(FileType::Dir),
         ..Default::default()
     };
 

@@ -653,15 +653,11 @@ pub fn draw_dialogs(app: &mut RomVaultApp, ctx: &egui::Context) {
         egui::Window::new("Rom Occurrence list")
             .open(&mut app.show_rom_info)
             .show(ctx, |ui| {
-                if let Some(rom_rc) = &app.selected_rom_for_info {
-                    let rom = rom_rc.borrow();
-                    let file_path = rom.name.clone();
-                    let got_status_str = format!("{:?}", rom.rep_status());
-
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        ui.label(format!("{} | {}", got_status_str, file_path));
-                    });
-                }
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    for line in &app.rom_info_lines {
+                        ui.label(line);
+                    }
+                });
 
                 ui.add_space(10.0);
                 if ui.button("Close").clicked() {
@@ -671,6 +667,7 @@ pub fn draw_dialogs(app: &mut RomVaultApp, ctx: &egui::Context) {
         if close_rom_info {
             app.show_rom_info = false;
             app.selected_rom_for_info = None;
+            app.rom_info_lines.clear();
         }
     }
 

@@ -189,7 +189,7 @@
 
     #[test]
     fn test_remove_unneeded_directories_drops_empty_branches() {
-        let mut root = DatDir::new();
+        let mut root = DatDir::new(FileType::Dir);
         let mut keep_dir = DatNode::new_dir("Keep".to_string(), FileType::Dir);
         if let Some(d) = keep_dir.dir_mut() {
             d.add_child(DatNode::new_file("present.bin".to_string(), FileType::File));
@@ -208,7 +208,7 @@
 
     #[test]
     fn test_archive_directory_flatten_and_remove_unneeded_directories_keep_flattened_entries() {
-        let mut root = DatDir::new();
+        let mut root = DatDir::new(FileType::Dir);
         let mut game = DatNode::new_dir("game".to_string(), FileType::Dir);
         if let Some(game_dir) = game.dir_mut() {
             game_dir.d_game = Some(Box::default());
