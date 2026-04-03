@@ -55,9 +55,9 @@ fn load_header(dfl: &mut DatFileLoader, dat_header: &mut DatHeader) -> Result<()
     while dfl.next_token != ")" && !dfl.end_of_stream() {
         let nextstr = dfl.next_token.to_lowercase();
         
-        if nextstr.starts_with("name:") {
+        if let Some(stripped) = nextstr.strip_prefix("name:") {
             let rest = dfl.gn_rest();
-            dat_header.name = Some(format!("{} {}", &nextstr[5..], rest).trim().to_string());
+            dat_header.name = Some(format!("{} {}", stripped, rest).trim().to_string());
             dfl.gn();
         } else {
             match nextstr.as_str() {

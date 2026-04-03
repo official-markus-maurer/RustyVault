@@ -40,15 +40,6 @@ impl FileCompare {
         }
     }
 
-    fn db_file_requires_hash_match(db_file: &RvFile) -> bool {
-        db_file.crc.is_some()
-            || db_file.sha1.is_some()
-            || db_file.md5.is_some()
-            || db_file.alt_crc.is_some()
-            || db_file.alt_sha1.is_some()
-            || db_file.alt_md5.is_some()
-    }
-
     fn db_file_has_name_agnostic_identity(db_file: &RvFile) -> bool {
         db_file.crc.is_some()
             || db_file.sha1.is_some()
@@ -72,9 +63,9 @@ impl FileCompare {
         let has_sha1 = test_file.sha1.is_some() || test_file.alt_sha1.is_some();
         let has_md5 = test_file.md5.is_some() || test_file.alt_md5.is_some();
 
-        (!db_file.crc.is_some() && !db_file.alt_crc.is_some() || has_crc)
-            && (!db_file.sha1.is_some() && !db_file.alt_sha1.is_some() || has_sha1)
-            && (!db_file.md5.is_some() && !db_file.alt_md5.is_some() || has_md5)
+        ((db_file.crc.is_none() && db_file.alt_crc.is_none()) || has_crc)
+            && ((db_file.sha1.is_none() && db_file.alt_sha1.is_none()) || has_sha1)
+            && ((db_file.md5.is_none() && db_file.alt_md5.is_none()) || has_md5)
     }
 
     fn header_requirement_matches(db_file: &RvFile, test_file: &ScannedFile) -> bool {
@@ -130,9 +121,7 @@ impl FileCompare {
             return (matched, matched_alt);
         }
 
-        // If no hashes were scanned from the physical file, higher scan levels should still allow
-        // timestamp/size fallback for DAT entries that also do not define cryptographic identity.
-        if e_scan_level != EScanLevel::Level1 && Self::db_file_requires_hash_match(db_file) {
+        if e_scan_level != EScanLevel::Level1 && !db_file.is_deep_scanned() {
             return (false, matched_alt);
         }
 

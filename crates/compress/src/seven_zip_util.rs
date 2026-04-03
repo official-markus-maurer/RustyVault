@@ -100,21 +100,21 @@ pub fn read_bool_flags<R: Read>(r: &mut R, num_items: usize) -> std::io::Result<
     let mut b = 0u8;
     let mut mask = 0u8;
     let mut flags = vec![false; num_items];
-    for i in 0..num_items {
+    for v in flags.iter_mut().take(num_items) {
         if mask == 0 {
             let mut tmp = [0u8; 1];
             r.read_exact(&mut tmp)?;
             b = tmp[0];
             mask = 0x80;
         }
-        flags[i] = (b & mask) != 0;
+        *v = (b & mask) != 0;
         mask >>= 1;
     }
     Ok(flags)
 }
 
 pub fn write_bool_flags<W: Write>(w: &mut W, b_array: &[bool]) -> std::io::Result<()> {
-    let byte_count = (b_array.len() + 7) / 8;
+    let byte_count = b_array.len().div_ceil(8);
     write_encoded_u64(w, byte_count as u64)?;
     let mut mask = 0x80u8;
     let mut out = 0u8;

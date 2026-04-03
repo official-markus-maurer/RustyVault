@@ -15,7 +15,7 @@ fn main() {
 
     if args.len() < 2 {
         println!("Dir2Dat v0.1.0 - Powered by RustyRoms");
-        println!("");
+        println!();
         println!("Usage: dir2dat <directory_path>");
         println!("This tool scans a physical directory and generates a standard XML DAT file representing its contents.");
         return;
@@ -45,8 +45,10 @@ fn main() {
                 Ok(arch) => {
                     let mut d_dir = DatNode::new_dir(file.name.clone(), file.file_type);
                     if let Some(d) = d_dir.dir_mut() {
-                        let mut game = DatGame::default();
-                        game.description = Some(file.name.clone());
+                        let game = DatGame {
+                            description: Some(file.name.clone()),
+                            ..Default::default()
+                        };
                         d.d_game = Some(Box::new(game));
 
                         for child in arch.children {
@@ -70,8 +72,10 @@ fn main() {
             // It's a raw file, treat it as a game with one ROM
             let mut d_dir = DatNode::new_dir(file.name.clone(), FileType::Dir);
             if let Some(d) = d_dir.dir_mut() {
-                let mut game = DatGame::default();
-                game.description = Some(file.name.clone());
+                let game = DatGame {
+                    description: Some(file.name.clone()),
+                    ..Default::default()
+                };
                 d.d_game = Some(Box::new(game));
 
                 println!("Deep scanning raw file: {}", file.name);

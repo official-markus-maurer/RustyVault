@@ -631,12 +631,37 @@ pub fn draw_dialogs(app: &mut RomVaultApp, ctx: &egui::Context) {
         egui::Window::new("About RustyVault")
             .open(&mut app.show_about)
             .show(ctx, |ui| {
+                let startup_path = std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.parent().map(|p| p.to_string_lossy().to_string()))
+                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default().to_string_lossy().to_string());
+
                 ui.vertical_centered(|ui| {
                     ui.heading("RustyVault");
-                    ui.label("Version 3.6.1");
+                    ui.label(format!("Version 3.6.1 : {}", startup_path));
                     ui.add_space(10.0);
-                    ui.label("A specialized ROM manager for organizing, verifying, and fixing ROM collections.");
+                    ui.label("ROMVault3 is written by Gordon J.");
                     ui.label("Forked/ported as RustyVault");
+                    ui.add_space(10.0);
+
+                    ui.horizontal(|ui| {
+                        if ui.button("Website").clicked() {
+                            let _ = std::process::Command::new("cmd")
+                                .args(["/C", "start", "", "http://www.romvault.com/"])
+                                .spawn();
+                        }
+                        if ui.button("PayPal").clicked() {
+                            let _ = std::process::Command::new("cmd")
+                                .args(["/C", "start", "", "http://paypal.me/romvault"])
+                                .spawn();
+                        }
+                        if ui.button("Patreon").clicked() {
+                            let _ = std::process::Command::new("cmd")
+                                .args(["/C", "start", "", "https://www.patreon.com/romvault"])
+                                .spawn();
+                        }
+                    });
+
                     ui.add_space(10.0);
                     if ui.button("Close").clicked() {
                         close_about = true;
@@ -763,33 +788,33 @@ pub fn draw_dialogs(app: &mut RomVaultApp, ctx: &egui::Context) {
                     ui.checkbox(&mut app.active_dat_rule.complete_only, "Complete Only");
                     
                     let prev_checked = app.active_dat_rule.add_category_sub_dirs;
-                    if ui.checkbox(&mut app.active_dat_rule.add_category_sub_dirs, "Add Category Sub Dirs").changed() {
-                        if app.active_dat_rule.add_category_sub_dirs && !prev_checked {
-                            if app.active_dat_rule.category_order.items.is_empty() {
-                                app.active_dat_rule.category_order.items = vec![
-                                    "Preproduction".to_string(),
-                                    "Educational".to_string(),
-                                    "Guides".to_string(),
-                                    "Manuals".to_string(),
-                                    "Magazines".to_string(),
-                                    "Documents".to_string(),
-                                    "Audio".to_string(),
-                                    "Video".to_string(),
-                                    "Multimedia".to_string(),
-                                    "Coverdiscs".to_string(),
-                                    "Covermount".to_string(),
-                                    "Bonus Discs".to_string(),
-                                    "Bonus".to_string(),
-                                    "Add-Ons".to_string(),
-                                    "Source Code".to_string(),
-                                    "Updates".to_string(),
-                                    "Applications".to_string(),
-                                    "Demos".to_string(),
-                                    "Games".to_string(),
-                                    "Miscellaneous".to_string(),
-                                ];
-                            }
-                        }
+                    if ui.checkbox(&mut app.active_dat_rule.add_category_sub_dirs, "Add Category Sub Dirs").changed()
+                        && app.active_dat_rule.add_category_sub_dirs
+                        && !prev_checked
+                        && app.active_dat_rule.category_order.items.is_empty()
+                    {
+                        app.active_dat_rule.category_order.items = vec![
+                            "Preproduction".to_string(),
+                            "Educational".to_string(),
+                            "Guides".to_string(),
+                            "Manuals".to_string(),
+                            "Magazines".to_string(),
+                            "Documents".to_string(),
+                            "Audio".to_string(),
+                            "Video".to_string(),
+                            "Multimedia".to_string(),
+                            "Coverdiscs".to_string(),
+                            "Covermount".to_string(),
+                            "Bonus Discs".to_string(),
+                            "Bonus".to_string(),
+                            "Add-Ons".to_string(),
+                            "Source Code".to_string(),
+                            "Updates".to_string(),
+                            "Applications".to_string(),
+                            "Demos".to_string(),
+                            "Games".to_string(),
+                            "Miscellaneous".to_string(),
+                        ];
                     }
                     ui.separator();
                     ui.add_enabled_ui(app.active_dat_rule.add_category_sub_dirs, |ui| {

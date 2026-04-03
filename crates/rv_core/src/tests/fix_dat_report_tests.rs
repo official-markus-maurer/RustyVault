@@ -236,8 +236,10 @@
     fn test_dat_relative_parent_for_output_uses_configured_dat_root() {
         let original_settings = get_settings();
         let temp = tempdir().unwrap();
-        let mut settings = Settings::default();
-        settings.dat_root = temp.path().join("CustomDatRoot").to_string_lossy().into_owned();
+        let settings = Settings {
+            dat_root: temp.path().join("CustomDatRoot").to_string_lossy().into_owned(),
+            ..Default::default()
+        };
         update_settings(settings);
 
         let dat_path = temp
@@ -268,8 +270,10 @@
     fn test_dat_relative_parent_for_output_matches_dat_root_case_insensitively_on_windows() {
         let original_settings = get_settings();
         let temp = tempdir().unwrap();
-        let mut settings = Settings::default();
-        settings.dat_root = temp.path().join("CustomDatRoot").to_string_lossy().into_owned();
+        let settings = Settings {
+            dat_root: temp.path().join("CustomDatRoot").to_string_lossy().into_owned(),
+            ..Default::default()
+        };
         update_settings(settings);
 
         let dat_path = temp

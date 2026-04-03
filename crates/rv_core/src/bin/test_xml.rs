@@ -3,7 +3,6 @@
 /// `test_xml.rs` acts as a scratchpad binary to verify that `quick-xml` and `serde`
 /// are correctly translating the `Settings` struct into the legacy `RomVault3cfg.xml` schema.
 use rv_core::settings::Settings;
-use quick_xml;
 
 fn main() {
     let settings = Settings::default();

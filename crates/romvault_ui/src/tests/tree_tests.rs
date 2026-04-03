@@ -254,10 +254,10 @@
 
         RomVaultApp::set_descendants_expanded(&root, true);
 
-        assert_eq!(root.borrow().tree_expanded, false);
-        assert_eq!(child0.borrow().tree_expanded, true);
-        assert_eq!(child1.borrow().tree_expanded, true);
-        assert_eq!(grandchild.borrow().tree_expanded, true);
+        assert!(!root.borrow().tree_expanded);
+        assert!(child0.borrow().tree_expanded);
+        assert!(child1.borrow().tree_expanded);
+        assert!(grandchild.borrow().tree_expanded);
     }
 
     #[test]
@@ -324,7 +324,7 @@
         app.selected_node = Some(Rc::clone(&grandchild));
         app.expand_selected_ancestors();
 
-        assert_eq!(root.borrow().tree_expanded, true);
-        assert_eq!(child.borrow().tree_expanded, true);
-        assert_eq!(grandchild.borrow().tree_expanded, false);
+        assert!(root.borrow().tree_expanded);
+        assert!(child.borrow().tree_expanded);
+        assert!(!grandchild.borrow().tree_expanded);
     }

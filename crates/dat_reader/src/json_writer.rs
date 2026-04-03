@@ -18,7 +18,7 @@ impl DatJsonWriter {
         root.insert("root".to_string(), Value::Array(root_array));
 
         let json_text =
-            serde_json::to_string_pretty(&Value::Object(root)).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            serde_json::to_string_pretty(&Value::Object(root)).map_err(io::Error::other)?;
         writer.write_all(json_text.as_bytes())?;
         Ok(())
     }
@@ -83,63 +83,64 @@ impl DatJsonWriter {
                         Value::String(Self::json_type_for_struct(node_struct).to_string()),
                     );
 
-                    let g = d.d_game.as_ref().unwrap();
-                    game.insert(
-                        "description".to_string(),
-                        Value::String(g.description.clone().unwrap_or_default()),
-                    );
+                    if let Some(g) = d.d_game.as_ref() {
+                        game.insert(
+                            "description".to_string(),
+                            Value::String(g.description.clone().unwrap_or_default()),
+                        );
 
-                    if g.is_emu_arc {
-                        let mut tea = Map::<String, Value>::new();
-                        if let Some(ref v) = g.id {
-                            tea.insert("titleid".to_string(), Value::String(v.clone()));
-                        }
-                        if let Some(ref v) = g.source {
-                            tea.insert("source".to_string(), Value::String(v.clone()));
-                        }
-                        if let Some(ref v) = g.publisher {
-                            tea.insert("publisher".to_string(), Value::String(v.clone()));
-                        }
-                        if let Some(ref v) = g.developer {
-                            tea.insert("developer".to_string(), Value::String(v.clone()));
-                        }
-                        if let Some(ref v) = g.year {
-                            tea.insert("year".to_string(), Value::String(v.clone()));
-                        }
-                        if let Some(ref v) = g.genre {
-                            tea.insert("genre".to_string(), Value::String(v.clone()));
-                        }
-                        if let Some(ref v) = g.sub_genre {
-                            tea.insert("subgenre".to_string(), Value::String(v.clone()));
-                        }
-                        if let Some(ref v) = g.ratings {
-                            tea.insert("ratings".to_string(), Value::String(v.clone()));
-                        }
-                        if let Some(ref v) = g.score {
-                            tea.insert("score".to_string(), Value::String(v.clone()));
-                        }
-                        if let Some(ref v) = g.players {
-                            tea.insert("players".to_string(), Value::String(v.clone()));
-                        }
-                        if let Some(ref v) = g.enabled {
-                            tea.insert("enabled".to_string(), Value::String(v.clone()));
-                        }
-                        if let Some(ref v) = g.crc {
-                            tea.insert("crc".to_string(), Value::String(v.clone()));
-                        }
-                        if let Some(ref v) = g.clone_of {
-                            tea.insert("cloneof".to_string(), Value::String(v.clone()));
-                        }
-                        if let Some(ref v) = g.related_to {
-                            tea.insert("relatedto".to_string(), Value::String(v.clone()));
-                        }
-                        game.insert("tea".to_string(), Value::Object(tea));
-                    } else {
-                        if let Some(ref v) = g.year {
-                            game.insert("year".to_string(), Value::String(v.clone()));
-                        }
-                        if let Some(ref v) = g.manufacturer {
-                            game.insert("manufacturer".to_string(), Value::String(v.clone()));
+                        if g.is_emu_arc {
+                            let mut tea = Map::<String, Value>::new();
+                            if let Some(ref v) = g.id {
+                                tea.insert("titleid".to_string(), Value::String(v.clone()));
+                            }
+                            if let Some(ref v) = g.source {
+                                tea.insert("source".to_string(), Value::String(v.clone()));
+                            }
+                            if let Some(ref v) = g.publisher {
+                                tea.insert("publisher".to_string(), Value::String(v.clone()));
+                            }
+                            if let Some(ref v) = g.developer {
+                                tea.insert("developer".to_string(), Value::String(v.clone()));
+                            }
+                            if let Some(ref v) = g.year {
+                                tea.insert("year".to_string(), Value::String(v.clone()));
+                            }
+                            if let Some(ref v) = g.genre {
+                                tea.insert("genre".to_string(), Value::String(v.clone()));
+                            }
+                            if let Some(ref v) = g.sub_genre {
+                                tea.insert("subgenre".to_string(), Value::String(v.clone()));
+                            }
+                            if let Some(ref v) = g.ratings {
+                                tea.insert("ratings".to_string(), Value::String(v.clone()));
+                            }
+                            if let Some(ref v) = g.score {
+                                tea.insert("score".to_string(), Value::String(v.clone()));
+                            }
+                            if let Some(ref v) = g.players {
+                                tea.insert("players".to_string(), Value::String(v.clone()));
+                            }
+                            if let Some(ref v) = g.enabled {
+                                tea.insert("enabled".to_string(), Value::String(v.clone()));
+                            }
+                            if let Some(ref v) = g.crc {
+                                tea.insert("crc".to_string(), Value::String(v.clone()));
+                            }
+                            if let Some(ref v) = g.clone_of {
+                                tea.insert("cloneof".to_string(), Value::String(v.clone()));
+                            }
+                            if let Some(ref v) = g.related_to {
+                                tea.insert("relatedto".to_string(), Value::String(v.clone()));
+                            }
+                            game.insert("tea".to_string(), Value::Object(tea));
+                        } else {
+                            if let Some(ref v) = g.year {
+                                game.insert("year".to_string(), Value::String(v.clone()));
+                            }
+                            if let Some(ref v) = g.manufacturer {
+                                game.insert("manufacturer".to_string(), Value::String(v.clone()));
+                            }
                         }
                     }
 
@@ -202,7 +203,7 @@ impl DatJsonWriter {
                 }
             }
             if let Some(ref status) = f.status {
-                if status.to_ascii_lowercase() != "good" {
+                if !status.eq_ignore_ascii_case("good") {
                     file_obj.insert("status".to_string(), Value::String(status.clone()));
                 }
             }

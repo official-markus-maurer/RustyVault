@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use crate::RomVaultApp;
 use crate::utils::get_full_node_path;
-use dat_reader::enums::FileType;
+use dat_reader::enums::{DatStatus, FileType, GotStatus, ZipStructure};
 use rv_core::enums::RepStatus;
 use rv_core::db::GLOBAL_DB;
 use rv_core::file_scanning::FileScanning;
@@ -74,46 +74,6 @@ fn rom_clipboard_text(rom: &RvFile, col: RomGridCopyColumn) -> Option<String> {
                 out.push_str(&format!("MD5  : {md5}\n"));
             }
             Some(out)
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-enum GameGridCopyColumn {
-    Type,
-    Game,
-    Description,
-    Modified,
-    RomStatus,
-}
-
-fn game_clipboard_text(game_node: &RvFile, description: &str, col: GameGridCopyColumn) -> Option<String> {
-    match col {
-        GameGridCopyColumn::Type => {
-            let full_path = game_node.get_full_name();
-            let dat_dir = game_node
-                .dat
-                .as_ref()
-                .and_then(|d| d.borrow().get_data(DatData::DatRootFullName))
-                .unwrap_or_default();
-            Some(format!("{}\n{}\n{}\n", game_node.name, full_path, dat_dir))
-        }
-        GameGridCopyColumn::Modified | GameGridCopyColumn::RomStatus => {
-            Some(format!("Name : {}\nDesc : {}\n", game_node.name, description))
-        }
-        GameGridCopyColumn::Game => {
-            if game_node.name.is_empty() {
-                None
-            } else {
-                Some(game_node.name.clone())
-            }
-        }
-        GameGridCopyColumn::Description => {
-            if description.is_empty() {
-                None
-            } else {
-                Some(description.to_string())
-            }
         }
     }
 }
@@ -357,16 +317,367 @@ fn collect_rom_occurrence_lines(needle_rc: Rc<RefCell<RvFile>>) -> Vec<String> {
                 stack.push(child);
             }
 
-            if n.is_file() && n.game.is_none() {
-                if file_group_match(&needle, &n) {
-                    out.push(format!("{:?} | {}", n.got_status(), n.get_full_name()));
-                }
+            if n.is_file() && n.game.is_none() && file_group_match(&needle, &n) {
+                out.push(format!("{:?} | {}", n.got_status(), n.get_full_name()));
             }
         }
     });
 
     out.sort();
     out
+}
+
+fn sort_header_cell(
+    ui: &mut egui::Ui,
+    title: &str,
+    new_sort_col: &mut Option<String>,
+    new_sort_desc: &mut bool,
+) {
+    if ui
+        .selectable_label(new_sort_col.as_deref() == Some(title), title)
+        .clicked()
+    {
+        if new_sort_col.as_deref() == Some(title) {
+            *new_sort_desc = !*new_sort_desc;
+        } else {
+            *new_sort_col = Some(title.to_string());
+            *new_sort_desc = false;
+        }
+    }
+}
+
+fn game_type_icon_normal(ft: FileType, zs: ZipStructure) -> &'static str {
+    match ft {
+        FileType::Dir => "Dir.png",
+        FileType::Zip => match zs {
+            ZipStructure::ZipTrrnt => "ZipTrrnt.png",
+            ZipStructure::ZipTDC => "ZipTDC.png",
+            ZipStructure::ZipZSTD => "ZipZstd.png",
+            _ => "Zip.png",
+        },
+        FileType::SevenZip => match zs {
+            ZipStructure::SevenZipTrrnt => "SevenZipTrrnt.png",
+            ZipStructure::SevenZipSLZMA => "SevenZipSLZMA.png",
+            ZipStructure::SevenZipNLZMA => "SevenZipNLZMA.png",
+            ZipStructure::SevenZipSZSTD => "SevenZipSZSTD.png",
+            ZipStructure::SevenZipNZSTD => "SevenZipNZSTD.png",
+            _ => "SevenZip.png",
+        },
+        _ => "default2.png",
+    }
+}
+
+fn game_type_icon_missing(ft: FileType, zs: ZipStructure) -> &'static str {
+    match ft {
+        FileType::Dir => "DirMissing.png",
+        FileType::Zip => match zs {
+            ZipStructure::ZipTrrnt => "ZipTrrntMissing.png",
+            ZipStructure::ZipTDC => "ZipTDCMissing.png",
+            ZipStructure::ZipZSTD => "ZipZstdMissing.png",
+            _ => "ZipMissing.png",
+        },
+        FileType::SevenZip => match zs {
+            ZipStructure::SevenZipSLZMA => "SevenZipSLZMAMissing.png",
+            ZipStructure::SevenZipNLZMA => "SevenZipNLZMAMissing.png",
+            ZipStructure::SevenZipSZSTD => "SevenZipSZSTDMissing.png",
+            ZipStructure::SevenZipNZSTD => "SevenZipNZSTDMissing.png",
+            _ => "SevenZipMissing.png",
+        },
+        _ => "default2.png",
+    }
+}
+
+fn game_type_icon_corrupt(ft: FileType, zs: ZipStructure) -> &'static str {
+    match ft {
+        FileType::Zip => match zs {
+            ZipStructure::ZipTrrnt => "ZipTrrntCorrupt.png",
+            ZipStructure::ZipTDC => "ZipTDCCorrupt.png",
+            ZipStructure::ZipZSTD => "ZipZstdCorrupt.png",
+            _ => "ZipCorrupt.png",
+        },
+        FileType::SevenZip => match zs {
+            ZipStructure::SevenZipSLZMA => "SevenZipSLZMACorrupt.png",
+            ZipStructure::SevenZipNLZMA => "SevenZipNLZMACorrupt.png",
+            ZipStructure::SevenZipSZSTD => "SevenZipSZSTDCorrupt.png",
+            ZipStructure::SevenZipNZSTD => "SevenZipNZSTDCorrupt.png",
+            _ => "SevenZipCorrupt.png",
+        },
+        _ => game_type_icon_normal(ft, zs),
+    }
+}
+
+fn game_type_icon_key(ft: FileType, zs: ZipStructure) -> (FileType, ZipStructure) {
+    match ft {
+        FileType::Zip => match zs {
+            ZipStructure::ZipTrrnt | ZipStructure::ZipTDC | ZipStructure::ZipZSTD | ZipStructure::None => (ft, zs),
+            _ => (ft, ZipStructure::None),
+        },
+        FileType::SevenZip => match zs {
+            ZipStructure::SevenZipTrrnt
+            | ZipStructure::SevenZipSLZMA
+            | ZipStructure::SevenZipNLZMA
+            | ZipStructure::SevenZipSZSTD
+            | ZipStructure::SevenZipNZSTD
+            | ZipStructure::None => (ft, zs),
+            _ => (ft, ZipStructure::None),
+        },
+        _ => (ft, ZipStructure::None),
+    }
+}
+
+fn game_grid_icon_source(icon: &'static str) -> egui::ImageSource<'static> {
+    match icon {
+        "Dir.png" => include_asset!("Dir.png"),
+        "DirMissing.png" => include_asset!("DirMissing.png"),
+        "Zip.png" => include_asset!("Zip.png"),
+        "ZipMissing.png" => include_asset!("ZipMissing.png"),
+        "ZipCorrupt.png" => include_asset!("ZipCorrupt.png"),
+        "ZipTrrnt.png" => include_asset!("ZipTrrnt.png"),
+        "ZipTrrntMissing.png" => include_asset!("ZipTrrntMissing.png"),
+        "ZipTrrntCorrupt.png" => include_asset!("ZipTrrntCorrupt.png"),
+        "ZipTDC.png" => include_asset!("ZipTDC.png"),
+        "ZipTDCMissing.png" => include_asset!("ZipTDCMissing.png"),
+        "ZipTDCCorrupt.png" => include_asset!("ZipTDCCorrupt.png"),
+        "ZipZstd.png" => include_asset!("ZipZstd.png"),
+        "ZipZstdMissing.png" => include_asset!("ZipZstdMissing.png"),
+        "ZipZstdCorrupt.png" => include_asset!("ZipZstdCorrupt.png"),
+        "SevenZip.png" => include_asset!("SevenZip.png"),
+        "SevenZipMissing.png" => include_asset!("SevenZipMissing.png"),
+        "SevenZipCorrupt.png" => include_asset!("SevenZipCorrupt.png"),
+        "SevenZipTrrnt.png" => include_asset!("SevenZipTrrnt.png"),
+        "SevenZipSLZMA.png" => include_asset!("SevenZipSLZMA.png"),
+        "SevenZipSLZMAMissing.png" => include_asset!("SevenZipSLZMAMissing.png"),
+        "SevenZipSLZMACorrupt.png" => include_asset!("SevenZipSLZMACorrupt.png"),
+        "SevenZipNLZMA.png" => include_asset!("SevenZipNLZMA.png"),
+        "SevenZipNLZMAMissing.png" => include_asset!("SevenZipNLZMAMissing.png"),
+        "SevenZipNLZMACorrupt.png" => include_asset!("SevenZipNLZMACorrupt.png"),
+        "SevenZipSZSTD.png" => include_asset!("SevenZipSZSTD.png"),
+        "SevenZipSZSTDMissing.png" => include_asset!("SevenZipSZSTDMissing.png"),
+        "SevenZipSZSTDCorrupt.png" => include_asset!("SevenZipSZSTDCorrupt.png"),
+        "SevenZipNZSTD.png" => include_asset!("SevenZipNZSTD.png"),
+        "SevenZipNZSTDMissing.png" => include_asset!("SevenZipNZSTDMissing.png"),
+        "SevenZipNZSTDCorrupt.png" => include_asset!("SevenZipNZSTDCorrupt.png"),
+        "ZipConvert.png" => include_asset!("ZipConvert.png"),
+        "ZipConvert1.png" => include_asset!("ZipConvert1.png"),
+        "default2.png" => include_asset!("default2.png"),
+        _ => include_asset!("default2.png"),
+    }
+}
+
+fn header_file_type_label(t: dat_reader::enums::HeaderFileType) -> &'static str {
+    use dat_reader::enums::HeaderFileType as H;
+
+    match t & H::HEADER_MASK {
+        H::NOTHING => "Nothing",
+        H::ZIP => "ZIP",
+        H::GZ => "GZ",
+        H::SEVEN_ZIP => "7Z",
+        H::RAR => "RAR",
+        H::CHD => "CHD",
+        H::A7800 => "A7800",
+        H::LYNX => "LYNX",
+        H::NES => "NES",
+        H::FDS => "FDS",
+        H::PCE => "PCE",
+        H::PSID => "PSID",
+        H::SNES => "SNES",
+        H::SPC => "SPC",
+        _ => "Unknown",
+    }
+}
+
+fn format_cell_with_source_flags(
+    txt: String,
+    rom: &RvFile,
+    dat_flag: rv_core::rv_file::FileStatus,
+    header_flag: rv_core::rv_file::FileStatus,
+) -> String {
+    let mut flags = String::new();
+    if !dat_flag.is_empty() && rom.file_status.contains(dat_flag) {
+        flags.push('D');
+    }
+    if !header_flag.is_empty() && rom.file_status.contains(header_flag) {
+        flags.push('F');
+    }
+    if flags.is_empty() {
+        txt
+    } else {
+        format!("{txt} ({flags})")
+    }
+}
+
+fn rom_ui_display_name(prefix: &str, rom_name: &str) -> String {
+    if prefix.is_empty() {
+        rom_name.to_string()
+    } else {
+        format!("{prefix}{rom_name}")
+    }
+}
+
+fn rom_display_name(rom: &RvFile, ui_display_name: &str) -> String {
+    let mut out = ui_display_name.to_string();
+
+    if !rom.file_name.is_empty() {
+        out.push_str(&format!(" (Found: {})", rom.file_name));
+    }
+
+    if let Some(v) = rom.chd_version {
+        out.push_str(&format!(" (V{v})"));
+    }
+
+    let d = if rom.file_status.contains(rv_core::rv_file::FileStatus::HEADER_FILE_TYPE_FROM_DAT) {
+        "D"
+    } else {
+        ""
+    };
+    let f = if rom
+        .file_status
+        .contains(rv_core::rv_file::FileStatus::HEADER_FILE_TYPE_FROM_HEADER)
+    {
+        "F"
+    } else {
+        ""
+    };
+    let header = rom.header_file_type();
+    if header != dat_reader::enums::HeaderFileType::NOTHING || !d.is_empty() || !f.is_empty() {
+        let req = if rom.header_file_type_required() { ",Required" } else { "" };
+        out.push_str(&format!(" ({}{req} {d}{f})", header_file_type_label(header)));
+    }
+
+    out
+}
+
+#[derive(Clone)]
+struct RomGridRow {
+    rom_rc: Rc<RefCell<RvFile>>,
+    ui_name: String,
+    display_text: String,
+    local_header_offset: Option<u64>,
+    zip_index: Option<usize>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_rom_grid_rows(
+    node_rc: &Rc<RefCell<RvFile>>,
+    prefix: &str,
+    show_merged: bool,
+    out: &mut Vec<RomGridRow>,
+    alt_found: &mut bool,
+    show_status: &mut bool,
+    show_file_mod_date: &mut bool,
+    show_zip_index: &mut bool,
+) {
+    const TORRENTZIP_DOS_TIME: u16 = 48128;
+    const TORRENTZIP_DOS_DATE: u16 = 8600;
+    const TORRENTZIP_DOS_PACKED: i64 =
+        ((TORRENTZIP_DOS_DATE as i64) << 16) | (TORRENTZIP_DOS_TIME as i64);
+
+    let children = node_rc.borrow().children.clone();
+    for child_rc in children {
+        let child = child_rc.borrow();
+        if child.is_file() {
+            if !show_merged
+                && child.dat_status() == DatStatus::InDatMerged
+                && child.rep_status() == RepStatus::NotCollected
+            {
+                continue;
+            }
+
+            let ui_name = rom_ui_display_name(prefix, &child.name);
+            let display_text = rom_display_name(&child, &ui_name);
+
+            *alt_found = *alt_found
+                || child.alt_size.is_some()
+                || child.alt_crc.is_some()
+                || child.alt_sha1.is_some()
+                || child.alt_md5.is_some();
+
+            *show_status = *show_status
+                || child
+                    .status
+                    .as_ref()
+                    .is_some_and(|s| !s.trim().is_empty());
+
+            *show_file_mod_date = *show_file_mod_date
+                || (child.file_mod_time_stamp != 0
+                    && child.file_mod_time_stamp != i64::MIN
+                    && child.file_mod_time_stamp != TORRENTZIP_DOS_PACKED);
+
+            *show_zip_index = *show_zip_index || child.local_header_offset.is_some();
+
+            drop(child);
+            out.push(RomGridRow {
+                rom_rc: Rc::clone(&child_rc),
+                ui_name,
+                display_text,
+                local_header_offset: child_rc.borrow().local_header_offset,
+                zip_index: None,
+            });
+        } else if child.file_type == FileType::Dir {
+            let next_prefix = format!("{}{}/", prefix, child.name);
+            drop(child);
+            collect_rom_grid_rows(
+                &child_rc,
+                &next_prefix,
+                show_merged,
+                out,
+                alt_found,
+                show_status,
+                show_file_mod_date,
+                show_zip_index,
+            );
+        }
+    }
+}
+
+fn compute_zip_indices(rom_rows: &mut [RomGridRow]) {
+    let mut offsets: Vec<(u64, usize)> = rom_rows
+        .iter()
+        .enumerate()
+        .filter_map(|(i, r)| r.local_header_offset.map(|o| (o, i)))
+        .collect();
+    offsets.sort_by_key(|(o, _)| *o);
+    for (idx, (_, row_i)) in offsets.into_iter().enumerate() {
+        rom_rows[row_i].zip_index = Some(idx);
+    }
+}
+
+fn format_file_mod_date_cell(rom: &RvFile) -> String {
+    const TORRENTZIP_DOS_TIME: u16 = 48128;
+    const TORRENTZIP_DOS_DATE: u16 = 8600;
+    const TORRENTZIP_DOS_PACKED: i64 =
+        ((TORRENTZIP_DOS_DATE as i64) << 16) | (TORRENTZIP_DOS_TIME as i64);
+
+    if rom.file_mod_time_stamp == 0 || rom.file_mod_time_stamp == i64::MIN {
+        return String::new();
+    }
+    if rom.file_mod_time_stamp == TORRENTZIP_DOS_PACKED {
+        return "Trrntziped".to_string();
+    }
+    compress::compress_utils::zip_date_time_to_string(Some(rom.file_mod_time_stamp))
+}
+
+fn game_display_description(game_node: &RvFile) -> String {
+    let mut desc = if let Some(ref g) = game_node.game {
+        g.borrow()
+            .get_data(rv_core::rv_game::GameData::Description)
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    if desc == "¤" {
+        let fallback = std::path::Path::new(&game_node.name)
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        if !fallback.is_empty() {
+            desc = fallback;
+        }
+    }
+
+    desc
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -530,36 +841,124 @@ impl RomVaultApp {
         let mut new_sort_col = self.sort_col.clone();
         let mut new_sort_desc = self.sort_desc;
 
+        let mut visible_children: Vec<Rc<RefCell<RvFile>>> = Vec::new();
+        let mut show_description = false;
+        let mut wide_type_column = false;
+        if let Some(selected) = &self.selected_node {
+            let node = selected.borrow();
+            for child_rc in node
+                .children
+                .iter()
+                .filter(|c| !c.borrow().is_file() || c.borrow().game.is_some())
+            {
+                let child = child_rc.borrow();
+                if child.is_file() && child.game.is_none() {
+                    continue;
+                }
+
+                let mut should_show = false;
+                let visibility_flags = if let Some(stats) = &child.cached_stats {
+                    Some(grid_visibility_flags_from_stats(stats))
+                } else {
+                    child.dir_status.map(grid_visibility_flags_from_report_status)
+                };
+                if let Some(flags) = visibility_flags {
+                    let g_correct = flags.correct;
+                    let g_missing = flags.missing;
+                    let g_fixes = flags.fixes;
+                    let g_mia = flags.mia;
+                    let g_merged = flags.merged;
+                    let g_unknown = flags.unknown;
+
+                    should_show = should_show || (self.show_complete && g_correct && !g_missing && !g_fixes);
+                    should_show = should_show || (self.show_partial && g_correct && g_missing);
+                    should_show = should_show || (self.show_empty && !g_correct && g_missing);
+                    should_show = should_show || (self.show_fixes && g_fixes);
+                    should_show = should_show || (self.show_mia && g_mia);
+                    should_show = should_show || (self.show_merged && g_merged);
+                    should_show = should_show || g_unknown;
+
+                    if !g_correct && !g_missing && !g_unknown && !g_fixes && !g_mia && !g_merged {
+                        should_show = true;
+                    }
+                } else {
+                    should_show = true;
+                }
+
+                if !self.filter_text.is_empty()
+                    && !child.name.to_lowercase().contains(&self.filter_text.to_lowercase())
+                {
+                    should_show = false;
+                }
+                if !should_show {
+                    continue;
+                }
+
+                if !show_description {
+                    if let Some(ref g) = child.game {
+                        let desc = g
+                            .borrow()
+                            .get_data(rv_core::rv_game::GameData::Description)
+                            .unwrap_or_default();
+                        if !desc.trim().is_empty() && desc != "¤" {
+                            show_description = true;
+                        }
+                    }
+                }
+
+                if !wide_type_column {
+                    let expected = if child.dat_status() != DatStatus::NotInDat
+                        && child.dat_status() != DatStatus::InToSort
+                    {
+                        Some(game_type_icon_key(child.file_type, child.zip_dat_struct()))
+                    } else {
+                        None
+                    };
+                    let have = if child.got_status() != GotStatus::NotGot {
+                        Some(game_type_icon_key(child.file_type, child.zip_struct))
+                    } else {
+                        None
+                    };
+                    if let (Some(e), Some(h)) = (expected, have) {
+                        if e != h {
+                            wide_type_column = true;
+                        }
+                    }
+                }
+
+                visible_children.push(Rc::clone(child_rc));
+            }
+        }
+
         egui::ScrollArea::horizontal().show(ui, |ui| {
-            egui_extras::TableBuilder::new(ui)
+            let type_width = if wide_type_column { 90.0 } else { 44.0 };
+            let mut table = egui_extras::TableBuilder::new(ui)
                 .striped(true)
                 .resizable(true)
                 .vscroll(true)
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .column(egui_extras::Column::initial(40.0).at_least(40.0))
-                .column(egui_extras::Column::initial(350.0).at_least(40.0))
-                .column(egui_extras::Column::initial(350.0).at_least(40.0))
+                .column(egui_extras::Column::initial(type_width).at_least(type_width))
+                .column(egui_extras::Column::initial(350.0).at_least(40.0));
+
+            if show_description {
+                table = table.column(egui_extras::Column::initial(350.0).at_least(40.0));
+            }
+
+            table = table
                 .column(egui_extras::Column::initial(150.0).at_least(40.0))
-                .column(egui_extras::Column::remainder())
+                .column(egui_extras::Column::remainder());
+
+            table
                 .header(20.0, |mut header| {
-                    let mut make_header = |ui: &mut egui::Ui, title: &str| {
-                        if ui
-                            .selectable_label(new_sort_col.as_deref() == Some(title), title)
-                            .clicked()
-                        {
-                            if new_sort_col.as_deref() == Some(title) {
-                                new_sort_desc = !new_sort_desc;
-                            } else {
-                                new_sort_col = Some(title.to_string());
-                                new_sort_desc = false;
-                            }
-                        }
-                    };
-                    header.col(|ui| make_header(ui, "Type"));
-                    header.col(|ui| make_header(ui, "Game (Directory / Zip)"));
-                    header.col(|ui| make_header(ui, "Description"));
-                    header.col(|ui| make_header(ui, "Modified"));
-                    header.col(|ui| make_header(ui, "ROM Status"));
+                    header.col(|ui| sort_header_cell(ui, "Type", &mut new_sort_col, &mut new_sort_desc));
+                    header.col(|ui| {
+                        sort_header_cell(ui, "Game (Directory / Zip)", &mut new_sort_col, &mut new_sort_desc);
+                    });
+                    if show_description {
+                        header.col(|ui| sort_header_cell(ui, "Description", &mut new_sort_col, &mut new_sort_desc));
+                    }
+                    header.col(|ui| sort_header_cell(ui, "Modified", &mut new_sort_col, &mut new_sort_desc));
+                    header.col(|ui| sort_header_cell(ui, "ROM Status", &mut new_sort_col, &mut new_sort_desc));
                 })
                 .body(|mut body| {
                     if let Some(selected) = &self.selected_node {
@@ -588,9 +987,11 @@ impl RomVaultApp {
                                         pending_action = Some(GridAction::NavigateUp);
                                     }
                                 });
-                                row.col(|ui| {
-                                    ui.label("");
-                                });
+                                if show_description {
+                                    row.col(|ui| {
+                                        ui.label("");
+                                    });
+                                }
                                 row.col(|ui| {
                                     ui.label("");
                                 });
@@ -600,12 +1001,7 @@ impl RomVaultApp {
                             });
                         }
 
-                        let mut sorted_children: Vec<Rc<RefCell<RvFile>>> = node
-                            .children
-                            .iter()
-                            .filter(|c| !c.borrow().is_file() || c.borrow().game.is_some())
-                            .cloned()
-                            .collect();
+                        let mut sorted_children = visible_children.clone();
 
                         if let Some(col) = &self.sort_col {
                             let desc = self.sort_desc;
@@ -613,26 +1009,23 @@ impl RomVaultApp {
                                 let a = a.borrow();
                                 let b = b.borrow();
                                 let cmp = match col.as_str() {
-                                    "Game (Directory / Zip)" => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                                    "Game (Directory / Zip)" => a.name.cmp(&b.name),
                                     "Description" => {
-                                        let da = a
-                                            .game
-                                            .as_ref()
-                                            .and_then(|g| {
-                                                g.borrow().get_data(rv_core::rv_game::GameData::Description)
-                                            })
-                                            .unwrap_or_default();
-                                        let db = b
-                                            .game
-                                            .as_ref()
-                                            .and_then(|g| {
-                                                g.borrow().get_data(rv_core::rv_game::GameData::Description)
-                                            })
-                                            .unwrap_or_default();
-                                        da.cmp(&db)
+                                        let da = game_display_description(&a);
+                                        let db = game_display_description(&b);
+                                        da.cmp(&db).then(a.name.cmp(&b.name))
                                     }
-                                    "Type" => a.file_type.cmp(&b.file_type),
-                                    "Modified" => a.file_mod_time_stamp.cmp(&b.file_mod_time_stamp),
+                                    "Type" => a
+                                        .file_type
+                                        .cmp(&b.file_type)
+                                        .then(b.zip_struct.cmp(&a.zip_struct))
+                                        .then(a.rep_status().cmp(&b.rep_status()))
+                                        .then(a.name.cmp(&b.name)),
+                                    "Modified" => {
+                                        let ta = compress::compress_utils::zip_date_time_to_string(Some(a.file_mod_time_stamp));
+                                        let tb = compress::compress_utils::zip_date_time_to_string(Some(b.file_mod_time_stamp));
+                                        ta.cmp(&tb).then(a.name.cmp(&b.name))
+                                    }
                                     _ => a.name.cmp(&b.name),
                                 };
                                 if desc { cmp.reverse() } else { cmp }
@@ -678,74 +1071,115 @@ impl RomVaultApp {
                                 should_show = true;
                             }
 
-                            if !self.filter_text.is_empty() {
-                                if !child
+                            if !self.filter_text.is_empty()
+                                && !child
                                     .name
                                     .to_lowercase()
                                     .contains(&self.filter_text.to_lowercase())
-                                {
-                                    should_show = false;
-                                }
+                            {
+                                should_show = false;
                             }
 
                             if !should_show {
                                 continue;
                             }
 
-                            let description = if let Some(ref g) = child.game {
-                                g.borrow()
-                                    .get_data(rv_core::rv_game::GameData::Description)
-                                    .unwrap_or_default()
-                            } else {
-                                "".to_string()
-                            };
+                            let description = game_display_description(&child);
 
                             let mut row_color = game_row_color(child.rep_status());
 
-                            let is_selected =
-                                self.selected_game.as_ref().map_or(false, |s| Rc::ptr_eq(s, &child_rc));
+                            let is_selected = self
+                                .selected_game
+                                .as_ref()
+                                .is_some_and(|s| Rc::ptr_eq(s, &child_rc));
                             if is_selected {
                                 row_color = selection_color;
                             }
 
-                            let file_icon = match child.file_type {
-                                FileType::Dir => include_asset!("Dir.png"),
-                                FileType::Zip => include_asset!("Zip.png"),
-                                FileType::SevenZip => include_asset!("SevenZip.png"),
-                                _ => include_asset!("default2.png"),
-                            };
-
                             body.row(20.0, |mut row| {
                                 row.col(|ui| {
                                     ui.painter().rect_filled(ui.max_rect(), 0.0, row_color);
-                                    let resp = ui.interact(
-                                        ui.max_rect(),
-                                        ui.make_persistent_id((child.name.clone(), "game_type_cell")),
-                                        egui::Sense::click(),
-                                    );
-                                    ui.add(
-                                        egui::Image::new(file_icon)
-                                            .texture_options(egui::TextureOptions::NEAREST)
-                                            .max_width(16.0),
-                                    );
-                                    if resp.secondary_clicked() && !ui.input(|i| i.modifiers.shift) {
-                                        if let Some(text) = game_clipboard_text(&child, &description, GameGridCopyColumn::Type) {
-                                            ui.output_mut(|o| o.copied_text = text);
-                                            self.task_logs.push("Copied game info".to_string());
-                                        }
+                                    let expected_key = if child.dat_status() != DatStatus::NotInDat
+                                        && child.dat_status() != DatStatus::InToSort
+                                    {
+                                        Some(game_type_icon_key(child.file_type, child.zip_dat_struct()))
+                                    } else {
+                                        None
+                                    };
+                                    let have_key = if child.got_status() != GotStatus::NotGot {
+                                        Some(game_type_icon_key(child.file_type, child.zip_struct))
+                                    } else {
+                                        None
+                                    };
+                                    let mismatch =
+                                        expected_key.is_some_and(|e| have_key.is_some_and(|h| e != h));
+
+                                    let expected_img = expected_key.map(|(ft, zs)| {
+                                        game_grid_icon_source(game_type_icon_missing(ft, zs))
+                                    });
+                                    let have_img = have_key.map(|(ft, zs)| {
+                                        game_grid_icon_source(if child.got_status() == GotStatus::Corrupt {
+                                            game_type_icon_corrupt(ft, zs)
+                                        } else {
+                                            game_type_icon_normal(ft, zs)
+                                        })
+                                    });
+                                    let convert_img = game_grid_icon_source(if child.zip_dat_struct_fix() {
+                                        "ZipConvert.png"
+                                    } else {
+                                        "ZipConvert1.png"
+                                    });
+
+                                    if mismatch {
+                                        ui.horizontal(|ui| {
+                                            if let Some(h) = have_img {
+                                                ui.add(
+                                                    egui::Image::new(h)
+                                                        .texture_options(egui::TextureOptions::NEAREST)
+                                                        .max_width(16.0),
+                                                );
+                                            }
+                                            ui.add(
+                                                egui::Image::new(convert_img)
+                                                    .texture_options(egui::TextureOptions::NEAREST)
+                                                    .max_width(16.0),
+                                            );
+                                            if let Some(e) = expected_img {
+                                                ui.add(
+                                                    egui::Image::new(e)
+                                                        .texture_options(egui::TextureOptions::NEAREST)
+                                                        .max_width(16.0),
+                                                );
+                                            }
+                                        });
+                                    } else if let Some(h) = have_img {
+                                        ui.add(
+                                            egui::Image::new(h)
+                                                .texture_options(egui::TextureOptions::NEAREST)
+                                                .max_width(16.0),
+                                        );
+                                    } else if let Some(e) = expected_img {
+                                        ui.add(
+                                            egui::Image::new(e)
+                                                .texture_options(egui::TextureOptions::NEAREST)
+                                                .max_width(16.0),
+                                        );
+                                    } else {
+                                        ui.add(
+                                            egui::Image::new(game_grid_icon_source("default2.png"))
+                                                .texture_options(egui::TextureOptions::NEAREST)
+                                                .max_width(16.0),
+                                        );
                                     }
                                 });
                                 row.col(|ui| {
                                     ui.painter().rect_filled(ui.max_rect(), 0.0, row_color);
-                                    let label_resp =
-                                        ui.add(egui::SelectableLabel::new(is_selected, &child.name));
-
-                                    if label_resp.secondary_clicked() && !ui.input(|i| i.modifiers.shift) {
-                                        if let Some(text) = game_clipboard_text(&child, &description, GameGridCopyColumn::Game) {
-                                            ui.output_mut(|o| o.copied_text = text.clone());
-                                            self.task_logs.push(format!("Copied: {}", text));
-                                        }
-                                    }
+                                    let label_text = if child.file_name.is_empty() {
+                                        child.name.clone()
+                                    } else {
+                                        format!("{} (Found: {})", child.name, child.file_name)
+                                    };
+                                    let label_resp = ui.add(egui::SelectableLabel::new(is_selected, label_text));
                                     if ui.input(|i| i.modifiers.shift) {
                                         label_resp.context_menu(|ui| {
                                             let mut has_open_target = false;
@@ -775,27 +1209,27 @@ impl RomVaultApp {
                                                     has_open_target = true;
                                                     if ui.button("Open Dir").clicked() {
                                                         self.task_logs.push(format!("Opening Dir: {}", full_path));
-                                                        let _ = std::process::Command::new("explorer")
-                                                            .arg(&full_path)
-                                                            .spawn();
-                                                        ui.close_menu();
-                                                    }
-                                                }
-                                            } else if matches!(child.file_type, FileType::Zip | FileType::SevenZip) {
-                                                if std::path::Path::new(&full_path).is_file() {
-                                                    has_open_target = true;
-                                                    let label = if child.file_type == FileType::Zip {
-                                                        "Open Zip"
-                                                    } else {
-                                                        "Open 7Zip"
-                                                    };
-                                                    if ui.button(label).clicked() {
-                                                        self.task_logs.push(format!("Opening: {}", full_path));
                                                         let _ = std::process::Command::new("cmd")
                                                             .args(["/C", "start", "", &full_path])
                                                             .spawn();
                                                         ui.close_menu();
                                                     }
+                                                }
+                                            } else if matches!(child.file_type, FileType::Zip | FileType::SevenZip)
+                                                && std::path::Path::new(&full_path).is_file()
+                                            {
+                                                has_open_target = true;
+                                                let label = if child.file_type == FileType::Zip {
+                                                    "Open Zip"
+                                                } else {
+                                                    "Open 7Zip"
+                                                };
+                                                if ui.button(label).clicked() {
+                                                    self.task_logs.push(format!("Opening: {}", full_path));
+                                                    let _ = std::process::Command::new("cmd")
+                                                        .args(["/C", "start", "", &full_path])
+                                                        .spawn();
+                                                    ui.close_menu();
                                                 }
                                             }
 
@@ -808,20 +1242,23 @@ impl RomVaultApp {
                                                 has_open_target = true;
                                                 if ui.button("Open Parent").clicked() {
                                                     self.task_logs.push(format!("Opening Parent: {}", parent_path));
-                                                    let _ = std::process::Command::new("explorer")
-                                                        .arg(&parent_path)
+                                                    let _ = std::process::Command::new("cmd")
+                                                        .args(["/C", "start", "", &parent_path])
                                                         .spawn();
                                                     ui.close_menu();
                                                 }
                                             }
 
                                             if has_open_target {
-                                                if let Some(parent_rc) = child_rc.borrow().parent.as_ref().and_then(|p| p.upgrade()) {
-                                                    if emulator_info_for_game_dir(parent_rc).is_some() {
-                                                        if ui.button("Launch emulator").clicked() {
-                                                            pending_action = Some(GridAction::LaunchEmulator(Rc::clone(&child_rc)));
-                                                            ui.close_menu();
-                                                        }
+                                                if let Some(parent_rc) =
+                                                    child_rc.borrow().parent.as_ref().and_then(|p| p.upgrade())
+                                                {
+                                                    if emulator_info_for_game_dir(parent_rc).is_some()
+                                                        && ui.button("Launch emulator").clicked()
+                                                    {
+                                                        pending_action =
+                                                            Some(GridAction::LaunchEmulator(Rc::clone(&child_rc)));
+                                                        ui.close_menu();
                                                     }
                                                 }
                                             }
@@ -851,17 +1288,10 @@ impl RomVaultApp {
                                                     .and_then(|g| g.borrow().get_data(rv_core::rv_game::GameData::Id))
                                                     .map(|s| !s.trim().is_empty())
                                                     .unwrap_or(false);
-                                            if has_no_intro || has_redump {
-                                                if ui.button("Open Web Page").clicked() {
-                                                    pending_action = Some(GridAction::OpenWebPage(Rc::clone(&child_rc)));
-                                                    ui.close_menu();
-                                                }
-                                            }
-
-                                            if ui.button("Copy Info").clicked() {
-                                                let info = format!("Name: {}\nDesc: {}", child.name, description);
-                                                ui.output_mut(|o| o.copied_text = info);
-                                                self.task_logs.push("Copied Game Info".to_string());
+                                            if (has_no_intro || has_redump)
+                                                && ui.button("Open Web Page").clicked()
+                                            {
+                                                pending_action = Some(GridAction::OpenWebPage(Rc::clone(&child_rc)));
                                                 ui.close_menu();
                                             }
                                         });
@@ -887,44 +1317,24 @@ impl RomVaultApp {
                                         pending_action = Some(GridAction::NavigateUp);
                                     }
                                 });
+                                if show_description {
+                                    row.col(|ui| {
+                                        ui.painter().rect_filled(ui.max_rect(), 0.0, row_color);
+                                        ui.label(description.clone());
+                                    });
+                                }
                                 row.col(|ui| {
                                     ui.painter().rect_filled(ui.max_rect(), 0.0, row_color);
-                                    let resp = ui.interact(
-                                        ui.max_rect(),
-                                        ui.make_persistent_id((child.name.clone(), "game_desc_cell")),
-                                        egui::Sense::click(),
-                                    );
-                                    ui.label(description.clone());
-                                    if resp.secondary_clicked() && !ui.input(|i| i.modifiers.shift) {
-                                        if let Some(text) = game_clipboard_text(&child, &description, GameGridCopyColumn::Description) {
-                                            ui.output_mut(|o| o.copied_text = text.clone());
-                                            self.task_logs.push(format!("Copied: {}", text));
-                                        }
-                                    }
-                                });
-                                row.col(|ui| {
-                                    ui.painter().rect_filled(ui.max_rect(), 0.0, row_color);
-                                    let resp = ui.interact(
-                                        ui.max_rect(),
-                                        ui.make_persistent_id((child.name.clone(), "game_modified_cell")),
-                                        egui::Sense::click(),
-                                    );
                                     let time_str = compress::compress_utils::zip_date_time_to_string(Some(child.file_mod_time_stamp));
-                                    ui.label(time_str);
-                                    if resp.secondary_clicked() && !ui.input(|i| i.modifiers.shift) {
-                                        if let Some(text) = game_clipboard_text(&child, &description, GameGridCopyColumn::Modified) {
-                                            ui.output_mut(|o| o.copied_text = text);
-                                            self.task_logs.push("Copied game info".to_string());
-                                        }
-                                    }
+                                    ui.label(format_cell_with_source_flags(
+                                        time_str,
+                                        &child,
+                                        rv_core::rv_file::FileStatus::DATE_FROM_DAT,
+                                        rv_core::rv_file::FileStatus::NONE,
+                                    ));
                                 });
                                 row.col(|ui| {
                                     ui.painter().rect_filled(ui.max_rect(), 0.0, row_color);
-                                    let resp = ui.interact(
-                                        ui.max_rect(),
-                                        ui.make_persistent_id((child.name.clone(), "game_rom_status_cell")),
-                                        egui::Sense::click(),
-                                    );
                                     ui.horizontal(|ui| {
                                         let mut correct = 0;
                                         let mut missing = 0;
@@ -984,12 +1394,6 @@ impl RomVaultApp {
                                             ui.label(unknown.to_string());
                                         }
                                     });
-                                    if resp.secondary_clicked() && !ui.input(|i| i.modifiers.shift) {
-                                        if let Some(text) = game_clipboard_text(&child, &description, GameGridCopyColumn::RomStatus) {
-                                            ui.output_mut(|o| o.copied_text = text);
-                                            self.task_logs.push("Copied game info".to_string());
-                                        }
-                                    }
                                 });
                             });
                         }
@@ -1076,8 +1480,65 @@ impl RomVaultApp {
         let mut new_sort_col_rom = self.sort_col.clone();
         let mut new_sort_desc_rom = self.sort_desc;
 
+        let mut rom_rows: Vec<RomGridRow> = Vec::new();
+        let mut alt_found = false;
+        let mut show_status = false;
+        let mut show_file_mod_date = false;
+        let mut show_zip_index = false;
+        if let Some(selected_game) = &self.selected_game {
+            collect_rom_grid_rows(
+                selected_game,
+                "",
+                self.show_merged,
+                &mut rom_rows,
+                &mut alt_found,
+                &mut show_status,
+                &mut show_file_mod_date,
+                &mut show_zip_index,
+            );
+        }
+        if show_zip_index {
+            compute_zip_indices(&mut rom_rows);
+        }
+
+        if let Some(col) = &self.sort_col {
+            let desc = self.sort_desc;
+            rom_rows.sort_by(|a, b| {
+                let a_ref = a.rom_rc.borrow();
+                let b_ref = b.rom_rc.borrow();
+                let cmp = match col.as_str() {
+                    "Got" => a_ref
+                        .got_status()
+                        .cmp(&b_ref.got_status())
+                        .then(a_ref.rep_status().cmp(&b_ref.rep_status()))
+                        .then(a.ui_name.cmp(&b.ui_name)),
+                    "ROM (File)" => a.ui_name.cmp(&b.ui_name),
+                    "Merge" => a_ref.merge.cmp(&b_ref.merge),
+                    "Size" => a_ref.size.cmp(&b_ref.size),
+                    "CRC32" => a_ref.crc.cmp(&b_ref.crc),
+                    "SHA1" => a_ref.sha1.cmp(&b_ref.sha1),
+                    "MD5" => a_ref.md5.cmp(&b_ref.md5),
+                    "AltSize" => a_ref.alt_size.cmp(&b_ref.alt_size),
+                    "AltCRC32" => a_ref.alt_crc.cmp(&b_ref.alt_crc),
+                    "AltSHA1" => a_ref.alt_sha1.cmp(&b_ref.alt_sha1),
+                    "AltMD5" => a_ref.alt_md5.cmp(&b_ref.alt_md5),
+                    "Status" => a_ref.status.cmp(&b_ref.status),
+                    "FileModDate" => a_ref.file_mod_time_stamp.cmp(&b_ref.file_mod_time_stamp),
+                    "ZipIndex" => a_ref.local_header_offset.cmp(&b_ref.local_header_offset),
+                    "InstanceCount" => std::cmp::Ordering::Equal,
+                    _ => a.ui_name.cmp(&b.ui_name),
+                };
+                let cmp = if cmp == std::cmp::Ordering::Equal && col.as_str() != "ROM (File)" {
+                    a.ui_name.cmp(&b.ui_name)
+                } else {
+                    cmp
+                };
+                if desc { cmp.reverse() } else { cmp }
+            });
+        }
+
         egui::ScrollArea::horizontal().show(ui, |ui| {
-            egui_extras::TableBuilder::new(ui)
+            let mut table = egui_extras::TableBuilder::new(ui)
                 .striped(true)
                 .resizable(true)
                 .vscroll(true)
@@ -1088,84 +1549,63 @@ impl RomVaultApp {
                 .column(egui_extras::Column::initial(100.0).at_least(40.0))
                 .column(egui_extras::Column::initial(150.0).at_least(40.0))
                 .column(egui_extras::Column::initial(200.0).at_least(40.0))
-                .column(egui_extras::Column::initial(200.0).at_least(40.0))
-                .column(egui_extras::Column::initial(100.0).at_least(40.0))
-                .column(egui_extras::Column::initial(150.0).at_least(40.0))
-                .column(egui_extras::Column::initial(200.0).at_least(40.0))
-                .column(egui_extras::Column::initial(200.0).at_least(40.0))
-                .column(egui_extras::Column::initial(100.0).at_least(40.0))
-                .column(egui_extras::Column::initial(150.0).at_least(40.0))
-                .column(egui_extras::Column::initial(100.0).at_least(40.0))
+                .column(egui_extras::Column::initial(200.0).at_least(40.0));
+
+            if alt_found {
+                table = table
+                    .column(egui_extras::Column::initial(100.0).at_least(40.0))
+                    .column(egui_extras::Column::initial(150.0).at_least(40.0))
+                    .column(egui_extras::Column::initial(200.0).at_least(40.0))
+                    .column(egui_extras::Column::initial(200.0).at_least(40.0));
+            }
+
+            if show_status {
+                table = table.column(egui_extras::Column::initial(100.0).at_least(40.0));
+            }
+
+            if show_file_mod_date {
+                table = table.column(egui_extras::Column::initial(150.0).at_least(40.0));
+            }
+
+            if show_zip_index {
+                table = table.column(egui_extras::Column::initial(100.0).at_least(40.0));
+            }
+
+            table
                 .column(egui_extras::Column::remainder())
                 .header(20.0, |mut header| {
-                    let mut make_header = |ui: &mut egui::Ui, title: &str| {
-                        if ui
-                            .selectable_label(new_sort_col_rom.as_deref() == Some(title), title)
-                            .clicked()
-                        {
-                            if new_sort_col_rom.as_deref() == Some(title) {
-                                new_sort_desc_rom = !new_sort_desc_rom;
-                            } else {
-                                new_sort_col_rom = Some(title.to_string());
-                                new_sort_desc_rom = false;
-                            }
-                        }
-                    };
                     header.col(|ui| {
-                        ui.strong("Got");
+                        sort_header_cell(ui, "Got", &mut new_sort_col_rom, &mut new_sort_desc_rom);
                     });
-                    header.col(|ui| make_header(ui, "ROM (File)"));
-                    header.col(|ui| make_header(ui, "Merge"));
-                    header.col(|ui| make_header(ui, "Size"));
-                    header.col(|ui| make_header(ui, "CRC32"));
-                    header.col(|ui| make_header(ui, "SHA1"));
-                    header.col(|ui| make_header(ui, "MD5"));
-                    header.col(|ui| make_header(ui, "AltSize"));
-                    header.col(|ui| make_header(ui, "AltCRC32"));
-                    header.col(|ui| make_header(ui, "AltSHA1"));
-                    header.col(|ui| make_header(ui, "AltMD5"));
-                    header.col(|ui| make_header(ui, "Status"));
-                    header.col(|ui| make_header(ui, "FileModDate"));
-                    header.col(|ui| make_header(ui, "ZipIndex"));
-                    header.col(|ui| make_header(ui, "InstanceCount"));
+                    header.col(|ui| {
+                        sort_header_cell(ui, "ROM (File)", &mut new_sort_col_rom, &mut new_sort_desc_rom);
+                    });
+                    header.col(|ui| sort_header_cell(ui, "Merge", &mut new_sort_col_rom, &mut new_sort_desc_rom));
+                    header.col(|ui| sort_header_cell(ui, "Size", &mut new_sort_col_rom, &mut new_sort_desc_rom));
+                    header.col(|ui| sort_header_cell(ui, "CRC32", &mut new_sort_col_rom, &mut new_sort_desc_rom));
+                    header.col(|ui| sort_header_cell(ui, "SHA1", &mut new_sort_col_rom, &mut new_sort_desc_rom));
+                    header.col(|ui| sort_header_cell(ui, "MD5", &mut new_sort_col_rom, &mut new_sort_desc_rom));
+                    if alt_found {
+                        header.col(|ui| sort_header_cell(ui, "AltSize", &mut new_sort_col_rom, &mut new_sort_desc_rom));
+                        header.col(|ui| sort_header_cell(ui, "AltCRC32", &mut new_sort_col_rom, &mut new_sort_desc_rom));
+                        header.col(|ui| sort_header_cell(ui, "AltSHA1", &mut new_sort_col_rom, &mut new_sort_desc_rom));
+                        header.col(|ui| sort_header_cell(ui, "AltMD5", &mut new_sort_col_rom, &mut new_sort_desc_rom));
+                    }
+                    if show_status {
+                        header.col(|ui| sort_header_cell(ui, "Status", &mut new_sort_col_rom, &mut new_sort_desc_rom));
+                    }
+                    if show_file_mod_date {
+                        header.col(|ui| sort_header_cell(ui, "FileModDate", &mut new_sort_col_rom, &mut new_sort_desc_rom));
+                    }
+                    if show_zip_index {
+                        header.col(|ui| sort_header_cell(ui, "ZipIndex", &mut new_sort_col_rom, &mut new_sort_desc_rom));
+                    }
+                    header.col(|ui| sort_header_cell(ui, "InstanceCount", &mut new_sort_col_rom, &mut new_sort_desc_rom));
                 })
                 .body(|mut body| {
-                    if let Some(selected_game) = &self.selected_game {
-                        let game = selected_game.borrow();
-
-                        let mut sorted_roms: Vec<Rc<RefCell<RvFile>>> = game
-                            .children
-                            .iter()
-                            .filter(|c| c.borrow().is_file())
-                            .cloned()
-                            .collect();
-
-                        if let Some(col) = &self.sort_col {
-                            let desc = self.sort_desc;
-                            sorted_roms.sort_by(|a, b| {
-                                let a = a.borrow();
-                                let b = b.borrow();
-                                let cmp = match col.as_str() {
-                                    "ROM (File)" => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-                                    "Size" => a.size.cmp(&b.size),
-                                    "Merge" => a.merge.cmp(&b.merge),
-                                    "CRC32" => a.crc.cmp(&b.crc),
-                                    "SHA1" => a.sha1.cmp(&b.sha1),
-                                    "MD5" => a.md5.cmp(&b.md5),
-                                    "AltSize" => a.alt_size.cmp(&b.alt_size),
-                                    "AltCRC32" => a.alt_crc.cmp(&b.alt_crc),
-                                    "AltSHA1" => a.alt_sha1.cmp(&b.alt_sha1),
-                                    "AltMD5" => a.alt_md5.cmp(&b.alt_md5),
-                                    "Status" => a.status.cmp(&b.status),
-                                    "FileModDate" => a.file_mod_time_stamp.cmp(&b.file_mod_time_stamp),
-                                    _ => a.name.cmp(&b.name),
-                                };
-                                if desc { cmp.reverse() } else { cmp }
-                            });
-                        }
-
-                        for rom_rc in sorted_roms {
-                            let rom = rom_rc.borrow();
+                    for row_data in &rom_rows {
+                        let rom_rc = Rc::clone(&row_data.rom_rc);
+                        let rom = rom_rc.borrow();
                             let row_color = rom_row_color(rom.rep_status());
 
                             let status_icon = match rom_status_icon_idx(rom.rep_status()) {
@@ -1209,7 +1649,8 @@ impl RomVaultApp {
                                 });
                                 row.col(|ui| {
                                     ui.painter().rect_filled(ui.max_rect(), 0.0, row_color);
-                                    let label_resp = ui.add(egui::SelectableLabel::new(false, &rom.name));
+                                    let label_resp =
+                                        ui.add(egui::SelectableLabel::new(false, &row_data.display_text));
                                     if label_resp.secondary_clicked() {
                                         if let Some(text) = rom_clipboard_text(&rom, RomGridCopyColumn::Rom) {
                                             ui.output_mut(|o| o.copied_text = text.clone());
@@ -1218,8 +1659,8 @@ impl RomVaultApp {
                                     }
                                     label_resp.context_menu(|ui| {
                                         if ui.button("Copy ROM Name").clicked() {
-                                            ui.output_mut(|o| o.copied_text = rom.name.clone());
-                                            self.task_logs.push(format!("Copied: {}", rom.name));
+                                            ui.output_mut(|o| o.copied_text = row_data.ui_name.clone());
+                                            self.task_logs.push(format!("Copied: {}", row_data.ui_name));
                                             ui.close_menu();
                                         }
                                     });
@@ -1230,7 +1671,12 @@ impl RomVaultApp {
                                 });
                                 row.col(|ui| {
                                     ui.painter().rect_filled(ui.max_rect(), 0.0, row_color);
-                                    let text = rom.size.map(|s| s.to_string()).unwrap_or_else(|| "-".to_string());
+                                    let text = format_cell_with_source_flags(
+                                        rom.size.map(|s| s.to_string()).unwrap_or_default(),
+                                        &rom,
+                                        rv_core::rv_file::FileStatus::SIZE_FROM_DAT,
+                                        rv_core::rv_file::FileStatus::SIZE_FROM_HEADER,
+                                    );
                                     let resp = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
                                     if resp.secondary_clicked() {
                                         if let Some(copy) = rom_clipboard_text(&rom, RomGridCopyColumn::Size) {
@@ -1241,11 +1687,16 @@ impl RomVaultApp {
                                 });
                                 row.col(|ui| {
                                     ui.painter().rect_filled(ui.max_rect(), 0.0, row_color);
-                                    let text = rom
+                                    let text = format_cell_with_source_flags(
+                                        rom
                                         .crc
                                         .as_ref()
-                                        .map(|b| hex::encode(b))
-                                        .unwrap_or_else(|| "-".to_string());
+                                        .map(hex::encode)
+                                        .unwrap_or_default(),
+                                        &rom,
+                                        rv_core::rv_file::FileStatus::CRC_FROM_DAT,
+                                        rv_core::rv_file::FileStatus::CRC_FROM_HEADER,
+                                    );
                                     let resp = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
                                     if resp.secondary_clicked() {
                                         if let Some(copy) = rom_clipboard_text(&rom, RomGridCopyColumn::Crc32) {
@@ -1256,11 +1707,16 @@ impl RomVaultApp {
                                 });
                                 row.col(|ui| {
                                     ui.painter().rect_filled(ui.max_rect(), 0.0, row_color);
-                                    let text = rom
+                                    let text = format_cell_with_source_flags(
+                                        rom
                                         .sha1
                                         .as_ref()
-                                        .map(|b| hex::encode(b))
-                                        .unwrap_or_else(|| "-".to_string());
+                                        .map(hex::encode)
+                                        .unwrap_or_default(),
+                                        &rom,
+                                        rv_core::rv_file::FileStatus::SHA1_FROM_DAT,
+                                        rv_core::rv_file::FileStatus::SHA1_FROM_HEADER,
+                                    );
                                     let resp = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
                                     if resp.secondary_clicked() {
                                         if let Some(copy) = rom_clipboard_text(&rom, RomGridCopyColumn::Sha1) {
@@ -1271,11 +1727,16 @@ impl RomVaultApp {
                                 });
                                 row.col(|ui| {
                                     ui.painter().rect_filled(ui.max_rect(), 0.0, row_color);
-                                    let text = rom
+                                    let text = format_cell_with_source_flags(
+                                        rom
                                         .md5
                                         .as_ref()
-                                        .map(|b| hex::encode(b))
-                                        .unwrap_or_else(|| "-".to_string());
+                                        .map(hex::encode)
+                                        .unwrap_or_default(),
+                                        &rom,
+                                        rv_core::rv_file::FileStatus::MD5_FROM_DAT,
+                                        rv_core::rv_file::FileStatus::MD5_FROM_HEADER,
+                                    );
                                     let resp = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
                                     if resp.secondary_clicked() {
                                         if let Some(copy) = rom_clipboard_text(&rom, RomGridCopyColumn::Md5) {
@@ -1284,66 +1745,96 @@ impl RomVaultApp {
                                         }
                                     }
                                 });
-                                row.col(|ui| {
-                                    ui.painter().rect_filled(ui.max_rect(), 0.0, row_color);
-                                    let text = rom.alt_size.map_or("".to_string(), |s| s.to_string());
-                                    let resp = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
-                                    if resp.secondary_clicked() {
-                                        if let Some(copy) = rom_clipboard_text(&rom, RomGridCopyColumn::AltSize) {
-                                            ui.output_mut(|o| o.copied_text = copy.clone());
-                                            self.task_logs.push(format!("Copied: {}", copy));
+                                if alt_found {
+                                    row.col(|ui| {
+                                        ui.painter().rect_filled(ui.max_rect(), 0.0, row_color);
+                                        let text = format_cell_with_source_flags(
+                                            rom.alt_size.map(|s| s.to_string()).unwrap_or_default(),
+                                            &rom,
+                                            rv_core::rv_file::FileStatus::ALT_SIZE_FROM_DAT,
+                                            rv_core::rv_file::FileStatus::ALT_SIZE_FROM_HEADER,
+                                        );
+                                        let resp = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
+                                        if resp.secondary_clicked() {
+                                            if let Some(copy) = rom_clipboard_text(&rom, RomGridCopyColumn::AltSize) {
+                                                ui.output_mut(|o| o.copied_text = copy.clone());
+                                                self.task_logs.push(format!("Copied: {}", copy));
+                                            }
                                         }
-                                    }
-                                });
-                                row.col(|ui| {
-                                    ui.painter().rect_filled(ui.max_rect(), 0.0, row_color);
-                                    let text = rom.alt_crc.as_ref().map_or("".to_string(), |h| hex::encode(h));
-                                    let resp = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
-                                    if resp.secondary_clicked() {
-                                        if let Some(copy) = rom_clipboard_text(&rom, RomGridCopyColumn::AltCrc32) {
-                                            ui.output_mut(|o| o.copied_text = copy.clone());
-                                            self.task_logs.push(format!("Copied: {}", copy));
-                                        }
-                                    }
-                                });
-                                row.col(|ui| {
-                                    ui.painter().rect_filled(ui.max_rect(), 0.0, row_color);
-                                    let text = rom.alt_sha1.as_ref().map_or("".to_string(), |h| hex::encode(h));
-                                    let resp = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
-                                    if resp.secondary_clicked() {
-                                        if let Some(copy) = rom_clipboard_text(&rom, RomGridCopyColumn::AltSha1) {
-                                            ui.output_mut(|o| o.copied_text = copy.clone());
-                                            self.task_logs.push(format!("Copied: {}", copy));
-                                        }
-                                    }
-                                });
-                                row.col(|ui| {
-                                    ui.painter().rect_filled(ui.max_rect(), 0.0, row_color);
-                                    let text = rom.alt_md5.as_ref().map_or("".to_string(), |h| hex::encode(h));
-                                    let resp = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
-                                    if resp.secondary_clicked() {
-                                        if let Some(copy) = rom_clipboard_text(&rom, RomGridCopyColumn::AltMd5) {
-                                            ui.output_mut(|o| o.copied_text = copy.clone());
-                                            self.task_logs.push(format!("Copied: {}", copy));
-                                        }
-                                    }
-                                });
-                                row.col(|ui| {
-                                    ui.painter().rect_filled(ui.max_rect(), 0.0, row_color);
-                                    ui.label(rom.status.as_deref().unwrap_or(""));
-                                });
-                                row.col(|ui| {
-                                    ui.painter().rect_filled(ui.max_rect(), 0.0, row_color);
-                                    ui.label(if rom.file_mod_time_stamp > 0 {
-                                        rom.file_mod_time_stamp.to_string()
-                                    } else {
-                                        "".to_string()
                                     });
-                                });
-                                row.col(|ui| {
-                                    ui.painter().rect_filled(ui.max_rect(), 0.0, row_color);
-                                    ui.label("");
-                                });
+                                    row.col(|ui| {
+                                        ui.painter().rect_filled(ui.max_rect(), 0.0, row_color);
+                                        let text = format_cell_with_source_flags(
+                                            rom.alt_crc.as_ref().map(hex::encode).unwrap_or_default(),
+                                            &rom,
+                                            rv_core::rv_file::FileStatus::ALT_CRC_FROM_DAT,
+                                            rv_core::rv_file::FileStatus::ALT_CRC_FROM_HEADER,
+                                        );
+                                        let resp = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
+                                        if resp.secondary_clicked() {
+                                            if let Some(copy) = rom_clipboard_text(&rom, RomGridCopyColumn::AltCrc32) {
+                                                ui.output_mut(|o| o.copied_text = copy.clone());
+                                                self.task_logs.push(format!("Copied: {}", copy));
+                                            }
+                                        }
+                                    });
+                                    row.col(|ui| {
+                                        ui.painter().rect_filled(ui.max_rect(), 0.0, row_color);
+                                        let text = format_cell_with_source_flags(
+                                            rom.alt_sha1.as_ref().map(hex::encode).unwrap_or_default(),
+                                            &rom,
+                                            rv_core::rv_file::FileStatus::ALT_SHA1_FROM_DAT,
+                                            rv_core::rv_file::FileStatus::ALT_SHA1_FROM_HEADER,
+                                        );
+                                        let resp = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
+                                        if resp.secondary_clicked() {
+                                            if let Some(copy) = rom_clipboard_text(&rom, RomGridCopyColumn::AltSha1) {
+                                                ui.output_mut(|o| o.copied_text = copy.clone());
+                                                self.task_logs.push(format!("Copied: {}", copy));
+                                            }
+                                        }
+                                    });
+                                    row.col(|ui| {
+                                        ui.painter().rect_filled(ui.max_rect(), 0.0, row_color);
+                                        let text = format_cell_with_source_flags(
+                                            rom.alt_md5.as_ref().map(hex::encode).unwrap_or_default(),
+                                            &rom,
+                                            rv_core::rv_file::FileStatus::ALT_MD5_FROM_DAT,
+                                            rv_core::rv_file::FileStatus::ALT_MD5_FROM_HEADER,
+                                        );
+                                        let resp = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
+                                        if resp.secondary_clicked() {
+                                            if let Some(copy) = rom_clipboard_text(&rom, RomGridCopyColumn::AltMd5) {
+                                                ui.output_mut(|o| o.copied_text = copy.clone());
+                                                self.task_logs.push(format!("Copied: {}", copy));
+                                            }
+                                        }
+                                    });
+                                }
+                                if show_status {
+                                    row.col(|ui| {
+                                        ui.painter().rect_filled(ui.max_rect(), 0.0, row_color);
+                                        ui.label(rom.status.as_deref().unwrap_or(""));
+                                    });
+                                }
+                                if show_file_mod_date {
+                                    row.col(|ui| {
+                                        ui.painter().rect_filled(ui.max_rect(), 0.0, row_color);
+                                        let text = format_file_mod_date_cell(&rom);
+                                        ui.label(format_cell_with_source_flags(
+                                            text,
+                                            &rom,
+                                            rv_core::rv_file::FileStatus::DATE_FROM_DAT,
+                                            rv_core::rv_file::FileStatus::NONE,
+                                        ));
+                                    });
+                                }
+                                if show_zip_index {
+                                    row.col(|ui| {
+                                        ui.painter().rect_filled(ui.max_rect(), 0.0, row_color);
+                                        ui.label(row_data.zip_index.map(|v| v.to_string()).unwrap_or_default());
+                                    });
+                                }
                                 row.col(|ui| {
                                     ui.painter().rect_filled(ui.max_rect(), 0.0, row_color);
                                     let instance_count = if matches!(
@@ -1364,7 +1855,6 @@ impl RomVaultApp {
                                     }
                                 });
                             });
-                        }
                     }
                 });
         });

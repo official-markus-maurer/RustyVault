@@ -7,8 +7,6 @@ use dat_reader::enums::{DatStatus, FileType};
 use rv_core::db::GLOBAL_DB;
 use rv_core::enums::RepStatus;
 use rv_core::file_scanning::FileScanning;
-use rv_core::fix_dat_report::FixDatReport;
-use rv_core::read_dat::DatUpdate;
 use rv_core::rv_file::{RvFile, TreeSelect};
 use rv_core::scanner::Scanner;
 
@@ -55,11 +53,10 @@ fn tree_color_from_rep_status(rep_status: RepStatus, dat_status: DatStatus) -> e
 }
 
 fn tree_color_from_stats(stats: &rv_core::repair_status::RepairStatus) -> egui::Color32 {
-    if stats.total_roms == 0 && stats.roms_unknown == 0 {
-        egui::Color32::from_rgb(150, 150, 150)
-    } else if unknown_roms(stats) == stats.total_roms && stats.total_roms > 0 {
-        egui::Color32::from_rgb(150, 150, 150)
-    } else if merged_roms(stats) == stats.total_roms && stats.total_roms > 0 {
+    if (stats.total_roms == 0 && stats.roms_unknown == 0)
+        || (stats.total_roms > 0
+            && (unknown_roms(stats) == stats.total_roms || merged_roms(stats) == stats.total_roms))
+    {
         egui::Color32::from_rgb(150, 150, 150)
     } else if stats.roms_fixes == stats.total_roms && stats.total_roms > 0 {
         egui::Color32::from_rgb(0, 200, 200)
@@ -67,9 +64,7 @@ fn tree_color_from_stats(stats: &rv_core::repair_status::RepairStatus) -> egui::
         egui::Color32::from_rgb(0, 200, 0)
     } else if missing_roms(stats) == stats.total_roms && stats.total_roms > 0 {
         egui::Color32::from_rgb(200, 0, 0)
-    } else if correct_roms(stats) > 0 {
-        egui::Color32::from_rgb(200, 200, 0)
-    } else if stats.roms_fixes > 0 {
+    } else if correct_roms(stats) > 0 || stats.roms_fixes > 0 {
         egui::Color32::from_rgb(200, 200, 0)
     } else {
         egui::Color32::WHITE
@@ -79,9 +74,7 @@ fn tree_color_from_stats(stats: &rv_core::repair_status::RepairStatus) -> egui::
 fn tree_icon_idx_from_stats(stats: &rv_core::repair_status::RepairStatus) -> i32 {
     if stats.total_roms == 0 {
         2
-    } else if unknown_roms(stats) == stats.total_roms {
-        4
-    } else if merged_roms(stats) == stats.total_roms {
+    } else if unknown_roms(stats) == stats.total_roms || merged_roms(stats) == stats.total_roms {
         4
     } else if stats.roms_fixes == stats.total_roms {
         5
@@ -248,13 +241,13 @@ impl RomVaultApp {
                 stats.report_status(Rc::clone(&node_rc));
 
                 node = node_rc.borrow_mut();
-                node.cached_stats = Some(stats.clone());
+                node.cached_stats = Some(stats);
                 node.ui_display_name.clear();
                 ui_display_name.clear();
 
                 cached_stats = Some(stats);
             } else {
-                cached_stats = node.cached_stats.clone();
+                cached_stats = node.cached_stats;
             }
 
             color = if let Some(stats) = &cached_stats {
@@ -291,7 +284,7 @@ impl RomVaultApp {
                 }
             };
 
-            tree_checked = node.tree_checked.clone();
+            tree_checked = node.tree_checked;
             tree_expanded = node.tree_expanded;
 
             if is_directory && ui_display_name.is_empty() {
@@ -304,7 +297,7 @@ impl RomVaultApp {
 
                 if is_in_to_sort {
                     if to_sort_is_primary && to_sort_is_cache {
-                        name = format!("{} (Primary)", name);
+                        name = format!("{} (Primary, Cache)", name);
                     } else if to_sort_is_primary {
                         name = format!("{} (Primary)", name);
                     } else if to_sort_is_cache {
@@ -412,7 +405,7 @@ impl RomVaultApp {
         let is_selected_for_scroll = self
             .selected_node
             .as_ref()
-            .map_or(false, |n| Rc::ptr_eq(n, &node_rc));
+            .is_some_and(|n| Rc::ptr_eq(n, &node_rc));
         if is_selected_for_scroll && self.pending_tree_scroll_to_selected {
             ui.scroll_to_rect(row_rect.0, Some(egui::Align::Center));
             self.pending_tree_scroll_to_selected = false;
@@ -435,7 +428,12 @@ impl RomVaultApp {
                     if expand_resp.clicked() {
                         toggle_expanded = true;
                     } else if expand_resp.secondary_clicked() {
-                        expand_descendants = Self::expand_descendants_target(&node_rc);
+                        let is_shift = ui.input(|i| i.modifiers.shift);
+                        if is_shift {
+                            expand_descendants = Self::expand_descendants_target(&node_rc);
+                        } else {
+                            toggle_expanded = true;
+                        }
                     }
                 } else {
                     ui.add_space(9.0);
@@ -461,7 +459,7 @@ impl RomVaultApp {
                     let mut stack = vec![Rc::clone(&node_rc)];
                     while let Some(current) = stack.pop() {
                         let mut n = current.borrow_mut();
-                        n.tree_checked = new_state.clone();
+                        n.tree_checked = new_state;
                         let children = n.children.clone();
                         drop(n);
                         if !is_shift {
@@ -486,7 +484,7 @@ impl RomVaultApp {
                 let is_selected = self
                     .selected_node
                     .as_ref()
-                    .map_or(false, |n| Rc::ptr_eq(n, &node_rc));
+                    .is_some_and(|n| Rc::ptr_eq(n, &node_rc));
 
                 let clean_name = ui_display_name
                     .trim_start_matches(|c: char| !c.is_alphanumeric() && c != '(' && c != '[')
@@ -505,24 +503,23 @@ impl RomVaultApp {
                 }
 
                 enum TreeAction {
-                    ScanQuick,
-                    ScanNormal,
-                    ScanFull,
-                    UpdateDats,
+                    Quick,
+                    Normal,
+                    Full,
                 }
                 let mut pending_action = None;
 
                 label_resp.context_menu(|ui| {
                     if ui.button("Scan Quick (Headers Only)").clicked() {
-                        pending_action = Some(TreeAction::ScanQuick);
+                        pending_action = Some(TreeAction::Quick);
                         ui.close_menu();
                     }
                     if ui.button("Scan").clicked() {
-                        pending_action = Some(TreeAction::ScanNormal);
+                        pending_action = Some(TreeAction::Normal);
                         ui.close_menu();
                     }
                     if ui.button("Scan Full (Complete Re-Scan)").clicked() {
-                        pending_action = Some(TreeAction::ScanFull);
+                        pending_action = Some(TreeAction::Full);
                         ui.close_menu();
                     }
                     ui.separator();
@@ -536,22 +533,28 @@ impl RomVaultApp {
                         ui.close_menu();
                     }
                     ui.separator();
-                    if ui.button("Open Directory").clicked() {
+                    let can_open_dir = std::path::Path::new(&np_clone).exists();
+                    if ui
+                        .add_enabled(can_open_dir, egui::Button::new("Open Directory"))
+                        .clicked()
+                    {
                         self.task_logs.push(format!("Opening Directory: {}", np_clone));
-                        let _ = std::process::Command::new("explorer").arg(&np_clone).spawn();
+                        let _ = std::process::Command::new("cmd")
+                            .args(["/C", "start", "", &np_clone])
+                            .spawn();
                         ui.close_menu();
                     }
 
                     if is_in_to_sort {
-                        if ui.button("Open ToSort Directory").clicked() {
-                            if std::path::Path::new(&np_clone).is_dir() {
-                                self.task_logs.push(format!("Opening ToSort Directory: {}", np_clone));
-                                let _ = std::process::Command::new("cmd")
-                                    .args(["/C", "start", "", &np_clone])
-                                    .spawn();
-                            } else {
-                                self.task_logs.push(format!("Directory not found: {}", np_clone));
-                            }
+                        let can_open_tosort = std::path::Path::new(&np_clone).is_dir();
+                        if ui
+                            .add_enabled(can_open_tosort, egui::Button::new("Open ToSort Directory"))
+                            .clicked()
+                        {
+                            self.task_logs.push(format!("Opening ToSort Directory: {}", np_clone));
+                            let _ = std::process::Command::new("cmd")
+                                .args(["/C", "start", "", &np_clone])
+                                .spawn();
                             ui.close_menu();
                         }
                         ui.separator();
@@ -791,49 +794,31 @@ impl RomVaultApp {
                             self.open_dir_mappings();
                             ui.close_menu();
                         }
-                        if ui.button("Update DATs").clicked() {
-                            pending_action = Some(TreeAction::UpdateDats);
-                            ui.close_menu();
-                        }
                         ui.separator();
-                        if ui.button("Open Directory").clicked() {
+                        let can_open_dir = std::path::Path::new(&node_path).exists();
+                        if ui
+                            .add_enabled(can_open_dir, egui::Button::new("Open Directory"))
+                            .clicked()
+                        {
                             self.task_logs.push(format!("Opening Directory: {}", node_path));
-                            let _ = std::process::Command::new("explorer").arg(&node_path).spawn();
+                            let _ = std::process::Command::new("cmd")
+                                .args(["/C", "start", "", &node_path])
+                                .spawn();
                             ui.close_menu();
                         }
                         ui.separator();
-                        if ui.button("Save fix DATs").clicked() {
-                            let node_clone = Rc::clone(&node_rc);
-                            self.launch_task("Save fix DATs", move |tx| {
-                                let _ = tx.send("Generating FixDATs to Desktop...".to_string());
-                                GLOBAL_DB.with(|_db_ref| {
-                                    let desktop_path = std::path::PathBuf::from(
-                                        std::env::var("USERPROFILE").unwrap_or_default(),
-                                    )
-                                    .join("Desktop");
-                                    FixDatReport::recursive_dat_tree(&desktop_path.to_string_lossy(), node_clone, true);
-                                });
-                            });
+                        if ui
+                            .add_enabled(!self.ui_working(), egui::Button::new("Save fix DATs"))
+                            .clicked()
+                        {
+                            self.prompt_fixdat_report_for_node(true, Rc::clone(&node_rc));
                             ui.close_menu();
                         }
-                        if ui.button("Save full DAT").clicked() {
-                            let node_clone = Rc::clone(&node_rc);
-                            self.launch_task("Save full DAT", move |tx| {
-                                let _ = tx.send("Generating Full DAT to Desktop...".to_string());
-                                GLOBAL_DB.with(|_db_ref| {
-                                    let desktop_path = std::path::PathBuf::from(
-                                        std::env::var("USERPROFILE").unwrap_or_default(),
-                                    )
-                                    .join("Desktop");
-                                    FixDatReport::recursive_dat_tree(&desktop_path.to_string_lossy(), node_clone, false);
-                                });
-                            });
-                            ui.close_menu();
-                        }
-                        if ui.button("Make DAT").clicked() {
-                            self.task_logs.push(
-                                "Make DAT functionality requires ExternalDatConverterTo implementation".to_string(),
-                            );
+                        if ui
+                            .add_enabled(!self.ui_working(), egui::Button::new("Save full DAT"))
+                            .clicked()
+                        {
+                            self.prompt_make_dat(Rc::clone(&node_rc));
                             ui.close_menu();
                         }
                     }
@@ -841,7 +826,7 @@ impl RomVaultApp {
 
                 if let Some(action) = pending_action {
                     match action {
-                        TreeAction::ScanQuick => {
+                        TreeAction::Quick => {
                             let np = np_clone.clone();
                             let target_rc = Rc::clone(&node_rc);
                             self.launch_task("Scan ROMs (Quick)", move |tx| {
@@ -853,7 +838,7 @@ impl RomVaultApp {
                                 FileScanning::scan_dir_with_level(target_rc, &mut root_scan, rv_core::settings::EScanLevel::Level1);
                             });
                         }
-                        TreeAction::ScanNormal => {
+                        TreeAction::Normal => {
                             let np = np_clone.clone();
                             let target_rc = Rc::clone(&node_rc);
                             self.launch_task("Scan ROMs", move |tx| {
@@ -865,7 +850,7 @@ impl RomVaultApp {
                                 FileScanning::scan_dir_with_level(target_rc, &mut root_scan, rv_core::settings::EScanLevel::Level2);
                             });
                         }
-                        TreeAction::ScanFull => {
+                        TreeAction::Full => {
                             let np = np_clone.clone();
                             let target_rc = Rc::clone(&node_rc);
                             self.launch_task("Scan ROMs (Full)", move |tx| {
@@ -875,14 +860,6 @@ impl RomVaultApp {
                                 root_scan.children = files;
                                 let _ = tx.send("Integrating files into DB...".to_string());
                                 FileScanning::scan_dir_with_level(target_rc, &mut root_scan, rv_core::settings::EScanLevel::Level3);
-                            });
-                        }
-                        TreeAction::UpdateDats => {
-                            let np = np_clone.clone();
-                            let target_rc = Rc::clone(&node_rc);
-                            self.launch_task("Update DATs", move |tx| {
-                                let _ = tx.send(format!("Updating DATs for {}...", np));
-                                DatUpdate::update_dat(target_rc, &np);
                             });
                         }
                     }

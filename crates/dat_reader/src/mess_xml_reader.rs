@@ -61,10 +61,11 @@ fn load_game(parent_dir: &mut DatDir, game_node: Node) {
     };
 
     let mut d_dir = DatNode::new_dir(name, FileType::UnSet);
-    let mut d_game = DatGame::default();
-
-    d_game.rom_of = game_node.attribute("romof").map(|s| s.to_string());
-    d_game.clone_of = game_node.attribute("cloneof").map(|s| s.to_string());
+    let mut d_game = DatGame {
+        rom_of: game_node.attribute("romof").map(|s| s.to_string()),
+        clone_of: game_node.attribute("cloneof").map(|s| s.to_string()),
+        ..Default::default()
+    };
 
     for child in game_node.children() {
         if !child.is_element() {

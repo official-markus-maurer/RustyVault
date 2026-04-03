@@ -31,6 +31,53 @@
     }
 
     #[test]
+    fn test_find_node_by_full_name_key_finds_matching_node() {
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        root.borrow_mut().name = "Root".to_string();
+
+        let child = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        child.borrow_mut().name = "Child".to_string();
+        root.borrow_mut().child_add(Rc::clone(&child));
+
+        let key = crate::normalize_full_name_key(&child.borrow().get_full_name());
+        let found = crate::find_node_by_full_name_key(&root, &key).unwrap();
+        assert_eq!(found.borrow().name, "Child");
+    }
+
+#[test]
+fn test_trurip_meta_fields_includes_title_id_and_publisher() {
+    use rv_core::rv_game::{GameData, GameMetaData, RvGame};
+
+    let game = RvGame {
+        game_meta_data: vec![
+            GameMetaData { id: GameData::Publisher, value: "Pub".to_string() },
+            GameMetaData { id: GameData::Id, value: "123".to_string() },
+        ],
+    };
+
+    let fields = crate::trurip_meta_fields(&game);
+    assert!(fields.iter().any(|(k, v)| *k == "Publisher" && v == "Pub"));
+    assert!(fields.iter().any(|(k, v)| *k == "Title Id" && v == "123"));
+}
+
+#[test]
+fn test_game_details_fields_hide_non_trurip_fields_for_emu_arc_games() {
+    use rv_core::rv_game::{GameData, GameMetaData, RvGame};
+
+    let game = RvGame {
+        game_meta_data: vec![
+            GameMetaData { id: GameData::EmuArc, value: "yes".to_string() },
+            GameMetaData { id: GameData::Manufacturer, value: "M".to_string() },
+            GameMetaData { id: GameData::Description, value: "D".to_string() },
+        ],
+    };
+
+    let fields = crate::game_details_fields("g.zip", &game);
+    assert!(fields.iter().any(|(k, _)| *k == "Description"));
+    assert!(!fields.iter().any(|(k, _)| *k == "Manufacturer"));
+}
+
+    #[test]
     fn test_branch_has_selected_nodes_finds_selected_descendant() {
         let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
         root.borrow_mut().tree_checked = TreeSelect::UnSelected;

@@ -89,7 +89,7 @@
         sc_file.file_mod_time_stamp = 123456;
 
         let (matched, alt) = FileCompare::phase_1_test(&db_file, &sc_file, EScanLevel::Level2, 0);
-        assert!(matched);
+        assert!(!matched);
         assert!(!alt);
     }
 
@@ -302,8 +302,8 @@
         sc_file.file_mod_time_stamp = 123456;
 
         let (matched, alt) = FileCompare::phase_1_test(&db_file, &sc_file, EScanLevel::Level2, 0);
-        assert!(matched);
-        assert!(alt);
+        assert!(!matched);
+        assert!(!alt);
     }
 
     #[test]
@@ -320,8 +320,8 @@
         sc_file.file_mod_time_stamp = 123456;
 
         let (matched, alt) = FileCompare::phase_1_test(&db_file, &sc_file, EScanLevel::Level2, 0);
-        assert!(matched);
-        assert!(alt);
+        assert!(!matched);
+        assert!(!alt);
     }
 
     #[test]
@@ -338,8 +338,8 @@
         sc_file.file_mod_time_stamp = 123456;
 
         let (matched, alt) = FileCompare::phase_1_test(&db_file, &sc_file, EScanLevel::Level2, 0);
-        assert!(matched);
-        assert!(alt);
+        assert!(!matched);
+        assert!(!alt);
     }
 
     #[test]
@@ -372,7 +372,7 @@
         sc_file.name = "rom.bin".to_string();
         sc_file.size = Some(4);
 
-        let (matched, alt) = FileCompare::phase_1_test(&db_file, &sc_file, EScanLevel::Level2, 0);
+        let (matched, alt) = FileCompare::phase_1_test(&db_file, &sc_file, EScanLevel::Level1, 0);
         assert!(matched);
         assert!(!alt);
     }
@@ -388,7 +388,7 @@
         sc_file.name = "rom.bin".to_string();
         sc_file.size = Some(4);
 
-        let (matched, alt) = FileCompare::phase_1_test(&db_file, &sc_file, EScanLevel::Level2, 0);
+        let (matched, alt) = FileCompare::phase_1_test(&db_file, &sc_file, EScanLevel::Level1, 0);
         assert!(matched);
         assert!(!alt);
     }

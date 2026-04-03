@@ -250,6 +250,12 @@ impl GZipFile {
     }
 }
 
+impl Default for GZipFile {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ICompress for GZipFile {
     fn local_files_count(&self) -> usize {
         1

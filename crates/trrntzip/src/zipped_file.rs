@@ -61,3 +61,9 @@ impl ZippedFile {
         out
     }
 }
+
+impl Default for ZippedFile {
+    fn default() -> Self {
+        Self::new()
+    }
+}

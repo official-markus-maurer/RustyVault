@@ -4,7 +4,6 @@ use std::rc::Rc;
 use crate::RomVaultApp;
 use rv_core::db::GLOBAL_DB;
 use rv_core::find_fixes::FindFixes;
-use rv_core::read_dat::DatUpdate;
 
 /// Logic for rendering the top main menu and toolbar.
 /// 
@@ -184,30 +183,7 @@ pub fn draw_left_toolbar(app: &mut RomVaultApp, ctx: &egui::Context) {
                                         "Left Click: Dat Update\nShift Left Click: Full Dat Rescan\n\nRight Click: Open DatVault",
                                     );
                                 if update_resp.clicked() {
-                                    if ui.input(|i| i.modifiers.shift) {
-                                        app.launch_task("Update All DATs", |tx| {
-                                            GLOBAL_DB.with(|db_ref| {
-                                                if let Some(db) = db_ref.borrow().as_ref() {
-                                                    let _ = tx.send("Scanning DatRoot...".to_string());
-                                                    DatUpdate::check_all_dats(Rc::clone(&db.dir_root), "DatRoot");
-                                                    DatUpdate::update_dat(Rc::clone(&db.dir_root), "DatRoot");
-                                                    rv_core::repair_status::RepairStatus::report_status_reset(Rc::clone(&db.dir_root));
-                                                    db.write_cache();
-                                                }
-                                            });
-                                        });
-                                    } else {
-                                        app.launch_task("Update DATs", |tx| {
-                                            GLOBAL_DB.with(|db_ref| {
-                                                if let Some(db) = db_ref.borrow().as_ref() {
-                                                    let _ = tx.send("Scanning DatRoot...".to_string());
-                                                    DatUpdate::update_dat(Rc::clone(&db.dir_root), "DatRoot");
-                                                    rv_core::repair_status::RepairStatus::report_status_reset(Rc::clone(&db.dir_root));
-                                                    db.write_cache();
-                                                }
-                                            });
-                                        });
-                                    }
+                                    app.update_dats(ui.input(|i| i.modifiers.shift));
                                 } else if update_resp.secondary_clicked() {
                                     let dat_root = rv_core::settings::get_settings().dat_root;
                                     let dat_root_path = if dat_root.is_empty() { "DatRoot" } else { &dat_root };

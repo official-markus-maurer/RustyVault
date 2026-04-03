@@ -79,7 +79,7 @@ pub fn zip_date_time_to_string(zip_file_date_time: Option<i64>) -> String {
 
     if t > 0xFFFF_FFFF {
         let (year, month, day, hour, minute, second) = ticks_to_ymdhms(t);
-        if year < 1 || year > 9999 {
+        if !(1..=9999).contains(&year) {
             return String::new();
         }
         return format!(

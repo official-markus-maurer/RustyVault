@@ -12,7 +12,6 @@ use rv_core::read_dat::DatUpdate;
 use rv_core::scanner::Scanner;
 use rv_core::find_fixes::FindFixes;
 use rv_core::fix::Fix;
-use rv_core::fix_dat_report::FixDatReport;
 use rv_core::file_scanning::FileScanning;
 use dat_reader::enums::FileType;
 use rv_core::db::{init_db, GLOBAL_DB};
@@ -22,6 +21,63 @@ use sevenz_rust::{ArchiveEntry, ArchiveWriter, EncoderConfiguration, EncoderMeth
 use trrntzip::{ProcessControl, StopMode, TorrentZip, TorrentZipRebuild, TrrntZipStatus};
 use zip::read::ZipArchive;
 use zip::write::FileOptions;
+fn trurip_meta_fields(game: &rv_core::rv_game::RvGame) -> Vec<(&'static str, String)> {
+    use rv_core::rv_game::GameData;
+
+    let mut out = Vec::new();
+    let get = |k| game.get_data(k).unwrap_or_default();
+
+    let publisher = get(GameData::Publisher);
+    if !publisher.trim().is_empty() {
+        out.push(("Publisher", publisher));
+    }
+    let developer = get(GameData::Developer);
+    if !developer.trim().is_empty() {
+        out.push(("Developer", developer));
+    }
+    let title_id = get(GameData::Id);
+    if !title_id.trim().is_empty() {
+        out.push(("Title Id", title_id));
+    }
+    let source = get(GameData::Source);
+    if !source.trim().is_empty() {
+        out.push(("Source", source));
+    }
+    let clone_of = get(GameData::CloneOf);
+    if !clone_of.trim().is_empty() {
+        out.push(("Clone of", clone_of));
+    }
+    let related_to = get(GameData::RelatedTo);
+    if !related_to.trim().is_empty() {
+        out.push(("Related to", related_to));
+    }
+    let year = get(GameData::Year);
+    if !year.trim().is_empty() {
+        out.push(("Year", year));
+    }
+    let players = get(GameData::Players);
+    if !players.trim().is_empty() {
+        out.push(("Players", players));
+    }
+    let genre = get(GameData::Genre);
+    if !genre.trim().is_empty() {
+        out.push(("Genre", genre));
+    }
+    let sub_genre = get(GameData::SubGenre);
+    if !sub_genre.trim().is_empty() {
+        out.push(("SubGenre", sub_genre));
+    }
+    let ratings = get(GameData::Ratings);
+    if !ratings.trim().is_empty() {
+        out.push(("Ratings", ratings));
+    }
+    let score = get(GameData::Score);
+    if !score.trim().is_empty() {
+        out.push(("Score", score));
+    }
+
+    out
+}
 use zip::{CompressionMethod, ZipWriter};
 
 /// Main GUI entry point using `egui` and `eframe`.
@@ -52,6 +108,102 @@ use crate::utils::{get_full_node_path, extract_text_from_zip, extract_image_from
 
 fn ui_missing_count(stats: &rv_core::repair_status::RepairStatus) -> i32 {
     stats.count_missing()
+}
+
+fn game_desc_value(game_name: &str, game: &rv_core::rv_game::RvGame) -> String {
+    use rv_core::rv_game::GameData;
+
+    let mut desc = game.get_data(GameData::Description).unwrap_or_default();
+    if desc == "¤" {
+        let fallback = std::path::Path::new(game_name)
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        if !fallback.is_empty() {
+            desc = fallback;
+        }
+    }
+    desc
+}
+
+fn game_details_fields(game_name: &str, game: &rv_core::rv_game::RvGame) -> Vec<(&'static str, String)> {
+    use rv_core::rv_game::GameData;
+
+    let mut out = Vec::new();
+    let get = |k| game.get_data(k).unwrap_or_default();
+
+    let id = get(GameData::Id);
+    let name_value = if id.trim().is_empty() {
+        game_name.to_string()
+    } else {
+        format!("{game_name} (ID:{id})")
+    };
+    if !name_value.trim().is_empty() {
+        out.push(("Name", name_value));
+    }
+
+    let desc = game_desc_value(game_name, game);
+    if !desc.trim().is_empty() {
+        out.push(("Description", desc));
+    }
+
+    let emu_arc = get(GameData::EmuArc);
+    if emu_arc != "yes" {
+        let manufacturer = get(GameData::Manufacturer);
+        if !manufacturer.trim().is_empty() {
+            out.push(("Manufacturer", manufacturer));
+        }
+        let clone_of = get(GameData::CloneOf);
+        if !clone_of.trim().is_empty() {
+            out.push(("CloneOf", clone_of));
+        }
+        let rom_of = get(GameData::RomOf);
+        if !rom_of.trim().is_empty() {
+            out.push(("RomOf", rom_of));
+        }
+        let year = get(GameData::Year);
+        if !year.trim().is_empty() {
+            out.push(("Year", year));
+        }
+        let category = get(GameData::Category);
+        if !category.trim().is_empty() {
+            out.push(("Category", category));
+        }
+    }
+
+    out
+}
+
+fn normalize_full_name_key(name: &str) -> String {
+    name.replace('\\', "/").to_ascii_lowercase()
+}
+
+fn full_name_chain_from_node(node_rc: &Rc<RefCell<RvFile>>) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = Some(Rc::clone(node_rc));
+    while let Some(rc) = cur {
+        out.push(normalize_full_name_key(&rc.borrow().get_full_name()));
+        cur = rc.borrow().parent.as_ref().and_then(|p| p.upgrade());
+    }
+    out
+}
+
+fn find_node_by_full_name_key(
+    root: &Rc<RefCell<RvFile>>,
+    target_key: &str,
+) -> Option<Rc<RefCell<RvFile>>> {
+    let mut stack = vec![Rc::clone(root)];
+    while let Some(node_rc) = stack.pop() {
+        let node = node_rc.borrow();
+        if normalize_full_name_key(&node.get_full_name()) == target_key {
+            return Some(Rc::clone(&node_rc));
+        }
+        for child in node.children.iter() {
+            stack.push(Rc::clone(child));
+        }
+    }
+    None
 }
 
 fn ui_fixable_count(stats: &rv_core::repair_status::RepairStatus) -> i32 {
@@ -113,15 +265,27 @@ fn main() -> eframe::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
+    let startup_path = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_string_lossy().to_string()))
+        .unwrap_or_else(|| {
+            std::env::current_dir()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string()
+        });
+    let window_title = format!("RomVault (3.6.1) {}", startup_path);
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
+            .with_title(window_title.clone())
             .with_inner_size([1200.0, 800.0])
             .with_min_inner_size([800.0, 600.0]),
         ..Default::default()
     };
 
     eframe::run_native(
-        "RustyRoms UI",
+        &window_title,
         options,
         Box::new(|cc| {
             egui_extras::install_image_loaders(&cc.egui_ctx);
@@ -506,6 +670,144 @@ impl RomVaultApp {
         );
     }
 
+    pub(crate) fn prompt_fixdat_report_for_node(&mut self, red_only: bool, base_dir: Rc<RefCell<RvFile>>) {
+        if self.sam_running {
+            return;
+        }
+
+        let settings = rv_core::settings::get_settings();
+        let mut dlg = rfd::FileDialog::new();
+        dlg = if red_only {
+            dlg.set_title("Select FixDAT output folder (Missing/MIA only)")
+        } else {
+            dlg.set_title("Select FixDAT output folder (Missing/MIA + Fixable)")
+        };
+        if let Some(default_dir) = settings.fix_dat_out_path.as_ref().filter(|p| !p.trim().is_empty()) {
+            dlg = dlg.set_directory(default_dir);
+        }
+
+        let Some(folder) = dlg.pick_folder() else {
+            return;
+        };
+
+        let out_dir = folder.to_string_lossy().to_string();
+        let mut new_settings = settings.clone();
+        if new_settings.fix_dat_out_path.as_deref() != Some(&out_dir) {
+            new_settings.fix_dat_out_path = Some(out_dir.clone());
+            rv_core::settings::update_settings(new_settings.clone());
+            let _ = rv_core::settings::write_settings_to_file(&new_settings);
+            self.global_settings = new_settings;
+        }
+
+        self.launch_task(
+            if red_only {
+                "Generate FixDATs (Missing)"
+            } else {
+                "Generate FixDATs (All)"
+            },
+            move |tx| {
+                let _ = tx.send(format!("Generating FixDATs to {out_dir}..."));
+                rv_core::fix_dat_report::FixDatReport::recursive_dat_tree(&out_dir, base_dir, red_only);
+            },
+        );
+    }
+
+    pub(crate) fn prompt_make_dat(&mut self, node_rc: Rc<RefCell<RvFile>>) {
+        if self.sam_running {
+            return;
+        }
+
+        let default_name = {
+            let n = node_rc.borrow();
+            if n.name.is_empty() {
+                "export.dat".to_string()
+            } else if n.name.to_ascii_lowercase().ends_with(".dat") {
+                n.name.clone()
+            } else {
+                format!("{}.dat", n.name)
+            }
+        };
+
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Save a Dat File")
+            .set_file_name(&default_name)
+            .add_filter("DAT file", &["dat"])
+            .save_file() else {
+            return;
+        };
+
+        let path_str = path.to_string_lossy().to_string();
+        self.launch_task("Make DAT", move |tx| {
+            let _ = tx.send(format!("Writing DAT to {path_str}..."));
+            let converter = rv_core::external_dat_converter_to::ExternalDatConverterTo {
+                filter_merged: true,
+                ..rv_core::external_dat_converter_to::ExternalDatConverterTo::new()
+            };
+            let Some(dh) = converter.convert_to_external_dat(Rc::clone(&node_rc)) else {
+                let _ = tx.send("Make DAT failed: not a directory node".to_string());
+                return;
+            };
+
+            match std::fs::File::create(&path_str) {
+                Ok(mut f) => {
+                    if let Err(e) = dat_reader::xml_writer::DatXmlWriter::write_dat(&mut f, &dh) {
+                        let _ = tx.send(format!("Make DAT failed: {e}"));
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(format!("Make DAT failed: {e}"));
+                }
+            }
+        });
+    }
+
+    pub(crate) fn update_dats(&mut self, check_all: bool) {
+        if self.sam_running {
+            return;
+        }
+
+        let dat_root = rv_core::settings::get_settings().dat_root;
+        let dat_root_path = if dat_root.is_empty() { "DatRoot".to_string() } else { dat_root };
+        let selection_chain = self
+            .selected_node
+            .as_ref()
+            .map(full_name_chain_from_node)
+            .unwrap_or_default();
+
+        self.launch_task(
+            if check_all { "Update All DATs" } else { "Update DATs" },
+            move |tx| {
+                GLOBAL_DB.with(|db_ref| {
+                    if let Some(db) = db_ref.borrow().as_ref() {
+                        let _ = tx.send(format!("Scanning {}...", dat_root_path));
+                        if check_all {
+                            let _ = tx.send("Full DAT rescan...".to_string());
+                            DatUpdate::check_all_dats(Rc::clone(&db.dir_root), &dat_root_path);
+                        }
+                        DatUpdate::update_dat(Rc::clone(&db.dir_root), &dat_root_path);
+                        rv_core::repair_status::RepairStatus::report_status_reset(Rc::clone(&db.dir_root));
+                        db.dir_root.borrow_mut().cached_stats = None;
+                    }
+                });
+            },
+        );
+
+        if selection_chain.is_empty() {
+            return;
+        }
+
+        GLOBAL_DB.with(|db_ref| {
+            let binding = db_ref.borrow();
+            let Some(db) = binding.as_ref() else { return };
+            for key in selection_chain {
+                if let Some(found) = find_node_by_full_name_key(&db.dir_root, &key) {
+                    self.select_node(found);
+                    break;
+                }
+            }
+        });
+    }
+
     fn flush_db_cache_if_needed(&mut self) {
         if self.sam_running {
             return;
@@ -530,6 +832,21 @@ impl RomVaultApp {
         });
         self.db_cache_dirty = false;
         self.db_cache_last_write = Some(now);
+    }
+
+    fn garbage_collect(&mut self, ctx: &egui::Context) {
+        self.loaded_artwork = None;
+        self.loaded_logo = None;
+        self.loaded_title = None;
+        self.loaded_screen = None;
+        self.loaded_info = None;
+        self.loaded_info_type.clear();
+
+        self.show_rom_info = false;
+        self.selected_rom_for_info = None;
+        self.rom_info_lines.clear();
+
+        ctx.memory_mut(|mem| *mem = Default::default());
     }
 
     pub fn open_dir_mappings(&mut self) {
@@ -772,11 +1089,7 @@ impl RomVaultApp {
         use_origin_output: bool,
     ) -> Option<PathBuf> {
         if use_origin_output {
-            if source_path.is_dir() {
-                source_path.parent().map(Path::to_path_buf)
-            } else {
-                source_path.parent().map(Path::to_path_buf)
-            }
+            source_path.parent().map(Path::to_path_buf)
         } else if output_directory.trim().is_empty() {
             None
         } else {
@@ -1439,6 +1752,13 @@ impl RomVaultApp {
     fn scan_selected_roots(tx: &Sender<String>, scan_level: rv_core::settings::EScanLevel) {
         GLOBAL_DB.with(|db_ref| {
             if let Some(db) = db_ref.borrow().as_ref() {
+                let settings = rv_core::settings::get_settings();
+                let mut cache_timer = if settings.cache_save_timer_enabled {
+                    Some(std::time::Instant::now())
+                } else {
+                    None
+                };
+
                 let root_children = db.dir_root.borrow().children.clone();
 
                 for child in root_children {
@@ -1458,6 +1778,19 @@ impl RomVaultApp {
                     root_scan.children = files;
                     let _ = tx.send(format!("Integrating {} files into DB...", name));
                     FileScanning::scan_dir_with_level(Rc::clone(&child), &mut root_scan, scan_level);
+
+                    if let Some(last) = cache_timer {
+                        if last.elapsed().as_secs_f64() / 60.0
+                            > settings.cache_save_time_period as f64
+                        {
+                            let _ = tx.send("Saving Cache".to_string());
+                            db.write_cache();
+                            let _ = tx.send("Saving Cache Complete".to_string());
+                            cache_timer = Some(std::time::Instant::now());
+                        } else {
+                            cache_timer = Some(last);
+                        }
+                    }
                 }
 
                 rv_core::repair_status::RepairStatus::report_status_reset(Rc::clone(&db.dir_root));
@@ -1675,104 +2008,6 @@ impl eframe::App for RomVaultApp {
         }
         // Update artwork cache if selection changed
         self.update_artwork();
-        
-        // Global Keyboard Shortcuts
-        if ctx.input(|i| i.key_pressed(egui::Key::F1)) {
-            self.show_color_key = true;
-        }
-        if ctx.input(|i| i.key_pressed(egui::Key::F2)) {
-            self.show_sam_dialog = true;
-        }
-
-        if !self.sam_running && ctx.input(|i| i.key_pressed(egui::Key::F5) && i.modifiers.shift) {
-            self.launch_task("Update All DATs", move |tx| {
-                GLOBAL_DB.with(|db_ref| {
-                    if let Some(db) = db_ref.borrow().as_ref() {
-                        let _ = tx.send("Scanning DatRoot...".to_string());
-                        DatUpdate::check_all_dats(Rc::clone(&db.dir_root), "DatRoot");
-                        DatUpdate::update_dat(Rc::clone(&db.dir_root), "DatRoot");
-                    }
-                });
-            });
-        } else if !self.sam_running && ctx.input(|i| i.key_pressed(egui::Key::F5)) {
-            self.launch_task("Update DATs", move |tx| {
-                GLOBAL_DB.with(|db_ref| {
-                    if let Some(db) = db_ref.borrow().as_ref() {
-                        let _ = tx.send("Scanning DatRoot...".to_string());
-                        DatUpdate::update_dat(Rc::clone(&db.dir_root), "DatRoot");
-                    }
-                });
-            });
-        }
-
-        if !self.sam_running && ctx.input(|i| i.key_pressed(egui::Key::F6) && i.modifiers.shift) {
-            self.launch_scan_roms_task(
-                "Scan ROMs (Quick)",
-                "Scanning selected ROM roots (Headers Only)...",
-                rv_core::settings::EScanLevel::Level1,
-            );
-        } else if !self.sam_running && ctx.input(|i| i.key_pressed(egui::Key::F6) && i.modifiers.ctrl) {
-            self.launch_scan_roms_task(
-                "Scan ROMs (Full)",
-                "Scanning selected ROM roots (Full Rescan)...",
-                rv_core::settings::EScanLevel::Level3,
-            );
-        } else if !self.sam_running && ctx.input(|i| i.key_pressed(egui::Key::F6)) {
-            self.launch_scan_roms_task(
-                "Scan ROMs",
-                "Scanning selected ROM roots...",
-                rv_core::settings::EScanLevel::Level2,
-            );
-        }
-
-        if !self.sam_running && ctx.input(|i| i.key_pressed(egui::Key::F7)) {
-            self.launch_task("Find Fixes", move |tx| {
-                let _ = tx.send("Running FindFixes...".to_string());
-                GLOBAL_DB.with(|db_ref| {
-                    if let Some(db) = db_ref.borrow().as_ref() {
-                        FindFixes::scan_files(Rc::clone(&db.dir_root));
-                    }
-                });
-            });
-        }
-
-        if !self.sam_running && ctx.input(|i| i.key_pressed(egui::Key::F8)) {
-            self.launch_fix_roms_task();
-        }
-
-        if !self.sam_running && ctx.input(|i| i.key_pressed(egui::Key::F9) && i.modifiers.shift) {
-            self.prompt_full_report();
-        } else if !self.sam_running && ctx.input(|i| i.key_pressed(egui::Key::F9) && i.modifiers.ctrl) {
-            self.prompt_fix_report();
-        } else if !self.sam_running && ctx.input(|i| i.key_pressed(egui::Key::F9)) {
-            self.launch_task("Generate Reports (Missing)", |tx| {
-                let _ = tx.send("Generating FixDATs (Missing ROMs) to Desktop...".to_string());
-                GLOBAL_DB.with(|db_ref| {
-                    if let Some(db) = db_ref.borrow().as_ref() {
-                        let desktop_path = std::path::PathBuf::from(std::env::var("USERPROFILE").unwrap_or_default()).join("Desktop");
-                        FixDatReport::recursive_dat_tree(&desktop_path.to_string_lossy(), Rc::clone(&db.dir_root), true);
-                    }
-                });
-            });
-        }
-
-        if !self.sam_running && ctx.input(|i| i.key_pressed(egui::Key::F10) && i.modifiers.shift) {
-            self.active_dat_rule = rv_core::settings::find_rule("RustyVault");
-            self.show_dir_settings = true;
-        } else if !self.sam_running && ctx.input(|i| i.key_pressed(egui::Key::F10) && i.modifiers.ctrl) {
-            self.open_dir_mappings();
-        } else if !self.sam_running && ctx.input(|i| i.key_pressed(egui::Key::F10)) {
-            self.global_settings = rv_core::settings::get_settings();
-            self.show_settings = true;
-        }
-
-        if !self.sam_running && ctx.input(|i| i.key_pressed(egui::Key::F11)) {
-            self.prompt_add_tosort();
-        }
-
-        if ctx.input(|i| i.key_pressed(egui::Key::F12)) {
-            self.show_about = true;
-        }
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
@@ -1789,32 +2024,11 @@ impl eframe::App for RomVaultApp {
                 ui.menu_button("Update DATs", |ui| {
                     if ui.add_enabled(is_idle, egui::Button::new("Update New DATs")).clicked() {
                         let is_shift = ui.input(|i| i.modifiers.shift);
-                        self.launch_task("Update DATs", move |tx| {
-                            GLOBAL_DB.with(|db_ref| {
-                                if let Some(db) = db_ref.borrow().as_ref() {
-                                    if is_shift {
-                                        let _ = tx.send("Shift pressed: Full DAT Rescan...".to_string());
-                                        DatUpdate::check_all_dats(Rc::clone(&db.dir_root), "DatRoot");
-                                    }
-                                    let _ = tx.send("Scanning DatRoot...".to_string());
-                                    DatUpdate::update_dat(Rc::clone(&db.dir_root), "DatRoot");
-                                    db.dir_root.borrow_mut().cached_stats = None;
-                                }
-                            });
-                        });
+                        self.update_dats(is_shift);
                         ui.close_menu();
                     }
                     if ui.add_enabled(is_idle, egui::Button::new("Refresh All DATs")).clicked() {
-                        self.launch_task("Update All DATs", move |tx| {
-                            GLOBAL_DB.with(|db_ref| {
-                                if let Some(db) = db_ref.borrow().as_ref() {
-                                    let _ = tx.send("Scanning DatRoot...".to_string());
-                                    DatUpdate::check_all_dats(Rc::clone(&db.dir_root), "DatRoot");
-                                    DatUpdate::update_dat(Rc::clone(&db.dir_root), "DatRoot");
-                                    db.dir_root.borrow_mut().cached_stats = None;
-                                }
-                            });
-                        });
+                        self.update_dats(true);
                         ui.close_menu();
                     }
                 });
@@ -1947,6 +2161,10 @@ impl eframe::App for RomVaultApp {
                         self.show_color_key = true;
                         ui.close_menu();
                     }
+                    if cfg!(debug_assertions) && ui.button("Garbage Collect").clicked() {
+                        self.garbage_collect(ctx);
+                        ui.close_menu();
+                    }
                     if ui.button("Whats New").clicked() {
                         self.task_logs.push("Opening Whats New Wiki...".to_string());
                         let _ = std::process::Command::new("cmd")
@@ -1961,16 +2179,22 @@ impl eframe::App for RomVaultApp {
                             .spawn();
                         ui.close_menu();
                     }
-                    if ui.button("Discord").clicked() {
-                        self.task_logs.push("Opening Discord...".to_string());
-                        let _ = std::process::Command::new("cmd")
-                            .args(["/C", "start", "https://discord.gg/123456"]) // Placeholder discord link
-                            .spawn();
-                        ui.close_menu();
-                    }
                     if ui.button("About RustyVault").clicked() {
                         self.show_about = true;
                         ui.close_menu();
+                    }
+                });
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("Patreon").clicked() {
+                        let _ = std::process::Command::new("cmd")
+                            .args(["/C", "start", "", "https://www.patreon.com/romvault"])
+                            .spawn();
+                    }
+                    if ui.small_button("PayPal").clicked() {
+                        let _ = std::process::Command::new("cmd")
+                            .args(["/C", "start", "", "http://paypal.me/romvault"])
+                            .spawn();
                     }
                 });
             });
@@ -2181,7 +2405,7 @@ impl eframe::App for RomVaultApp {
                             let mut stats = rv_core::repair_status::RepairStatus::new();
                             stats.report_status(Rc::clone(node_rc));
                             let mut node_mut = node_rc.borrow_mut();
-                            node_mut.cached_stats = Some(stats.clone());
+                            node_mut.cached_stats = Some(stats);
                             
                             got = stats.count_correct();
                             missing = ui_missing_count(&stats);
@@ -2223,18 +2447,47 @@ impl eframe::App for RomVaultApp {
                 });
             });
 
-        // Right panel (Info/Artwork/Screens) should only appear when there is actually something to show
         let has_info = self.loaded_info.is_some();
+        let details_fields = self.selected_game.as_ref().and_then(|g| {
+            let gb = g.borrow();
+            let game_rc = gb.game.as_ref()?;
+            let game = game_rc.borrow();
+            Some(game_details_fields(&gb.name, &game))
+        });
+        let has_details = details_fields.as_ref().is_some_and(|f| !f.is_empty());
+        let trurip_fields = self.selected_game.as_ref().and_then(|g| {
+            let gb = g.borrow();
+            let game_rc = gb.game.as_ref()?;
+            let game = game_rc.borrow();
+            let emu_arc = game.get_data(rv_core::rv_game::GameData::EmuArc).unwrap_or_default();
+            if emu_arc != "yes" {
+                return None;
+            }
+            Some(trurip_meta_fields(&game))
+        });
+        let has_meta = trurip_fields.as_ref().is_some_and(|f| !f.is_empty());
         let has_artwork = self.loaded_logo.is_some() || self.loaded_artwork.is_some();
         let has_screens = self.loaded_title.is_some() || self.loaded_screen.is_some();
-        let show_right_panel = has_info || has_artwork || has_screens;
+        let show_right_panel = has_info || has_details || has_meta || has_artwork || has_screens;
 
         if show_right_panel {
-            let fallback_tab = if has_info { 0 } else if has_artwork { 1 } else { 2 };
+            let fallback_tab = if has_info {
+                0
+            } else if has_details {
+                4
+            } else if has_meta {
+                3
+            } else if has_artwork {
+                1
+            } else {
+                2
+            };
             match self.active_game_info_tab {
                 0 if !has_info => self.active_game_info_tab = fallback_tab,
                 1 if !has_artwork => self.active_game_info_tab = fallback_tab,
                 2 if !has_screens => self.active_game_info_tab = fallback_tab,
+                3 if !has_meta => self.active_game_info_tab = fallback_tab,
+                4 if !has_details => self.active_game_info_tab = fallback_tab,
                 _ => {}
             }
 
@@ -2250,6 +2503,12 @@ impl eframe::App for RomVaultApp {
                                 0,
                                 if self.loaded_info_type.is_empty() { "Info" } else { &self.loaded_info_type },
                             );
+                        }
+                        if has_details {
+                            ui.selectable_value(&mut self.active_game_info_tab, 4, "Details");
+                        }
+                        if has_meta {
+                            ui.selectable_value(&mut self.active_game_info_tab, 3, "TruRip");
                         }
                         if has_artwork {
                             ui.selectable_value(&mut self.active_game_info_tab, 1, "Artwork");
@@ -2267,6 +2526,36 @@ impl eframe::App for RomVaultApp {
                                     egui::RichText::new(info_text)
                                         .font(egui::FontId::monospace(12.0)),
                                 );
+                            }
+                        });
+                    } else if self.active_game_info_tab == 4 && has_details {
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            if let Some(fields) = &details_fields {
+                                egui::Grid::new("game_details_grid")
+                                    .num_columns(2)
+                                    .spacing([8.0, 6.0])
+                                    .show(ui, |ui| {
+                                        for (label, value) in fields {
+                                            ui.label(format!("{label}:"));
+                                            ui.label(value);
+                                            ui.end_row();
+                                        }
+                                    });
+                            }
+                        });
+                    } else if self.active_game_info_tab == 3 && has_meta {
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            if let Some(fields) = &trurip_fields {
+                                egui::Grid::new("trurip_meta_grid")
+                                    .num_columns(2)
+                                    .spacing([8.0, 6.0])
+                                    .show(ui, |ui| {
+                                        for (label, value) in fields {
+                                            ui.label(format!("{label}:"));
+                                            ui.label(value);
+                                            ui.end_row();
+                                        }
+                                    });
                             }
                         });
                     } else if self.active_game_info_tab == 1 && has_artwork {

@@ -136,18 +136,19 @@ fn load_game_from_dat(parent_dir: &mut DatDir, game_node: Node) {
     };
 
     let mut d_dir_node = DatNode::new_dir(name, file_type);
-    let mut d_game = DatGame::default();
-
-    d_game.id = game_node.attribute("id").map(|s| s.to_string());
-    d_game.rom_of = game_node.attribute("romof").map(|s| s.to_string());
-    d_game.clone_of = game_node.attribute("cloneof").map(|s| s.to_string());
-    d_game.clone_of_id = game_node.attribute("cloneofid").map(|s| s.to_string());
-    d_game.sample_of = game_node.attribute("sampleof").map(|s| s.to_string());
-    d_game.source_file = game_node.attribute("sourcefile").map(|s| s.to_string());
-    d_game.is_bios = game_node.attribute("isbios").map(|s| s.to_string());
-    d_game.is_device = game_node.attribute("isdevice").map(|s| s.to_string());
-    d_game.board = game_node.attribute("board").map(|s| s.to_string());
-    d_game.runnable = game_node.attribute("runnable").map(|s| s.to_string());
+    let mut d_game = DatGame {
+        id: game_node.attribute("id").map(|s| s.to_string()),
+        rom_of: game_node.attribute("romof").map(|s| s.to_string()),
+        clone_of: game_node.attribute("cloneof").map(|s| s.to_string()),
+        clone_of_id: game_node.attribute("cloneofid").map(|s| s.to_string()),
+        sample_of: game_node.attribute("sampleof").map(|s| s.to_string()),
+        source_file: game_node.attribute("sourcefile").map(|s| s.to_string()),
+        is_bios: game_node.attribute("isbios").map(|s| s.to_string()),
+        is_device: game_node.attribute("isdevice").map(|s| s.to_string()),
+        board: game_node.attribute("board").map(|s| s.to_string()),
+        runnable: game_node.attribute("runnable").map(|s| s.to_string()),
+        ..Default::default()
+    };
 
     for child in game_node.children() {
         if !child.is_element() {
@@ -231,8 +232,8 @@ fn load_rom_from_dat(parent_dir: &mut DatDir, rom_node: Node) {
         f.sha256 = rom_node.attribute("sha256").and_then(|s| var_fix::clean_md5_sha1(s, 64));
         f.md5 = rom_node.attribute("md5").and_then(|s| var_fix::clean_md5_sha1(s, 32));
         f.merge = rom_node.attribute("merge").map(|s| s.to_string());
-        f.status = rom_node.attribute("status").map(|s| var_fix::to_lower(s));
-        f.region = rom_node.attribute("region").map(|s| var_fix::to_lower(s));
+        f.status = rom_node.attribute("status").map(var_fix::to_lower);
+        f.region = rom_node.attribute("region").map(var_fix::to_lower);
         f.mia = rom_node.attribute("mia").map(|s| s.to_string());
     }
 
@@ -251,8 +252,8 @@ fn load_disk_from_dat(parent_dir: &mut DatDir, disk_node: Node) {
         f.sha1 = disk_node.attribute("sha1").and_then(|s| var_fix::clean_md5_sha1(s, 40));
         f.sha256 = disk_node.attribute("sha256").and_then(|s| var_fix::clean_md5_sha1(s, 64));
         f.md5 = disk_node.attribute("md5").and_then(|s| var_fix::clean_md5_sha1(s, 32));
-        f.merge = disk_node.attribute("merge").map(|s| var_fix::clean_chd(s));
-        f.status = disk_node.attribute("status").map(|s| var_fix::to_lower(s));
+        f.merge = disk_node.attribute("merge").map(var_fix::clean_chd);
+        f.status = disk_node.attribute("status").map(var_fix::to_lower);
         f.mia = disk_node.attribute("mia").map(|s| s.to_string());
         f.is_disk = true;
     }

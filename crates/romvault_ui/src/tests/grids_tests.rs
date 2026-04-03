@@ -110,6 +110,36 @@
     }
 
     #[test]
+    fn test_game_display_description_maps_placeholder_to_filename_stem() {
+        use rv_core::rv_game::{GameData, GameMetaData, RvGame};
+
+        let mut node = RvFile::new(FileType::Zip);
+        node.name = "pacman.zip".to_string();
+        let mut game = RvGame::new();
+        game.game_meta_data.push(GameMetaData {
+            id: GameData::Description,
+            value: "¤".to_string(),
+        });
+        node.game = Some(Rc::new(RefCell::new(game)));
+
+        assert_eq!(game_display_description(&node), "pacman");
+    }
+
+    #[test]
+    fn test_format_file_mod_date_cell_formats_dos_datetime() {
+        let mut node = RvFile::new(FileType::File);
+        node.file_mod_time_stamp = compress::compress_utils::combine_dos_date_time(0x4A37, 0x7B12);
+        assert_eq!(super::format_file_mod_date_cell(&node), "2017/01/23 15:24:36");
+    }
+
+    #[test]
+    fn test_format_file_mod_date_cell_maps_torrentzip_timestamp_to_label() {
+        let mut node = RvFile::new(FileType::File);
+        node.file_mod_time_stamp = compress::compress_utils::combine_dos_date_time(8600, 48128);
+        assert_eq!(super::format_file_mod_date_cell(&node), "Trrntziped");
+    }
+
+    #[test]
     fn test_rom_row_color_treats_missing_family_variants_as_red() {
         assert_eq!(rom_row_color(RepStatus::Corrupt), egui::Color32::from_rgb(80, 40, 40));
         assert_eq!(rom_row_color(RepStatus::DirCorrupt), egui::Color32::from_rgb(80, 40, 40));
@@ -143,24 +173,6 @@
         assert!(got.contains("Name : rom.bin"));
         assert!(got.contains("Size : 123"));
         assert!(got.contains("CRC32: "));
-    }
-
-    #[test]
-    fn test_game_clipboard_text_matches_reference_columns() {
-        let mut node = RvFile::new(FileType::Dir);
-        node.name = "GameA".to_string();
-        node.file_mod_time_stamp = 19961224233200;
-
-        let type_text = game_clipboard_text(&node, "Desc", GameGridCopyColumn::Type).unwrap();
-        assert!(type_text.contains("GameA"));
-        assert!(type_text.ends_with('\n'));
-
-        let status_text = game_clipboard_text(&node, "MyDesc", GameGridCopyColumn::RomStatus).unwrap();
-        assert!(status_text.contains("Name : GameA"));
-        assert!(status_text.contains("Desc : MyDesc"));
-
-        let desc_text = game_clipboard_text(&node, "MyDesc", GameGridCopyColumn::Description).unwrap();
-        assert_eq!(desc_text, "MyDesc");
     }
 
     #[test]

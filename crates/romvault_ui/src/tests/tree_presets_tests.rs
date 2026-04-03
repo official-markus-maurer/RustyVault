@@ -40,8 +40,7 @@ fn test_tree_presets_write_and_read_round_trip() {
     apply_tree_state(Rc::clone(&root), &loaded);
 
     assert_eq!(a.borrow().tree_checked, TreeSelect::Selected);
-    assert_eq!(a.borrow().tree_expanded, true);
+    assert!(a.borrow().tree_expanded);
     assert_eq!(b.borrow().tree_checked, TreeSelect::Locked);
-    assert_eq!(b.borrow().tree_expanded, false);
+    assert!(!b.borrow().tree_expanded);
 }
-

@@ -201,7 +201,7 @@ impl DatClean {
             }
             for (i, order) in cat_order.iter().enumerate() {
                 if order.eq_ignore_ascii_case(c) {
-                    if best.map_or(true, |b| i < b) {
+                    if best.is_none_or(|b| i < b) {
                         best = Some(i);
                     }
                     break;
@@ -473,8 +473,10 @@ impl DatClean {
             let file_node = t_dat.children.remove(i);
             let mut new_game = DatNode::new_dir(game_name.clone(), FileType::UnSet);
             if let Some(d) = new_game.dir_mut() {
-                let mut g = crate::dat_store::DatGame::default();
-                g.description = Some(game_name.clone());
+                let g = crate::dat_store::DatGame {
+                    description: Some(game_name.clone()),
+                    ..Default::default()
+                };
                 d.d_game = Some(Box::new(g));
                 d.add_child(file_node);
             }
@@ -492,8 +494,10 @@ impl DatClean {
             match ft {
                 FileType::Dir => Self::set_archives_as_games(d),
                 FileType::Zip | FileType::SevenZip => {
-                    let mut g = crate::dat_store::DatGame::default();
-                    g.description = Some(name);
+                    let g = crate::dat_store::DatGame {
+                        description: Some(name),
+                        ..Default::default()
+                    };
                     d.d_game = Some(Box::new(g));
                 }
                 _ => {}
@@ -505,8 +509,10 @@ impl DatClean {
         for node in &mut t_dat.children {
             let name = node.name.clone();
             let Some(d) = node.dir_mut() else { continue };
-            let mut g = crate::dat_store::DatGame::default();
-            g.description = Some(name);
+            let g = crate::dat_store::DatGame {
+                description: Some(name),
+                ..Default::default()
+            };
             d.d_game = Some(Box::new(g));
         }
     }
@@ -514,18 +520,17 @@ impl DatClean {
     pub fn has_rom_of(t_dat: &DatDir) -> bool {
         for node in &t_dat.children {
             let Some(m_game) = node.dir() else { continue };
-            if m_game.d_game.is_none() {
-                if Self::has_rom_of(m_game) {
-                    return true;
-                }
-            } else {
-                let game = m_game.d_game.as_ref().unwrap();
+            if let Some(game) = m_game.d_game.as_ref() {
                 if game.rom_of.as_ref().is_some_and(|s| !s.trim().is_empty())
                     || game.clone_of.as_ref().is_some_and(|s| !s.trim().is_empty())
                     || game.clone_of_id.as_ref().is_some_and(|s| !s.trim().is_empty())
                 {
                     return true;
                 }
+                continue;
+            }
+            if Self::has_rom_of(m_game) {
+                return true;
             }
         }
         false
@@ -847,9 +852,10 @@ impl DatClean {
                     Self::remove_devices(m_game);
                     t_dat.add_child(child);
                 } else {
-                    let g = m_game.d_game.as_ref().unwrap();
-                    if g.is_device.as_deref() == Some("yes") && g.runnable.as_deref() == Some("no") {
-                        continue;
+                    if let Some(g) = m_game.d_game.as_ref() {
+                        if g.is_device.as_deref() == Some("yes") && g.runnable.as_deref() == Some("no") {
+                            continue;
+                        }
                     }
                     t_dat.add_child(child);
                 }
@@ -1002,7 +1008,7 @@ impl DatClean {
             match child.file_type {
                 FileType::UnSet | FileType::File | FileType::Dir => {
                     child.name = child.name.trim_start_matches(' ').to_string();
-                    child.name = child.name.trim_end_matches(|c| c == '.' || c == ' ').to_string();
+                    child.name = child.name.trim_end_matches(['.', ' ']).to_string();
                 }
                 FileType::Zip | FileType::SevenZip => {
                     child.name = child.name.trim_start_matches(' ').to_string();
@@ -1117,8 +1123,10 @@ impl DatClean {
 
         dat_header.base_dir.children.clear();
 
-        let mut d_game = crate::dat_store::DatGame::default();
-        d_game.description = dat_header.description.clone();
+        let d_game = crate::dat_store::DatGame {
+            description: dat_header.description.clone(),
+            ..Default::default()
+        };
 
         if is_files {
             Self::make_single_level_into_dir(
@@ -1165,18 +1173,16 @@ impl DatClean {
 
             for mut rom in set_children {
                 if sub_dir_type == RemoveSubType::KeepAllSubDirs {
-                    Self::add_back_dir(is_files, out_dir, &set_name, set_game.as_ref(), rom);
+                    Self::add_back_dir(is_files, out_dir, &set_name, set_game.as_deref(), rom);
                     continue;
                 }
-                if sub_dir_type == RemoveSubType::RemoveSubIfSingleFiles {
-                    if set_len != 1 {
-                        Self::add_back_dir(is_files, out_dir, &set_name, set_game.as_ref(), rom);
-                        continue;
-                    }
+                if sub_dir_type == RemoveSubType::RemoveSubIfSingleFiles && set_len != 1 {
+                    Self::add_back_dir(is_files, out_dir, &set_name, set_game.as_deref(), rom);
+                    continue;
                 }
                 if sub_dir_type == RemoveSubType::RemoveSubIfNameMatches {
                     if set_len != 1 {
-                        Self::add_back_dir(is_files, out_dir, &set_name, set_game.as_ref(), rom);
+                        Self::add_back_dir(is_files, out_dir, &set_name, set_game.as_deref(), rom);
                         continue;
                     }
 
@@ -1191,7 +1197,7 @@ impl DatClean {
                         }
                     }
                     if test_rom_name != set_name {
-                        Self::add_back_dir(is_files, out_dir, &set_name, set_game.as_ref(), rom);
+                        Self::add_back_dir(is_files, out_dir, &set_name, set_game.as_deref(), rom);
                         continue;
                     }
                 }
@@ -1211,7 +1217,7 @@ impl DatClean {
         is_files: bool,
         out_dir: &mut DatDir,
         set_name: &str,
-        set_game: Option<&Box<crate::dat_store::DatGame>>,
+        set_game: Option<&crate::dat_store::DatGame>,
         mut rom: DatNode,
     ) {
         if is_files {
@@ -1224,7 +1230,7 @@ impl DatClean {
             } else {
                 let mut new_dir = DatNode::new_dir(set_name.to_string(), FileType::UnSet);
                 if let Some(d) = new_dir.dir_mut() {
-                    d.d_game = set_game.cloned();
+                    d.d_game = set_game.map(|g| Box::new(g.clone()));
                 }
                 out_dir.children.push(new_dir);
                 out_dir.children.len() - 1
@@ -1543,10 +1549,7 @@ impl DatClean {
     }
 
     fn check_dir(file_type: FileType) -> bool {
-        match file_type {
-            FileType::FileZip | FileType::FileSevenZip => false,
-            _ => true,
-        }
+        !matches!(file_type, FileType::FileZip | FileType::FileSevenZip)
     }
 
     pub fn alphanum_cmp(s1: &str, s2: &str) -> i32 {

@@ -68,7 +68,7 @@ pub struct ScannedFile {
 
 impl ScannedFile {
     fn ascii_lower(byte: u8) -> u8 {
-        if byte >= b'A' && byte <= b'Z' {
+        if byte.is_ascii_uppercase() {
             byte + 0x20
         } else {
             byte
@@ -208,11 +208,7 @@ impl ScannedFile {
             got_status: GotStatus::NotGot,
             zip_struct: ZipStructure::None,
             comment: String::new(),
-            children: if file_type == FileType::Dir || file_type == FileType::Zip || file_type == FileType::SevenZip {
-                Vec::new()
-            } else {
-                Vec::new() // Default empty
-            },
+            children: Vec::new(),
             local_header_offset: None,
             deep_scanned: false,
             status_flags: FileStatus::NONE,

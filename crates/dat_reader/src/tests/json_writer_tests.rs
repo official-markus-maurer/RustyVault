@@ -4,8 +4,10 @@ use crate::json_writer::DatJsonWriter;
 
 #[test]
 fn test_json_writer_emits_expected_shape_for_torrentzip_game() {
-    let mut header = DatHeader::default();
-    header.name = Some("TestDat".to_string());
+    let mut header = DatHeader {
+        name: Some("TestDat".to_string()),
+        ..Default::default()
+    };
 
     let mut game = DatNode::new_dir("Game1".to_string(), FileType::Zip);
     {
@@ -43,4 +45,3 @@ fn test_json_writer_emits_expected_shape_for_torrentzip_game() {
     assert_eq!(v["root"][0]["objects"][0]["crc"], "12345678");
     assert_eq!(v["root"][0]["objects"][0]["sha1"], "0011");
 }
-

@@ -225,8 +225,10 @@ impl ExternalDatConverterTo {
 
         if let Some(ref g_rc) = rv_file.game {
             let g = g_rc.borrow();
-            let mut dat_game = DatGame::default();
-            dat_game.description = g.get_data(GameData::Description);
+            let mut dat_game = DatGame {
+                description: g.get_data(GameData::Description),
+                ..Default::default()
+            };
             if let Some(cat) = g.get_data(GameData::Category) {
                 dat_game.category = Self::category_list(&cat).unwrap_or_default();
             }
@@ -328,6 +330,12 @@ impl ExternalDatConverterTo {
         }
 
         d_dir.children = kept_children;
+    }
+}
+
+impl Default for ExternalDatConverterTo {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

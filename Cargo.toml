@@ -18,3 +18,6 @@ resolver = "2"
 version = "0.1.0"
 edition = "2021"
 authors = ["RustyRoms Contributors"]
+
+[patch.crates-io]
+sevenz-rust2 = { path = "vendor/sevenz-rust2" }

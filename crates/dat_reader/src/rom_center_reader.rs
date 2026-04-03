@@ -156,14 +156,12 @@ fn load_game(dfl: &mut DatFileLoader, parent_dir: &mut DatDir) -> Result<(), Str
         } else {
             let mut d_dir = DatNode::new_dir(game_name.to_string(), FileType::UnSet);
             if let Some(d) = d_dir.dir_mut() {
-                let mut d_game = DatGame::default();
-                d_game.description = Some(game_desc.to_string());
-                if parent_name != game_name {
-                    d_game.clone_of = Some(parent_name.to_string());
-                }
-                if rom_of != game_name {
-                    d_game.rom_of = Some(rom_of.to_string());
-                }
+                let d_game = DatGame {
+                    description: Some(game_desc.to_string()),
+                    clone_of: (parent_name != game_name).then(|| parent_name.to_string()),
+                    rom_of: (rom_of != game_name).then(|| rom_of.to_string()),
+                    ..Default::default()
+                };
                 d.d_game = Some(Box::new(d_game));
 
                 let mut d_rom = DatNode::new_file(rom_name.to_string(), FileType::UnSet);
@@ -227,11 +225,11 @@ fn load_disks(dfl: &mut DatFileLoader, parent_dir: &mut DatDir) -> Result<(), St
         } else {
             let mut d_dir = DatNode::new_dir(game_name.to_string(), FileType::UnSet);
             if let Some(d) = d_dir.dir_mut() {
-                let mut d_game = DatGame::default();
-                d_game.description = Some(game_desc.to_string());
-                if parent_name != game_name {
-                    d_game.clone_of = Some(parent_name.to_string());
-                }
+                let d_game = DatGame {
+                    description: Some(game_desc.to_string()),
+                    clone_of: (parent_name != game_name).then(|| parent_name.to_string()),
+                    ..Default::default()
+                };
                 d.d_game = Some(Box::new(d_game));
 
                 let mut d_rom = DatNode::new_file(var_fix::clean_chd(rom_name), FileType::UnSet);

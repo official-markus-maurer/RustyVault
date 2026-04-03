@@ -9,7 +9,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use flate2::write::DeflateEncoder;
 use flate2::Compression;
 use compress::{apply_romvault7z_marker, ZipStructure as CompressZipStructure};
-use sevenz_rust::compress_to_path as compress_to_7z_path;
+use compress::i_compress::ICompress;
+use compress::structured_archive::get_compression_type;
+use compress::ZipReturn;
+use compress::zip_file::ZipFile as CompressZipFile;
+use sevenz_rust::{ArchiveEntry, ArchiveWriter, EncoderConfiguration, EncoderMethod, SourceReader};
+use sevenz_rust::encoder_options::{EncoderOptions, LzmaOptions, ZstandardOptions};
 use tracing::{info, debug, trace};
 use crate::enums::RepStatus;
 use crate::rv_file::{RvFile, TreeSelect};
@@ -377,6 +382,12 @@ impl Fix {
         info!("Starting Fix execution pass...");
         let mut file_process_queue = Vec::new();
         let mut total_fixed = 0;
+        let settings = crate::settings::get_settings();
+        let mut cache_timer = if settings.cache_save_timer_enabled {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
 
         // In order to not slow down the single-threaded rust fix process with DB searches,
         // we pre-compute the hash map of needed files (this is a Rust optimization 
@@ -406,6 +417,22 @@ impl Fix {
             while !file_process_queue.is_empty() {
                 let queued_file = file_process_queue.remove(0);
                 Self::fix_base(queued_file, &mut file_process_queue, &mut total_fixed, &crc_map, &sha1_map, &md5_map);
+                if let Some(last) = cache_timer {
+                    if last.elapsed().as_secs_f64() / 60.0 > settings.cache_save_time_period as f64 {
+                        crate::cache::Cache::write_cache(Rc::clone(&root));
+                        cache_timer = Some(std::time::Instant::now());
+                    } else {
+                        cache_timer = Some(last);
+                    }
+                }
+            }
+            if let Some(last) = cache_timer {
+                if last.elapsed().as_secs_f64() / 60.0 > settings.cache_save_time_period as f64 {
+                    crate::cache::Cache::write_cache(Rc::clone(&root));
+                    cache_timer = Some(std::time::Instant::now());
+                } else {
+                    cache_timer = Some(last);
+                }
             }
         }
         
@@ -1338,9 +1365,7 @@ impl Fix {
             let parent = node.parent.as_ref().and_then(|p| p.upgrade());
             drop(node);
 
-            let Some(parent_rc) = parent else {
-                return None;
-            };
+            let parent_rc = parent?;
 
             let parent_type = parent_rc.borrow().file_type;
             if matches!(parent_type, FileType::Zip | FileType::SevenZip) {
@@ -1360,38 +1385,10 @@ impl Fix {
         None
     }
 
-    fn make_temp_extract_dir(prefix: &str) -> PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        std::env::temp_dir().join(format!("{}_{}_{}", prefix, std::process::id(), unique))
-    }
-
     fn read_seven_zip_entry_bytes(archive_path: &str, entry_name: &str) -> Option<Vec<u8>> {
-        let temp_dir = Self::make_temp_extract_dir("rvfix_7z_extract");
-        let _ = fs::create_dir_all(&temp_dir);
-        let mut buffer = Vec::new();
-        let mut found = false;
-        let status = sevenz_rust::decompress_file_with_extract_fn(
-            archive_path,
-            &temp_dir,
-            |entry, reader, _dest| {
-                if Self::logical_name_eq(entry.name(), entry_name) {
-                    found = true;
-                    std::io::copy(reader, &mut buffer)?;
-                    Ok(true)
-                } else {
-                    Ok(false)
-                }
-            },
-        );
-        let _ = fs::remove_dir_all(&temp_dir);
-        if status.is_ok() && found {
-            Some(buffer)
-        } else {
-            None
-        }
+        compress::seven_zip::extract_entry_bytes(archive_path, entry_name)
+            .ok()
+            .flatten()
     }
 
     fn read_source_file_bytes(source_file: Rc<RefCell<RvFile>>) -> Option<Vec<u8>> {
@@ -1592,13 +1589,29 @@ impl Fix {
         let temp_zip_path = format!("{}.rvfix.tmp", zip_path);
         let current_exists = Path::new(&zip_path).exists();
         let write_exact_torrentzip = matches!(desired_zip_struct, ZipStructure::ZipTrrnt);
+        let write_structured_zip = matches!(desired_zip_struct, ZipStructure::ZipZSTD | ZipStructure::ZipTDC);
         let mut retained_entries = 0usize;
         let mut any_changes = current_exists && zip_file.borrow().zip_struct != desired_zip_struct;
         let mut entries = Vec::new();
         Self::collect_archive_rebuild_entries(Rc::clone(&zip_file), "", "", &mut entries, &mut any_changes);
         Self::sort_archive_rebuild_entries(&mut entries, desired_zip_struct);
         let mut torrentzip_entries: Vec<TorrentZipBuiltEntry> = Vec::new();
-        let mut writer = if write_exact_torrentzip {
+        let mut structured_writer = if write_structured_zip {
+            let compress_struct = match desired_zip_struct {
+                ZipStructure::ZipZSTD => CompressZipStructure::ZipZSTD,
+                ZipStructure::ZipTDC => CompressZipStructure::ZipTDC,
+                _ => CompressZipStructure::None,
+            };
+            let mut zip_out = CompressZipFile::new();
+            if zip_out.zip_file_create_with_structure(&temp_zip_path, compress_struct) != ZipReturn::ZipGood {
+                return false;
+            }
+            Some((zip_out, compress_struct))
+        } else {
+            None
+        };
+
+        let mut writer = if write_exact_torrentzip || write_structured_zip {
             None
         } else {
             let temp_file = match File::create(&temp_zip_path) {
@@ -1664,7 +1677,23 @@ impl Fix {
                 if write_exact_torrentzip {
                     torrentzip_entries.push(Self::build_torrentzip_directory_entry(&child_name));
                     retained_entries += 1;
-                } else if writer.as_mut().map_or(true, |writer| {
+                } else if let Some((zip_out, compress_struct)) = structured_writer.as_mut() {
+                    let name = format!("{}/", child_name.trim_end_matches('/').replace('\\', "/"));
+                    let compression_type = get_compression_type(*compress_struct);
+                    let Ok(mut write_stream) =
+                        zip_out.zip_file_open_write_stream(false, &name, 0, compression_type, None)
+                    else {
+                        let _ = fs::remove_file(&temp_zip_path);
+                        return false;
+                    };
+                    let _ = write_stream.flush();
+                    drop(write_stream);
+                    if zip_out.zip_file_close_write_stream(&[]) != ZipReturn::ZipGood {
+                        let _ = fs::remove_file(&temp_zip_path);
+                        return false;
+                    }
+                    retained_entries += 1;
+                } else if writer.as_mut().is_none_or(|writer| {
                     writer.add_directory(format!("{}/", child_name.trim_end_matches('/')), options).is_err()
                 }) {
                     let _ = fs::remove_file(&temp_zip_path);
@@ -1784,7 +1813,30 @@ impl Fix {
                 };
                 torrentzip_entries.push(built_entry);
                 retained_entries += 1;
-            } else if writer.as_mut().map_or(true, |writer| {
+            } else if let Some((zip_out, compress_struct)) = structured_writer.as_mut() {
+                let name = child_name.replace('\\', "/");
+                let compression_type = get_compression_type(*compress_struct);
+                let Ok(mut write_stream) = zip_out.zip_file_open_write_stream(
+                    false,
+                    &name,
+                    entry_bytes.len() as u64,
+                    compression_type,
+                    None,
+                ) else {
+                    let _ = fs::remove_file(&temp_zip_path);
+                    return false;
+                };
+                if write_stream.write_all(&entry_bytes).is_err() {
+                    let _ = fs::remove_file(&temp_zip_path);
+                    return false;
+                }
+                drop(write_stream);
+                if zip_out.zip_file_close_write_stream(&[]) != ZipReturn::ZipGood {
+                    let _ = fs::remove_file(&temp_zip_path);
+                    return false;
+                }
+                retained_entries += 1;
+            } else if writer.as_mut().is_none_or(|writer| {
                 writer.start_file(child_name, options).is_err() || writer.write_all(&entry_bytes).is_err()
             }) {
                 let _ = fs::remove_file(&temp_zip_path);
@@ -1803,9 +1855,12 @@ impl Fix {
                 let _ = fs::remove_file(&temp_zip_path);
                 return false;
             }
+        } else if let Some((mut zip_out, compress_struct)) = structured_writer.take() {
+            let _ = compress_struct;
+            zip_out.zip_file_close();
         } else if writer
             .take()
-            .map_or(false, |writer| writer.finish().is_err())
+            .is_some_and(|writer| writer.finish().is_err())
         {
             let _ = fs::remove_file(&temp_zip_path);
             return false;
@@ -1957,7 +2012,6 @@ impl Fix {
         let desired_zip_struct = archive_file.borrow().new_zip_struct();
         let archive_path = Self::get_existing_physical_path(Rc::clone(&archive_file));
         let temp_archive_path = format!("{}.rvfix.tmp", archive_path);
-        let staging_dir = PathBuf::from(format!("{}.rvfix.dir", archive_path));
         let current_exists = Path::new(&archive_path).exists();
         let mut retained_entries = 0usize;
         let mut any_changes = current_exists && archive_file.borrow().zip_struct != desired_zip_struct;
@@ -1965,10 +2019,24 @@ impl Fix {
         Self::collect_archive_rebuild_entries(Rc::clone(&archive_file), "", "", &mut entries, &mut any_changes);
         Self::sort_archive_rebuild_entries(&mut entries, desired_zip_struct);
 
-        let _ = fs::remove_dir_all(&staging_dir);
-        if fs::create_dir_all(&staging_dir).is_err() {
-            return false;
+        let mut dir_has_children: HashMap<String, bool> = HashMap::new();
+        for e in &entries {
+            if e.is_directory {
+                continue;
+            }
+            let name = e.target_name.replace('\\', "/");
+            if let Some(idx) = name.rfind('/') {
+                dir_has_children.insert(format!("{}/", &name[..idx]), true);
+            }
         }
+
+        struct SevenZipPlannedEntry {
+            archive_name: String,
+            is_directory: bool,
+            payload: Option<Vec<u8>>,
+        }
+
+        let mut planned: Vec<SevenZipPlannedEntry> = Vec::new();
 
         for entry in &entries {
             let (child_name, existing_child_name, rep_status, got_status, is_directory) = {
@@ -1982,9 +2050,43 @@ impl Fix {
                 )
             };
 
+            let archive_name = if is_directory {
+                let mut d = child_name.trim_end_matches('/').replace('\\', "/");
+                d.push('/');
+                d
+            } else {
+                child_name.replace('\\', "/")
+            };
+
             if is_directory {
-                let _ = fs::remove_dir_all(&staging_dir);
-                return false;
+                if dir_has_children.get(&archive_name).copied().unwrap_or(false) {
+                    any_changes = true;
+                    continue;
+                }
+                match rep_status {
+                    RepStatus::Delete | RepStatus::UnNeeded => {
+                        any_changes = true;
+                        continue;
+                    }
+                    RepStatus::MoveToSort | RepStatus::MoveToCorrupt => {
+                        any_changes = true;
+                        continue;
+                    }
+                    RepStatus::Rename => {
+                        if existing_child_name.replace('\\', "/") != archive_name {
+                            any_changes = true;
+                        }
+                    }
+                    _ => {}
+                }
+
+                planned.push(SevenZipPlannedEntry {
+                    archive_name,
+                    is_directory: true,
+                    payload: None,
+                });
+                retained_entries += 1;
+                continue;
             }
 
             let entry_bytes = match rep_status {
@@ -1994,7 +2096,6 @@ impl Fix {
                 }
                 RepStatus::MoveToSort | RepStatus::MoveToCorrupt => {
                     let Some(bytes) = Self::read_seven_zip_entry_bytes(&archive_path, &existing_child_name) else {
-                        let _ = fs::remove_dir_all(&staging_dir);
                         return false;
                     };
                     let target_path = Self::get_archive_member_tosort_path(
@@ -2007,7 +2108,6 @@ impl Fix {
                         },
                     );
                     if fs::write(&target_path, &bytes).is_err() {
-                        let _ = fs::remove_dir_all(&staging_dir);
                         return false;
                     }
                     any_changes = true;
@@ -2015,7 +2115,6 @@ impl Fix {
                 }
                 RepStatus::Rename => {
                     let Some(bytes) = Self::read_seven_zip_entry_bytes(&archive_path, &existing_child_name) else {
-                        let _ = fs::remove_dir_all(&staging_dir);
                         return false;
                     };
                     if existing_child_name != child_name {
@@ -2029,12 +2128,10 @@ impl Fix {
                         Self::find_source_file(&child_ref, crc_map, sha1_map, md5_map)
                     };
                     let Some(source_file) = source_file else {
-                        let _ = fs::remove_dir_all(&staging_dir);
                         return false;
                     };
 
                     let Some(bytes) = Self::read_source_file_bytes(Rc::clone(&source_file)) else {
-                        let _ = fs::remove_dir_all(&staging_dir);
                         return false;
                     };
 
@@ -2056,38 +2153,31 @@ impl Fix {
                 _ => {
                     if !current_exists {
                         if got_status == GotStatus::Got {
-                            let _ = fs::remove_dir_all(&staging_dir);
                             return false;
                         }
                         continue;
                     }
 
                     let Some(bytes) = Self::read_seven_zip_entry_bytes(&archive_path, &existing_child_name) else {
-                        let _ = fs::remove_dir_all(&staging_dir);
                         return false;
                     };
                     bytes
                 }
             };
 
-            let staged_path = staging_dir.join(&child_name);
-            if let Some(parent) = staged_path.parent() {
-                let _ = fs::create_dir_all(parent);
-            }
-            if fs::write(&staged_path, &entry_bytes).is_err() {
-                let _ = fs::remove_dir_all(&staging_dir);
-                return false;
-            }
+            planned.push(SevenZipPlannedEntry {
+                archive_name,
+                is_directory: false,
+                payload: Some(entry_bytes),
+            });
             retained_entries += 1;
         }
 
         if !any_changes {
-            let _ = fs::remove_dir_all(&staging_dir);
             return false;
         }
 
         if retained_entries == 0 {
-            let _ = fs::remove_dir_all(&staging_dir);
             let _ = fs::remove_file(&temp_archive_path);
             if Path::new(&archive_path).exists() {
                 let _ = fs::remove_file(&archive_path);
@@ -2120,11 +2210,6 @@ impl Fix {
         }
 
         let _ = fs::remove_file(&temp_archive_path);
-        if compress_to_7z_path(&staging_dir, &temp_archive_path).is_err() {
-            let _ = fs::remove_dir_all(&staging_dir);
-            let _ = fs::remove_file(&temp_archive_path);
-            return false;
-        }
         let compress_struct = match desired_zip_struct {
             ZipStructure::SevenZipSLZMA => CompressZipStructure::SevenZipSLZMA,
             ZipStructure::SevenZipNLZMA => CompressZipStructure::SevenZipNLZMA,
@@ -2132,6 +2217,138 @@ impl Fix {
             ZipStructure::SevenZipNZSTD => CompressZipStructure::SevenZipNZSTD,
             _ => CompressZipStructure::None,
         };
+
+        planned.sort_by(|a, b| {
+            let zf_a = ZippedFile {
+                index: 0,
+                name: a.archive_name.clone(),
+                size: a.payload.as_ref().map(|p| p.len() as u64).unwrap_or(0),
+                crc: None,
+                sha1: None,
+                is_dir: a.is_directory,
+            };
+            let zf_b = ZippedFile {
+                index: 0,
+                name: b.archive_name.clone(),
+                size: b.payload.as_ref().map(|p| p.len() as u64).unwrap_or(0),
+                crc: None,
+                sha1: None,
+                is_dir: b.is_directory,
+            };
+            TorrentZipCheck::trrnt_7zip_string_compare(&zf_a, &zf_b).cmp(&0)
+        });
+
+        for i in 0..planned.len().saturating_sub(1) {
+            if planned[i].archive_name == planned[i + 1].archive_name {
+                let _ = fs::remove_file(&temp_archive_path);
+                return false;
+            }
+        }
+
+        let file = match File::create(&temp_archive_path) {
+            Ok(f) => f,
+            Err(_) => {
+                let _ = fs::remove_file(&temp_archive_path);
+                return false;
+            }
+        };
+
+        let mut writer = match ArchiveWriter::new(file) {
+            Ok(w) => w,
+            Err(_) => {
+                let _ = fs::remove_file(&temp_archive_path);
+                return false;
+            }
+        };
+        writer.set_encrypt_header(false);
+
+        let solid = matches!(desired_zip_struct, ZipStructure::SevenZipSLZMA | ZipStructure::SevenZipSZSTD);
+        if solid {
+            let config = match desired_zip_struct {
+                ZipStructure::SevenZipSZSTD | ZipStructure::SevenZipNZSTD => EncoderConfiguration::new(EncoderMethod::ZSTD)
+                    .with_options(EncoderOptions::Zstd(ZstandardOptions::from_level(19))),
+                _ => {
+                    let mut lz = LzmaOptions::from_level(9);
+                    lz.set_dictionary_size(1 << 24);
+                    lz.set_num_fast_bytes(64);
+                    lz.set_lc(4);
+                    lz.set_lp(0);
+                    lz.set_pb(2);
+                    lz.set_mode_normal();
+                    lz.set_match_finder_bt4();
+                    EncoderConfiguration::new(EncoderMethod::LZMA).with_options(EncoderOptions::Lzma(lz))
+                }
+            };
+            writer.set_content_methods(vec![config]);
+
+            for p in planned.iter().filter(|p| p.is_directory) {
+                if writer
+                    .push_archive_entry::<&[u8]>(ArchiveEntry::new_directory(&p.archive_name), None)
+                    .is_err()
+                {
+                    let _ = fs::remove_file(&temp_archive_path);
+                    return false;
+                }
+            }
+
+            let mut file_entries = Vec::new();
+            let mut readers: Vec<SourceReader<std::io::Cursor<Vec<u8>>>> = Vec::new();
+            for p in planned.iter().filter(|p| !p.is_directory) {
+                let payload = p.payload.clone().unwrap_or_default();
+                file_entries.push(ArchiveEntry::new_file(&p.archive_name));
+                readers.push(SourceReader::new(std::io::Cursor::new(payload)));
+            }
+            if !file_entries.is_empty() && writer.push_archive_entries(file_entries, readers).is_err() {
+                let _ = fs::remove_file(&temp_archive_path);
+                return false;
+            }
+        } else {
+            for p in &planned {
+                if p.is_directory {
+                    if writer
+                        .push_archive_entry::<&[u8]>(ArchiveEntry::new_directory(&p.archive_name), None)
+                        .is_err()
+                    {
+                        let _ = fs::remove_file(&temp_archive_path);
+                        return false;
+                    }
+                    continue;
+                }
+                let payload = p.payload.clone().unwrap_or_default();
+                let config = match desired_zip_struct {
+                    ZipStructure::SevenZipSZSTD | ZipStructure::SevenZipNZSTD => EncoderConfiguration::new(EncoderMethod::ZSTD)
+                        .with_options(EncoderOptions::Zstd(ZstandardOptions::from_level(19))),
+                    _ => {
+                        let mut lz = LzmaOptions::from_level(9);
+                        lz.set_dictionary_size(compress::seven_zip::seven_zip_dictionary_size_from_uncompressed_size(payload.len() as u64));
+                        lz.set_num_fast_bytes(64);
+                        lz.set_lc(4);
+                        lz.set_lp(0);
+                        lz.set_pb(2);
+                        lz.set_mode_normal();
+                        lz.set_match_finder_bt4();
+                        EncoderConfiguration::new(EncoderMethod::LZMA).with_options(EncoderOptions::Lzma(lz))
+                    }
+                };
+                writer.set_content_methods(vec![config]);
+                if writer
+                    .push_archive_entry(
+                        ArchiveEntry::new_file(&p.archive_name),
+                        Some(std::io::Cursor::new(payload)),
+                    )
+                    .is_err()
+                {
+                    let _ = fs::remove_file(&temp_archive_path);
+                    return false;
+                }
+            }
+        }
+
+        if writer.finish().is_err() {
+            let _ = fs::remove_file(&temp_archive_path);
+            return false;
+        }
+
         let _ = apply_romvault7z_marker(Path::new(&temp_archive_path), compress_struct);
 
         if Path::new(&archive_path).exists() {
@@ -2187,8 +2404,6 @@ impl Fix {
         archive_mut.set_got_status(GotStatus::Got);
         archive_mut.rep_status_reset();
         archive_mut.cached_stats = None;
-
-        let _ = fs::remove_dir_all(&staging_dir);
         true
     }
 

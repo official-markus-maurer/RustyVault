@@ -119,6 +119,8 @@ pub struct RvFile {
 
     /// Operational bitflags
     pub file_status: FileStatus,
+    #[serde(default)]
+    pub deep_scanned: bool,
     /// Categorization if this file is in ToSort
     pub to_sort_type: ToSortDirType,
     /// The physical format of this file/directory
@@ -197,7 +199,7 @@ pub enum TreeSelect {
 
 impl RvFile {
     fn ascii_lower(byte: u8) -> u8 {
-        if byte >= b'A' && byte <= b'Z' {
+        if byte.is_ascii_uppercase() {
             byte + 0x20
         } else {
             byte
@@ -361,6 +363,7 @@ impl RvFile {
             got_status: GotStatus::NotGot,
             rep_status: RepStatus::UnSet,
             file_status: FileStatus::NONE,
+            deep_scanned: false,
             children: Vec::new(),
             dir_status: if file_type == FileType::Dir || file_type == FileType::Zip || file_type == FileType::SevenZip { Some(ReportStatus::Unknown) } else { None },
             zip_dat_struct: 0,
@@ -626,6 +629,7 @@ impl RvFile {
     pub fn mark_as_missing(&mut self) {
         self.cached_stats = None;
         self.set_got_status(GotStatus::NotGot);
+        self.deep_scanned = false;
         
         let mut i = 0;
         while i < self.children.len() {
@@ -634,6 +638,7 @@ impl RvFile {
                 let mut child = child_rc.borrow_mut();
                 child.cached_stats = None;
                 child.set_got_status(GotStatus::NotGot);
+                child.deep_scanned = false;
                 
                 if child.dat_status() == DatStatus::NotInDat || child.dat_status() == DatStatus::InToSort {
                     child.file_remove()
@@ -708,6 +713,10 @@ impl RvFile {
     /// Checks if this node is physically present.
     pub fn is_got(&self) -> bool {
         self.got_status == GotStatus::Got || self.got_status == GotStatus::Corrupt
+    }
+
+    pub fn is_deep_scanned(&self) -> bool {
+        self.deep_scanned
     }
 
     /// Recursively sorts the children of this node alphabetically by their filenames.

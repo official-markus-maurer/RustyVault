@@ -11,7 +11,7 @@
     #[test]
     fn test_color_key_sections_include_delete_and_tosort_icon_entries() {
         let all_entries: Vec<_> = color_key_sections()
-            .into_iter()
+            .iter()
             .flat_map(|section| section.entries.iter())
             .collect();
 

@@ -162,6 +162,12 @@ impl RvGame {
     }
 }
 
+impl Default for RvGame {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/rv_game_tests.rs"]
 mod tests;

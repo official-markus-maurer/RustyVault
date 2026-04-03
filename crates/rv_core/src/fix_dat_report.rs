@@ -44,7 +44,7 @@ impl FixDatReport {
             .and_then(|relative| {
                 relative
                     .parent()
-                    .map(|parent| parent.to_string_lossy().replace('\\', "_").replace('/', "_"))
+                    .map(|parent| parent.to_string_lossy().replace(['\\', '/'], "_"))
             })
             .filter(|parent| !parent.is_empty())
             .unwrap_or_else(|| "Unknown".to_string())

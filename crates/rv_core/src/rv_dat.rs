@@ -136,3 +136,9 @@ impl RvDat {
         self.dat_flags.contains(flag)
     }
 }
+
+impl Default for RvDat {
+    fn default() -> Self {
+        Self::new()
+    }
+}

@@ -5,10 +5,8 @@ pub fn make_relative(from_directory: &str, to_path: &str) -> String {
     let to = Path::new(to_path);
 
     let is_rooted = from.is_absolute() && to.is_absolute();
-    if is_rooted {
-        if from.components().next() != to.components().next() {
-            return to_path.to_string();
-        }
+    if is_rooted && from.components().next() != to.components().next() {
+        return to_path.to_string();
     }
 
     let from_parts: Vec<String> = from
@@ -44,13 +42,13 @@ pub fn make_relative(from_directory: &str, to_path: &str) -> String {
     }
 
     let mut relative: Vec<String> = Vec::new();
-    for i in (last_common_root as usize + 1)..from_parts.len() {
-        if !from_parts[i].is_empty() {
+    for part in from_parts.iter().skip(last_common_root as usize + 1) {
+        if !part.is_empty() {
             relative.push("..".to_string());
         }
     }
-    for i in (last_common_root as usize + 1)..to_parts.len() {
-        relative.push(to_parts[i].clone());
+    for part in to_parts.iter().skip(last_common_root as usize + 1) {
+        relative.push(part.clone());
     }
 
     relative.join("\\")
@@ -68,4 +66,3 @@ mod tests {
         );
     }
 }
-

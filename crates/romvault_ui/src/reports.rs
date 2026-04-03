@@ -292,7 +292,7 @@ pub(crate) fn write_full_report(path: &str, root: Rc<RefCell<RvFile>>) -> std::i
     }
 
     let mut dats: Vec<Rc<RefCell<RvDat>>> = seen_dats.into_values().collect();
-    dats.sort_by(|a, b| dat_display_name(&a.borrow()).to_ascii_lowercase().cmp(&dat_display_name(&b.borrow()).to_ascii_lowercase()));
+    dats.sort_by_key(|a| dat_display_name(&a.borrow()).to_ascii_lowercase());
 
     let mut complete = Vec::new();
     let mut empty = Vec::new();

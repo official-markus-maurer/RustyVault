@@ -10,9 +10,11 @@
     #[test]
     fn test_find_rule_returns_exact_match() {
         with_settings_test_state(|| {
-            let mut rule = DatRule::default();
-            rule.dir_key = "DatRoot\\Arcade\\MAME".to_string();
-            rule.single_archive = true;
+            let rule = DatRule {
+                dir_key: "DatRoot\\Arcade\\MAME".to_string(),
+                single_archive: true,
+                ..Default::default()
+            };
             set_rule(rule);
 
             let found = find_rule("DatRoot\\Arcade\\MAME");
@@ -24,9 +26,11 @@
     #[test]
     fn test_find_rule_walks_up_to_closest_parent_rule() {
         with_settings_test_state(|| {
-            let mut parent_rule = DatRule::default();
-            parent_rule.dir_key = "DatRoot\\Arcade".to_string();
-            parent_rule.use_description_as_dir_name = true;
+            let parent_rule = DatRule {
+                dir_key: "DatRoot\\Arcade".to_string(),
+                use_description_as_dir_name: true,
+                ..Default::default()
+            };
             set_rule(parent_rule);
 
             let found = find_rule("DatRoot\\Arcade\\MAME\\Clones");
@@ -38,9 +42,11 @@
     #[test]
     fn test_find_rule_normalizes_path_separators_before_lookup() {
         with_settings_test_state(|| {
-            let mut rule = DatRule::default();
-            rule.dir_key = "DatRoot\\Console".to_string();
-            rule.use_id_for_name = true;
+            let rule = DatRule {
+                dir_key: "DatRoot\\Console".to_string(),
+                use_id_for_name: true,
+                ..Default::default()
+            };
             set_rule(rule);
 
             let found = find_rule("DatRoot/Console/GameBoy");
@@ -62,14 +68,18 @@
     #[test]
     fn test_set_rule_normalizes_dir_key_and_replaces_equivalent_path() {
         with_settings_test_state(|| {
-            let mut first_rule = DatRule::default();
-            first_rule.dir_key = "DatRoot/Console".to_string();
-            first_rule.single_archive = true;
+            let first_rule = DatRule {
+                dir_key: "DatRoot/Console".to_string(),
+                single_archive: true,
+                ..Default::default()
+            };
             set_rule(first_rule);
 
-            let mut replacement_rule = DatRule::default();
-            replacement_rule.dir_key = "DatRoot\\Console".to_string();
-            replacement_rule.use_id_for_name = true;
+            let replacement_rule = DatRule {
+                dir_key: "DatRoot\\Console".to_string(),
+                use_id_for_name: true,
+                ..Default::default()
+            };
             set_rule(replacement_rule);
 
             let settings = get_settings();
@@ -83,9 +93,11 @@
     #[test]
     fn test_find_rule_trims_trailing_separators() {
         with_settings_test_state(|| {
-            let mut rule = DatRule::default();
-            rule.dir_key = "DatRoot\\Arcade".to_string();
-            rule.single_archive = true;
+            let rule = DatRule {
+                dir_key: "DatRoot\\Arcade".to_string(),
+                single_archive: true,
+                ..Default::default()
+            };
             set_rule(rule);
 
             let found = find_rule("\\DatRoot\\Arcade\\");
@@ -97,9 +109,11 @@
     #[test]
     fn test_find_rule_is_case_insensitive_on_windows_style_keys() {
         with_settings_test_state(|| {
-            let mut rule = DatRule::default();
-            rule.dir_key = "DatRoot\\Arcade".to_string();
-            rule.single_archive = true;
+            let rule = DatRule {
+                dir_key: "DatRoot\\Arcade".to_string(),
+                single_archive: true,
+                ..Default::default()
+            };
             set_rule(rule);
 
             let found = find_rule("datroot\\arcade\\mame");

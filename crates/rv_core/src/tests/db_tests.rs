@@ -6,8 +6,10 @@
         let original_settings = get_settings();
         let temp = tempdir().unwrap();
 
-        let mut settings = Settings::default();
-        settings.dat_root = temp.path().join("DatRoot").to_string_lossy().into_owned();
+        let settings = Settings {
+            dat_root: temp.path().join("DatRoot").to_string_lossy().into_owned(),
+            ..Default::default()
+        };
         update_settings(settings);
         test(temp.path());
         update_settings(original_settings);

@@ -158,6 +158,12 @@ impl ArchiveExtract {
     }
 }
 
+impl Default for ArchiveExtract {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/archive_extract_tests.rs"]
 mod tests;

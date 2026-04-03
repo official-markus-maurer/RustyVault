@@ -36,6 +36,12 @@ impl RawFile {
     }
 }
 
+impl Default for RawFile {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ICompress for RawFile {
     fn local_files_count(&self) -> usize {
         1

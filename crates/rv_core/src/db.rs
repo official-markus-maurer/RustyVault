@@ -133,10 +133,16 @@ impl DB {
     }
 }
 
+impl Default for DB {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 thread_local! {
     /// Global, thread-local database instance. 
     /// Mimics the C# static `DB` class structure while abiding by Rust's safety guarantees.
-    pub static GLOBAL_DB: RefCell<Option<DB>> = RefCell::new(None);
+    pub static GLOBAL_DB: RefCell<Option<DB>> = const { RefCell::new(None) };
 }
 
 /// Initializes the global DB if not already initialized.

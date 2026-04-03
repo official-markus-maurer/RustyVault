@@ -17,8 +17,10 @@ pub fn parse_extra_fields(
     header_compressed_size: u32,
     header_local_header_offset: u32,
 ) -> ZipExtraFieldInfo {
-    let mut out = ZipExtraFieldInfo::default();
-    out.is_zip64 = false;
+    let mut out = ZipExtraFieldInfo {
+        is_zip64: false,
+        ..Default::default()
+    };
 
     let mut block_pos = 0usize;
     while block_pos + 4 <= extra.len() {

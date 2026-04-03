@@ -287,7 +287,7 @@ impl DatDir {
     }
 
     fn ascii_lower(byte: u8) -> u8 {
-        if byte >= b'A' && byte <= b'Z' {
+        if byte.is_ascii_uppercase() {
             byte + 0x20
         } else {
             byte

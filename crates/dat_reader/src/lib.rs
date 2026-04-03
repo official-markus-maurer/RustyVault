@@ -108,9 +108,9 @@ pub fn read_dat(buffer: &[u8], filename: &str) -> Result<DatHeader, String> {
 
     // Fallbacks
     if let Ok(dat) = read_xml_dat(&content, filename) {
-        return Ok(dat);
+        Ok(dat)
     } else if let Ok(dat) = read_cmp_dat(&content, filename) {
-        return Ok(dat);
+        Ok(dat)
     } else {
         if content.contains("<?xml") || content.contains("<datafile>") {
             if let Ok(dat) = read_xml_dat(&content, filename) {

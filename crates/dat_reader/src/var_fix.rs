@@ -11,8 +11,8 @@ pub fn u64_opt(value: &str) -> Option<u64> {
         return None;
     }
     let lower = n.to_ascii_lowercase();
-    if lower.starts_with("0x") {
-        return u64::from_str_radix(&lower[2..], 16).ok();
+    if let Some(stripped) = lower.strip_prefix("0x") {
+        return u64::from_str_radix(stripped, 16).ok();
     }
     n.parse::<u64>().ok()
 }
@@ -44,9 +44,7 @@ pub fn clean_md5_sha1(checksum: &str, length: usize) -> Option<Vec<u8>> {
         c.insert(0, '0');
     }
     for ch in c.chars() {
-        if VALID_HEX.find(ch).is_none() {
-            return None;
-        }
+        VALID_HEX.find(ch)?;
     }
     hex::decode(c).ok()
 }
@@ -55,7 +53,7 @@ pub fn clean_file_name(name: &str, replacement: char) -> String {
     if name.is_empty() {
         return String::new();
     }
-    let mut ret = name.trim_start().trim_end_matches(|c| c == '.' || c == ' ').to_string();
+    let mut ret = name.trim_start().trim_end_matches(['.', ' ']).to_string();
     let mut chars: Vec<char> = ret.chars().collect();
     for ch in &mut chars {
         let v = *ch as u32;
@@ -73,4 +71,3 @@ pub fn bytes_to_hex(bytes: Option<&[u8]>) -> String {
         None => String::new(),
     }
 }
-

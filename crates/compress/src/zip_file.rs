@@ -149,6 +149,7 @@ impl ZipFile {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn zip_file_add_fake(
         &mut self,
         filename: &str,
@@ -343,7 +344,7 @@ impl ManualZipWriter {
         let local_header_offset = self
             .file
             .stream_position()
-            .map_err(|_| ZipReturn::ZipErrorOpeningFile)? as u64;
+            .map_err(|_| ZipReturn::ZipErrorOpeningFile)?;
 
         let crc32 = if crc32_be.len() == 4 {
             u32::from_be_bytes([crc32_be[0], crc32_be[1], crc32_be[2], crc32_be[3]])
@@ -451,7 +452,7 @@ impl ManualZipWriter {
         let central_directory_offset = self
             .file
             .stream_position()
-            .map_err(|_| ZipReturn::ZipErrorOpeningFile)? as u64;
+            .map_err(|_| ZipReturn::ZipErrorOpeningFile)?;
 
         let mut central = Vec::new();
         for entry in &self.entries {
@@ -530,7 +531,7 @@ impl ManualZipWriter {
             let zip64_eocd_offset = self
                 .file
                 .stream_position()
-                .map_err(|_| ZipReturn::ZipErrorOpeningFile)? as u64;
+                .map_err(|_| ZipReturn::ZipErrorOpeningFile)?;
 
             self.file
                 .write_all(&0x06064B50u32.to_le_bytes())
@@ -780,7 +781,7 @@ impl ZipFile {
     }
 
     fn ascii_lower(byte: u8) -> u8 {
-        if byte >= b'A' && byte <= b'Z' {
+        if byte.is_ascii_uppercase() {
             byte + 0x20
         } else {
             byte
@@ -1008,7 +1009,7 @@ impl ZipFile {
         if comment.len() != expected_prefix.len() + 8 {
             return ZipStructure::None;
         }
-        if &comment[expected_prefix.len()..] != cd_crc {
+        if comment[expected_prefix.len()..] != cd_crc {
             return ZipStructure::None;
         }
 
@@ -1204,7 +1205,7 @@ impl ZipFile {
             let dos_date = ((value >> 16) & 0xFFFF) as u16;
             let dos_time = (value & 0xFFFF) as u16;
 
-            let year = (((dos_date >> 9) & 0x7F) as u16).saturating_add(1980);
+            let year = ((dos_date >> 9) & 0x7F).saturating_add(1980);
             let month = ((dos_date >> 5) & 0x0F) as u8;
             let day = (dos_date & 0x1F) as u8;
 
@@ -1811,15 +1812,12 @@ impl ICompress for ZipFile {
             return ZipReturn::ZipErrorFileNotFound;
         }
 
-        let file_secs = match fs::metadata(path)
+        let file_secs = fs::metadata(path)
             .ok()
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as i64)
-        {
-            Some(v) => v,
-            None => 0,
-        };
+            .unwrap_or_default();
 
         if timestamp > 0 && file_secs != timestamp {
             return ZipReturn::ZipErrorTimeStamp;
@@ -2136,5 +2134,11 @@ impl ICompress for ZipFile {
         if !self.zip_filename.is_empty() {
             let _ = std::fs::remove_file(&self.zip_filename);
         }
+    }
+}
+
+impl Default for ZipFile {
+    fn default() -> Self {
+        Self::new()
     }
 }

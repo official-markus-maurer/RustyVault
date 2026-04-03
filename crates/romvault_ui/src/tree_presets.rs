@@ -121,7 +121,7 @@ pub(crate) fn collect_tree_state(root: Rc<RefCell<RvFile>>) -> Vec<PresetEntry> 
         };
         out.push(PresetEntry {
             path: node_path.clone(),
-            selected: n.tree_checked.clone(),
+            selected: n.tree_checked,
             expanded: n.tree_expanded,
         });
         let children = n.children.clone();
@@ -151,7 +151,7 @@ pub(crate) fn apply_tree_state(root: Rc<RefCell<RvFile>>, entries: &[PresetEntry
                 n.children
                     .iter()
                     .find(|c| c.borrow().name == part)
-                    .map(|c| Rc::clone(c))
+                    .map(Rc::clone)
             };
             if let Some(n) = next {
                 current = n;
@@ -163,7 +163,7 @@ pub(crate) fn apply_tree_state(root: Rc<RefCell<RvFile>>, entries: &[PresetEntry
 
         if found {
             let mut n = current.borrow_mut();
-            n.tree_checked = entry.selected.clone();
+            n.tree_checked = entry.selected;
             n.tree_expanded = entry.expanded;
         }
     }

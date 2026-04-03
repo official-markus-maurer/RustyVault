@@ -34,7 +34,7 @@ pub fn draw_info_and_filters(app: &mut RomVaultApp, ui: &mut egui::Ui) {
         });
     }
 
-    let panel_height = if app.show_filter_panel { 180.0 } else { 180.0 };
+    let panel_height = 180.0;
 
     let available_width = ui.available_width();
     let filters_width = if app.show_filter_panel {

@@ -18,7 +18,7 @@ fn main() {
     let args: Vec<String> = env::args().collect();
 
     if args.len() < 2 {
-        println!("");
+        println!();
         println!("trrntzip: missing path");
         println!("Usage: trrntzip [OPTIONS] [PATH/ZIP FILES]");
         return;
@@ -33,17 +33,16 @@ fn main() {
     while i < args.len() {
         let arg = &args[i];
 
-        if arg.starts_with('-') {
-            let option = &arg[1..];
+        if let Some(option) = arg.strip_prefix('-') {
             match option {
                 "?" => {
                     println!(
                         "TorrentZip.Net v{} - Powered by RustyVault",
                         env!("CARGO_PKG_VERSION")
                     );
-                    println!("");
+                    println!();
                     println!("Usage: trrntzip [OPTIONS] [PATH/ZIP FILE]");
-                    println!("");
+                    println!();
                     println!("Options:");
                     println!("-? : show this help");
                     println!("-o : Set Output Archive Structure");
@@ -110,8 +109,8 @@ fn main() {
         }
 
         let mut target = arg.clone();
-        if target.starts_with(".\\") {
-            target = target[2..].to_string();
+        if let Some(stripped) = target.strip_prefix(".\\") {
+            target = stripped.to_string();
         }
 
         if Directory::exists(&target) {

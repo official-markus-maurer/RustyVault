@@ -266,7 +266,10 @@ impl DatUpdate {
                         // First, traverse the physical directory path from DatRoot
                         if !virtual_dir.is_empty() {
                             // Split virtual_dir by both separators to be safe
-                            let parts: Vec<&str> = virtual_dir.split(|c| c == '/' || c == '\\').filter(|s| !s.is_empty()).collect();
+                            let parts: Vec<&str> = virtual_dir
+                                .split(['/', '\\'])
+                                .filter(|s| !s.is_empty())
+                                .collect();
                             for part in parts {
                                 let mut found = None;
                                 {

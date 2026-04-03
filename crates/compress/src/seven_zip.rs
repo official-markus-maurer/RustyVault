@@ -4,6 +4,7 @@ use std::fs::File;
 use std::io::{Read, Write, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::collections::HashMap;
 
 use crc32fast::Hasher as Crc32Hasher;
 
@@ -12,7 +13,17 @@ use crate::i_compress::ICompress;
 use crate::structured_archive::ZipStructure;
 use crate::zip_enums::{ZipOpenType, ZipReturn};
 
-use sevenz_rust::{Archive, ArchiveEntry, Password};
+use sevenz_rust::{
+    Archive,
+    ArchiveEntry,
+    ArchiveWriter,
+    BlockDecoder,
+    EncoderConfiguration,
+    EncoderMethod,
+    Password,
+    SourceReader,
+};
+use sevenz_rust::encoder_options::{EncoderOptions, LzmaOptions, ZstandardOptions};
 
 struct SevenZipPendingWrite {
     header_index: usize,
@@ -61,6 +72,63 @@ pub struct SevenZipFile {
     file_headers: Vec<FileHeader>,
     file_comment: String,
     zip_struct: ZipStructure,
+}
+
+fn logical_name_eq(left: &str, right: &str) -> bool {
+    #[cfg(windows)]
+    {
+        left.eq_ignore_ascii_case(right)
+    }
+    #[cfg(not(windows))]
+    {
+        left == right
+    }
+}
+
+pub fn extract_entry_bytes(archive_path: &str, entry_name: &str) -> Result<Option<Vec<u8>>, ZipReturn> {
+    let mut file = File::open(archive_path).map_err(|_| ZipReturn::ZipErrorGettingDataStream)?;
+    let password = Password::empty();
+    let archive = Archive::read(&mut file, &password).map_err(|_| ZipReturn::ZipErrorGettingDataStream)?;
+
+    let mut found: Option<Vec<u8>> = None;
+    for block_index in 0..archive.blocks.len() {
+        let decoder = BlockDecoder::new(1, block_index, &archive, &password, &mut file);
+        let mut each = |entry: &ArchiveEntry, reader: &mut dyn Read| -> Result<bool, sevenz_rust::Error> {
+            if found.is_some() {
+                let _ = std::io::copy(reader, &mut std::io::sink());
+                return Ok(false);
+            }
+            if logical_name_eq(entry.name(), entry_name) {
+                let mut buffer = Vec::new();
+                reader.read_to_end(&mut buffer)?;
+                found = Some(buffer);
+                return Ok(false);
+            }
+            let _ = std::io::copy(reader, &mut std::io::sink());
+            Ok(true)
+        };
+        let _ = decoder.for_each_entries(&mut each).map_err(|_| ZipReturn::ZipErrorGettingDataStream)?;
+        if found.is_some() {
+            break;
+        }
+    }
+
+    Ok(found)
+}
+
+pub fn seven_zip_dictionary_size_from_uncompressed_size(uncompressed_size: u64) -> u32 {
+    const DICT_SIZES: [u32; 22] = [
+        0x10000, 0x18000, 0x20000, 0x30000, 0x40000, 0x60000, 0x80000, 0xC0000, 0x100000,
+        0x180000, 0x200000, 0x300000, 0x400000, 0x600000, 0x800000, 0xC00000, 0x1000000,
+        0x1800000, 0x2000000, 0x3000000, 0x4000000, 0x6000000,
+    ];
+
+    for v in DICT_SIZES {
+        if v as u64 >= uncompressed_size {
+            return v;
+        }
+    }
+    DICT_SIZES[DICT_SIZES.len() - 1]
 }
 
 impl SevenZipFile {
@@ -202,7 +270,173 @@ impl SevenZipFile {
 
         let temp_path = format!("{}.rv7z.tmp", self.zip_filename);
         let _ = fs::remove_file(&temp_path);
-        if sevenz_rust::compress_to_path(staging_dir, &temp_path).is_err() {
+        let mut planned: Vec<(String, bool, PathBuf)> = Vec::new();
+        for fh in &self.file_headers {
+            let mut name = fh.filename.replace('\\', "/");
+            if name.is_empty() || name == "/" {
+                continue;
+            }
+            if fh.is_directory && !name.ends_with('/') {
+                name.push('/');
+            }
+            let disk_path = if fh.is_directory {
+                staging_dir.join(name.trim_end_matches('/'))
+            } else {
+                staging_dir.join(&name)
+            };
+            planned.push((name, fh.is_directory, disk_path));
+        }
+
+        let mut dir_has_children: HashMap<String, bool> = HashMap::new();
+        for (name, is_dir, _) in &planned {
+            if *is_dir {
+                continue;
+            }
+            if let Some(idx) = name.rfind('/') {
+                dir_has_children.insert(format!("{}/", &name[..idx]), true);
+            }
+        }
+        planned.retain(|(name, is_dir, _)| {
+            if !*is_dir {
+                return true;
+            }
+            !dir_has_children.get(name).copied().unwrap_or(false)
+        });
+
+        fn split_7zip_filename(filename: &str) -> (&str, &str, &str) {
+            let dir_index = filename.rfind('/');
+            let (path, name) = if let Some(i) = dir_index {
+                (&filename[..i], &filename[i + 1..])
+            } else {
+                ("", filename)
+            };
+            let ext_index = name.rfind('.');
+            if let Some(i) = ext_index {
+                (path, &name[..i], &name[i + 1..])
+            } else {
+                (path, name, "")
+            }
+        }
+        planned.sort_by(|(a, _, _), (b, _, _)| {
+            let (path_a, name_a, ext_a) = split_7zip_filename(a);
+            let (path_b, name_b, ext_b) = split_7zip_filename(b);
+            let res = ext_a.cmp(ext_b);
+            if res != std::cmp::Ordering::Equal {
+                return res;
+            }
+            let res = name_a.cmp(name_b);
+            if res != std::cmp::Ordering::Equal {
+                return res;
+            }
+            path_a.cmp(path_b)
+        });
+        for i in 0..planned.len().saturating_sub(1) {
+            if planned[i].0 == planned[i + 1].0 {
+                let _ = fs::remove_file(&temp_path);
+                return ZipReturn::ZipErrorWritingToOutputStream;
+            }
+        }
+
+        let out_file = match File::create(&temp_path) {
+            Ok(f) => f,
+            Err(_) => {
+                let _ = fs::remove_file(&temp_path);
+                return ZipReturn::ZipErrorWritingToOutputStream;
+            }
+        };
+        let mut writer = match ArchiveWriter::new(out_file) {
+            Ok(w) => w,
+            Err(_) => {
+                let _ = fs::remove_file(&temp_path);
+                return ZipReturn::ZipErrorWritingToOutputStream;
+            }
+        };
+        writer.set_encrypt_header(false);
+
+        let solid = matches!(self.zip_struct, ZipStructure::SevenZipSLZMA | ZipStructure::SevenZipSZSTD);
+        if solid {
+            let config = match self.zip_struct {
+                ZipStructure::SevenZipSZSTD | ZipStructure::SevenZipNZSTD => EncoderConfiguration::new(EncoderMethod::ZSTD)
+                    .with_options(EncoderOptions::Zstd(ZstandardOptions::from_level(19))),
+                _ => {
+                    let mut lz = LzmaOptions::from_level(9);
+                    lz.set_dictionary_size(1 << 24);
+                    lz.set_num_fast_bytes(64);
+                    lz.set_lc(4);
+                    lz.set_lp(0);
+                    lz.set_pb(2);
+                    lz.set_mode_normal();
+                    lz.set_match_finder_bt4();
+                    EncoderConfiguration::new(EncoderMethod::LZMA).with_options(EncoderOptions::Lzma(lz))
+                }
+            };
+            writer.set_content_methods(vec![config]);
+
+            for (name, _is_dir, _) in planned.iter().filter(|(_, is_dir, _)| *is_dir) {
+                if writer
+                    .push_archive_entry::<&[u8]>(ArchiveEntry::new_directory(name), None)
+                    .is_err()
+                {
+                    let _ = fs::remove_file(&temp_path);
+                    return ZipReturn::ZipErrorWritingToOutputStream;
+                }
+            }
+
+            let mut file_entries = Vec::new();
+            let mut readers: Vec<SourceReader<File>> = Vec::new();
+            for (name, _is_dir, disk_path) in planned.iter().filter(|(_, is_dir, _)| !*is_dir) {
+                let Ok(src) = File::open(disk_path) else {
+                    let _ = fs::remove_file(&temp_path);
+                    return ZipReturn::ZipErrorWritingToOutputStream;
+                };
+                file_entries.push(ArchiveEntry::new_file(name));
+                readers.push(SourceReader::new(src));
+            }
+            if !file_entries.is_empty() && writer.push_archive_entries(file_entries, readers).is_err() {
+                let _ = fs::remove_file(&temp_path);
+                return ZipReturn::ZipErrorWritingToOutputStream;
+            }
+        } else {
+            for (name, is_dir, disk_path) in &planned {
+                if *is_dir {
+                    if writer
+                        .push_archive_entry::<&[u8]>(ArchiveEntry::new_directory(name), None)
+                        .is_err()
+                    {
+                        let _ = fs::remove_file(&temp_path);
+                        return ZipReturn::ZipErrorWritingToOutputStream;
+                    }
+                    continue;
+                }
+
+                let Ok(src) = File::open(disk_path) else {
+                    let _ = fs::remove_file(&temp_path);
+                    return ZipReturn::ZipErrorWritingToOutputStream;
+                };
+                let config = match self.zip_struct {
+                    ZipStructure::SevenZipSZSTD | ZipStructure::SevenZipNZSTD => EncoderConfiguration::new(EncoderMethod::ZSTD)
+                        .with_options(EncoderOptions::Zstd(ZstandardOptions::from_level(19))),
+                    _ => {
+                        let mut lz = LzmaOptions::from_level(9);
+                        lz.set_dictionary_size(seven_zip_dictionary_size_from_uncompressed_size(src.metadata().map(|m| m.len()).unwrap_or(0)));
+                        lz.set_num_fast_bytes(64);
+                        lz.set_lc(4);
+                        lz.set_lp(0);
+                        lz.set_pb(2);
+                        lz.set_mode_normal();
+                        lz.set_match_finder_bt4();
+                        EncoderConfiguration::new(EncoderMethod::LZMA).with_options(EncoderOptions::Lzma(lz))
+                    }
+                };
+                writer.set_content_methods(vec![config]);
+                if writer.push_archive_entry(ArchiveEntry::new_file(name), Some(src)).is_err() {
+                    let _ = fs::remove_file(&temp_path);
+                    return ZipReturn::ZipErrorWritingToOutputStream;
+                }
+            }
+        }
+
+        if writer.finish().is_err() {
             let _ = fs::remove_file(&temp_path);
             return ZipReturn::ZipErrorWritingToOutputStream;
         }
@@ -231,16 +465,35 @@ impl SevenZipFile {
 
         for file in &archive.files {
             let mut fh = FileHeader::new();
-            fh.filename = file.name().to_string();
+            let mut name = file.name().to_string();
+            if file.is_directory() && !name.ends_with('/') {
+                name.push('/');
+            }
+            fh.filename = name;
             fh.uncompressed_size = file.size();
             fh.is_directory = file.is_directory();
-            
-            // sevenz_rust entry does not expose CRC directly on the entry struct
-            // We would need to read it or see if it's available in future versions
-            // Currently skipping CRC population at header level for 7z
-            
+
+            if fh.is_directory {
+                fh.crc = Some(vec![0, 0, 0, 0]);
+            } else if file.has_crc {
+                fh.crc = Some((file.crc as u32).to_be_bytes().to_vec());
+            }
+
+            let set_time = |nt: sevenz_rust::NtTime| -> Option<i64> {
+                let st: std::time::SystemTime = nt.into();
+                st.duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| d.as_secs() as i64)
+            };
+
             if file.has_last_modified_date {
-                fh.header_last_modified = 0;
+                fh.modified_time = set_time(file.last_modified_date());
+            }
+            if file.has_creation_date {
+                fh.created_time = set_time(file.creation_date());
+            }
+            if file.has_access_date {
+                fh.accessed_time = set_time(file.access_date());
             }
             
             self.file_headers.push(fh);
@@ -384,7 +637,7 @@ impl SevenZipFile {
         }
         let mut expected = sig_header.to_vec();
         expected[16] = footer[4 + 16];
-        if &footer[4..4 + expected.len()] != expected {
+        if footer[4..4 + expected.len()] != expected {
             return ZipStructure::None;
         }
 
@@ -433,12 +686,12 @@ pub fn apply_romvault7z_marker(path: &Path, zip_struct: ZipStructure) -> std::io
     marker[11] = variant;
 
     let mut already_has_marker = false;
-    if original_header_pos >= 32 {
-        if input.seek(SeekFrom::Start(original_header_pos - 32)).is_ok() {
-            let mut existing = [0u8; 32];
-            if input.read_exact(&mut existing).is_ok() && &existing[..11] == b"RomVault7Z0" {
-                already_has_marker = true;
-            }
+    if original_header_pos >= 32
+        && input.seek(SeekFrom::Start(original_header_pos - 32)).is_ok()
+    {
+        let mut existing = [0u8; 32];
+        if input.read_exact(&mut existing).is_ok() && existing[..11] == *b"RomVault7Z0" {
+            already_has_marker = true;
         }
     }
 
@@ -598,24 +851,14 @@ impl ICompress for SevenZipFile {
             None => return Err(ZipReturn::ZipErrorGettingDataStream),
         };
 
-        let _size = file_entry.size();
-        
-        let _file = std::fs::File::open(&self.zip_filename).map_err(|_| ZipReturn::ZipErrorGettingDataStream)?;
-        let mut buffer = Vec::new();
-        sevenz_rust::decompress_file_with_extract_fn(
-            &self.zip_filename,
-            "tmp",
-            |entry, reader, _dest| {
-                if entry.name() == file_entry.name() {
-                    std::io::copy(reader, &mut buffer)?;
-                    Ok(true)
-                } else {
-                    Ok(false)
-                }
-            }
-        ).map_err(|_| ZipReturn::ZipErrorGettingDataStream)?;
+        if file_entry.is_directory() {
+            return Ok((Box::new(std::io::Cursor::new(Vec::new())), 0));
+        }
 
-        Ok((Box::new(std::io::Cursor::new(buffer)), file_entry.size()))
+        let Some(bytes) = extract_entry_bytes(&self.zip_filename, file_entry.name())? else {
+            return Err(ZipReturn::ZipErrorGettingDataStream);
+        };
+        Ok((Box::new(std::io::Cursor::new(bytes)), file_entry.size()))
     }
 
     fn zip_file_close_read_stream(&mut self) -> ZipReturn {
@@ -771,6 +1014,12 @@ impl ICompress for SevenZipFile {
         self.file_headers.clear();
         self.zip_struct = ZipStructure::None;
         self.file_comment.clear();
+    }
+}
+
+impl Default for SevenZipFile {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

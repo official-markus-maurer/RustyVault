@@ -301,7 +301,7 @@
     }
 
     #[test]
-    fn test_renamed_file_is_recovered_by_phase2_without_creating_orphan() {
+    fn test_renamed_file_is_not_matched_during_scan_and_creates_orphan() {
         let db_dir = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
         db_dir.borrow_mut().name = "Root".to_string();
 
@@ -326,12 +326,13 @@
         FileScanning::scan_dir(Rc::clone(&db_dir), &mut scanned_root);
 
         let dir = db_dir.borrow();
-        assert_eq!(dir.children.len(), 1);
-        let matched = dir.children[0].borrow();
-        assert_eq!(matched.name, "expected.bin");
-        assert_eq!(matched.got_status(), GotStatus::Got);
-        assert_eq!(matched.dat_status(), dat_reader::enums::DatStatus::InDatCollect);
-        assert_eq!(matched.crc, Some(vec![0xAD, 0xF3, 0xF3, 0x63]));
+        assert_eq!(dir.children.len(), 2);
+        let expected = dir.children.iter().find(|child| child.borrow().name == "expected.bin").unwrap();
+        let orphan = dir.children.iter().find(|child| child.borrow().name == "renamed.bin").unwrap();
+        assert_eq!(expected.borrow().got_status(), GotStatus::NotGot);
+        assert_eq!(expected.borrow().dat_status(), dat_reader::enums::DatStatus::InDatCollect);
+        assert_eq!(orphan.borrow().got_status(), GotStatus::Got);
+        assert_eq!(orphan.borrow().dat_status(), dat_reader::enums::DatStatus::NotInDat);
     }
 
     #[test]
@@ -399,11 +400,13 @@
         FileScanning::scan_dir(Rc::clone(&db_dir), &mut scanned_root);
 
         let dir = db_dir.borrow();
-        assert_eq!(dir.children.len(), 2);
+        assert_eq!(dir.children.len(), 3);
         let alpha = dir.children.iter().find(|child| child.borrow().name == "alpha.bin").unwrap();
         let target = dir.children.iter().find(|child| child.borrow().name == "target.bin").unwrap();
+        let zzz = dir.children.iter().find(|child| child.borrow().name == "zzz.bin").unwrap();
         assert_eq!(alpha.borrow().dat_status(), dat_reader::enums::DatStatus::NotInDat);
-        assert_eq!(target.borrow().got_status(), GotStatus::Got);
+        assert_eq!(zzz.borrow().dat_status(), dat_reader::enums::DatStatus::NotInDat);
+        assert_eq!(target.borrow().got_status(), GotStatus::NotGot);
     }
 
     #[test]
@@ -438,11 +441,13 @@
         FileScanning::scan_dir(Rc::clone(&db_dir), &mut scanned_root);
 
         let dir = db_dir.borrow();
-        assert_eq!(dir.children.len(), 2);
+        assert_eq!(dir.children.len(), 3);
         let alpha = dir.children.iter().find(|child| child.borrow().name == "alpha.bin").unwrap();
         let target = dir.children.iter().find(|child| child.borrow().name == "target.bin").unwrap();
         assert_eq!(alpha.borrow().got_status(), GotStatus::NotGot);
-        assert_eq!(target.borrow().got_status(), GotStatus::Got);
+        assert_eq!(target.borrow().got_status(), GotStatus::NotGot);
+        let orphan = dir.children.iter().find(|child| child.borrow().name == "renamed.bin").unwrap();
+        assert_eq!(orphan.borrow().dat_status(), dat_reader::enums::DatStatus::NotInDat);
     }
 
     #[test]
@@ -479,9 +484,9 @@
         FileScanning::scan_dir(Rc::clone(&db_dir), &mut scanned_root);
 
         let dir = db_dir.borrow();
-        assert_eq!(dir.children.len(), 3);
+        assert_eq!(dir.children.len(), 4);
         let target = dir.children.iter().find(|child| child.borrow().name == "target.bin").unwrap();
-        assert_eq!(target.borrow().got_status(), GotStatus::Got);
+        assert_eq!(target.borrow().got_status(), GotStatus::NotGot);
     }
 
     #[test]
@@ -518,9 +523,9 @@
         FileScanning::scan_dir(Rc::clone(&db_dir), &mut scanned_root);
 
         let dir = db_dir.borrow();
-        assert_eq!(dir.children.len(), 3);
+        assert_eq!(dir.children.len(), 4);
         let target = dir.children.iter().find(|child| child.borrow().name == "target.bin").unwrap();
-        assert_eq!(target.borrow().got_status(), GotStatus::Got);
+        assert_eq!(target.borrow().got_status(), GotStatus::NotGot);
     }
 
     #[test]
@@ -557,9 +562,9 @@
         FileScanning::scan_dir(Rc::clone(&db_dir), &mut scanned_root);
 
         let dir = db_dir.borrow();
-        assert_eq!(dir.children.len(), 4);
+        assert_eq!(dir.children.len(), 5);
         let target = dir.children.iter().find(|child| child.borrow().name == "target.bin").unwrap();
-        assert_eq!(target.borrow().got_status(), GotStatus::Got);
+        assert_eq!(target.borrow().got_status(), GotStatus::NotGot);
     }
 
     #[test]
@@ -596,9 +601,11 @@
         FileScanning::scan_dir(Rc::clone(&db_dir), &mut scanned_root);
 
         let dir = db_dir.borrow();
-        assert_eq!(dir.children.len(), 4);
+        assert_eq!(dir.children.len(), 5);
         let target = dir.children.iter().find(|child| child.borrow().name == "target.bin").unwrap();
-        assert_eq!(target.borrow().got_status(), GotStatus::Got);
+        assert_eq!(target.borrow().got_status(), GotStatus::NotGot);
+        let orphan = dir.children.iter().find(|child| child.borrow().name == "renamed.bin").unwrap();
+        assert_eq!(orphan.borrow().dat_status(), dat_reader::enums::DatStatus::NotInDat);
     }
 
     #[test]
@@ -636,10 +643,13 @@
         FileScanning::scan_dir(Rc::clone(&db_dir), &mut scanned_root);
 
         let dir = db_dir.borrow();
-        assert_eq!(dir.children.len(), 2);
+        assert_eq!(dir.children.len(), 3);
         let target = dir.children.iter().find(|child| child.borrow().name == "target.bin").unwrap();
-        assert_eq!(target.borrow().got_status(), GotStatus::Got);
-        assert_eq!(target.borrow().crc, Some(vec![0xAA, 0xBB, 0xCC, 0xDD]));
+        assert_eq!(target.borrow().got_status(), GotStatus::NotGot);
+        let alt = dir.children.iter().find(|child| child.borrow().name == "alt.bin").unwrap();
+        let primary = dir.children.iter().find(|child| child.borrow().name == "primary.bin").unwrap();
+        assert_eq!(alt.borrow().dat_status(), dat_reader::enums::DatStatus::NotInDat);
+        assert_eq!(primary.borrow().dat_status(), dat_reader::enums::DatStatus::NotInDat);
     }
 
     #[test]
@@ -682,8 +692,15 @@
             .iter()
             .find(|child| child.borrow().name == "primary_target.bin")
             .unwrap();
-        assert_eq!(primary.borrow().got_status(), GotStatus::Got);
-        assert_eq!(primary.borrow().crc, Some(vec![0xAA, 0xBB, 0xCC, 0xDD]));
+        assert_eq!(primary.borrow().got_status(), GotStatus::NotGot);
+        let alt = dir
+            .children
+            .iter()
+            .find(|child| child.borrow().name == "alt_target.bin")
+            .unwrap();
+        assert_eq!(alt.borrow().got_status(), GotStatus::NotGot);
+        let orphan = dir.children.iter().find(|child| child.borrow().name == "renamed.bin").unwrap();
+        assert_eq!(orphan.borrow().dat_status(), dat_reader::enums::DatStatus::NotInDat);
     }
 
     #[test]
@@ -722,8 +739,11 @@
 
         let dir = db_dir.borrow();
         let target = dir.children.iter().find(|child| child.borrow().name == "target.bin").unwrap();
-        assert_eq!(target.borrow().got_status(), GotStatus::Got);
-        assert_eq!(target.borrow().sha1, Some(vec![0xAA, 0xBB, 0xCC, 0xDD]));
+        assert_eq!(target.borrow().got_status(), GotStatus::NotGot);
+        let alt = dir.children.iter().find(|child| child.borrow().name == "alt.bin").unwrap();
+        let primary = dir.children.iter().find(|child| child.borrow().name == "primary.bin").unwrap();
+        assert_eq!(alt.borrow().dat_status(), dat_reader::enums::DatStatus::NotInDat);
+        assert_eq!(primary.borrow().dat_status(), dat_reader::enums::DatStatus::NotInDat);
     }
 
     #[test]
@@ -766,8 +786,15 @@
             .iter()
             .find(|child| child.borrow().name == "primary_target.bin")
             .unwrap();
-        assert_eq!(primary.borrow().got_status(), GotStatus::Got);
-        assert_eq!(primary.borrow().md5, Some(vec![0xAA, 0xBB, 0xCC, 0xDD]));
+        assert_eq!(primary.borrow().got_status(), GotStatus::NotGot);
+        let alt = dir
+            .children
+            .iter()
+            .find(|child| child.borrow().name == "alt_target.bin")
+            .unwrap();
+        assert_eq!(alt.borrow().got_status(), GotStatus::NotGot);
+        let orphan = dir.children.iter().find(|child| child.borrow().name == "renamed.bin").unwrap();
+        assert_eq!(orphan.borrow().dat_status(), dat_reader::enums::DatStatus::NotInDat);
     }
 
     #[test]
@@ -806,8 +833,11 @@
 
         let dir = db_dir.borrow();
         let target = dir.children.iter().find(|child| child.borrow().name == "target.bin").unwrap();
-        assert_eq!(target.borrow().got_status(), GotStatus::Got);
-        assert_eq!(target.borrow().md5, Some(vec![0xAA, 0xBB, 0xCC, 0xDD]));
+        assert_eq!(target.borrow().got_status(), GotStatus::NotGot);
+        let alt = dir.children.iter().find(|child| child.borrow().name == "alt.bin").unwrap();
+        let primary = dir.children.iter().find(|child| child.borrow().name == "primary.bin").unwrap();
+        assert_eq!(alt.borrow().dat_status(), dat_reader::enums::DatStatus::NotInDat);
+        assert_eq!(primary.borrow().dat_status(), dat_reader::enums::DatStatus::NotInDat);
     }
 
     #[test]

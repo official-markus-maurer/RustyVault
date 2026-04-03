@@ -114,15 +114,12 @@ impl RepairStatus {
         let missing_roms = self.roms_missing;
         let plain_missing_roms = missing_roms - self.roms_corrupt;
 
-        if self.total_roms == 0 {
+        if self.total_roms == 0 || self.roms_unknown == self.total_roms {
             crate::enums::ReportStatus::Unknown
-        } else if self.roms_unknown == self.total_roms {
-            crate::enums::ReportStatus::Unknown
-        } else if self.roms_corrupt == self.total_roms {
-            crate::enums::ReportStatus::Corrupt
-        } else if self.roms_corrupt > 0
-            && plain_missing_roms == 0
-            && correct_roms + merged_roms + self.roms_corrupt + self.roms_fixes == self.total_roms
+        } else if self.roms_corrupt == self.total_roms
+            || (self.roms_corrupt > 0
+                && plain_missing_roms == 0
+                && correct_roms + merged_roms + self.roms_corrupt + self.roms_fixes == self.total_roms)
         {
             crate::enums::ReportStatus::Corrupt
         } else if merged_roms == self.total_roms {
@@ -303,7 +300,7 @@ impl RepairStatus {
         // Cache the result for this node (even if it's a directory, so the UI can show its aggregated stats!)
         {
             let mut node = root.borrow_mut();
-            node.cached_stats = Some(node_stats.clone());
+            node.cached_stats = Some(node_stats);
             if node.dir_status.is_some() {
                 node.dir_status = Some(node_stats.synthesized_report_status());
             }
@@ -325,6 +322,12 @@ impl RepairStatus {
         self.roms_not_collected += node_stats.roms_not_collected;
         self.roms_unneeded += node_stats.roms_unneeded;
         self.roms_unknown += node_stats.roms_unknown;
+    }
+}
+
+impl Default for RepairStatus {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

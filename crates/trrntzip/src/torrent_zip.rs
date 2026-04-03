@@ -113,3 +113,9 @@ impl TorrentZip {
         rebuild_status
     }
 }
+
+impl Default for TorrentZip {
+    fn default() -> Self {
+        Self::new()
+    }
+}

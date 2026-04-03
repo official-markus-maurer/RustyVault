@@ -34,8 +34,7 @@ pub fn to_hex(arr: Option<&[u8]>) -> String {
 }
 
 pub fn to_hex_n(arr: Option<&[u8]>) -> Option<String> {
-    let Some(arr) = arr else { return None; };
-    Some(to_hex(Some(arr)))
+    Some(to_hex(Some(arr?)))
 }
 
 pub fn to_hex_u32(v: Option<u32>) -> String {

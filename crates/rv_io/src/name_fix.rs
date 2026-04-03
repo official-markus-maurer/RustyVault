@@ -10,8 +10,8 @@ impl NameFix {
         if path.is_empty() || path.starts_with(r"\\?\") {
             return path.to_string();
         }
-        if path.starts_with(r"\\") {
-            return format!(r"\\?\UNC\{}", &path[2..]);
+        if let Some(stripped) = path.strip_prefix(r"\\") {
+            return format!(r"\\?\UNC\{}", stripped);
         }
 
         let mut ret = path.to_string();
@@ -29,11 +29,11 @@ impl NameFix {
         if cfg!(unix) {
             return path.to_string();
         }
-        if path.starts_with(r"\\?\UNC\") {
-            return format!(r"\\{}", &path[8..]);
+        if let Some(stripped) = path.strip_prefix(r"\\?\UNC\") {
+            return format!(r"\\{}", stripped);
         }
-        if path.starts_with(r"\\?\") {
-            return path[4..].to_string();
+        if let Some(stripped) = path.strip_prefix(r"\\?\") {
+            return stripped.to_string();
         }
         path.to_string()
     }
@@ -60,4 +60,3 @@ impl NameFix {
         ret
     }
 }
-

@@ -204,15 +204,10 @@ impl DatXmlWriter {
         for child in &dir.children {
             if child.is_dir() {
                 let d = child.dir().unwrap();
-                if d.d_game.is_none() {
-                    writeln!(writer, "{}<dir name=\"{}\">", pad, Self::etxt(&child.name))?;
-                    Self::write_base(writer, d, indent + 1, is_mame)?;
-                    writeln!(writer, "{}</dir>", pad)?;
-                } else {
+                if let Some(g) = d.d_game.as_ref() {
                     let tag_name = if is_mame { "machine" } else { "game" };
                     write!(writer, "{}<{} name=\"{}\"", pad, tag_name, Self::etxt(&child.name))?;
                     
-                    let g = d.d_game.as_ref().unwrap();
                     if let Some(ref cloneof) = g.clone_of {
                         write!(writer, " cloneof=\"{}\"", Self::etxt(cloneof))?;
                     }
@@ -238,6 +233,10 @@ impl DatXmlWriter {
                     
                     Self::write_base(writer, d, indent + 1, is_mame)?;
                     writeln!(writer, "{}</{}>", pad, tag_name)?;
+                } else {
+                    writeln!(writer, "{}<dir name=\"{}\">", pad, Self::etxt(&child.name))?;
+                    Self::write_base(writer, d, indent + 1, is_mame)?;
+                    writeln!(writer, "{}</dir>", pad)?;
                 }
             } else {
                 let f = child.file().unwrap();
@@ -263,7 +262,7 @@ impl DatXmlWriter {
                     write!(writer, " sha256=\"{}\"", hex::encode(sha256))?;
                 }
                 if let Some(ref status) = f.status {
-                    if status.to_lowercase() != "good" {
+                    if !status.eq_ignore_ascii_case("good") {
                         write!(writer, " status=\"{}\"", Self::etxt(status))?;
                     }
                 }
@@ -366,7 +365,7 @@ impl DatXmlWriter {
             } else {
                 let f = child.file().unwrap();
                 if child.name.ends_with('/') {
-                    writeln!(writer, "{}<dir name=\"{}\"/>", pad, Self::etxt(&child.name.trim_end_matches('/')))?;
+                    writeln!(writer, "{}<dir name=\"{}\"/>", pad, Self::etxt(child.name.trim_end_matches('/')))?;
                 } else {
                     let tag = if f.is_disk { "disk" } else { "file" };
                     write!(writer, "{}<{} name=\"{}\"", pad, tag, Self::etxt(&child.name))?;
@@ -389,7 +388,7 @@ impl DatXmlWriter {
                         write!(writer, " date=\"{}\"", dt)?;
                     }
                     if let Some(ref status) = f.status {
-                        if status.to_lowercase() != "good" {
+                        if !status.eq_ignore_ascii_case("good") {
                             write!(writer, " status=\"{}\"", Self::etxt(status))?;
                         }
                     }

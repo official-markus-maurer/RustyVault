@@ -557,9 +557,10 @@ pub fn strip_physical_prefix(path: &std::path::Path, base: &std::path::Path) -> 
                     continue;
                 }
 
-                let mut rule = DatRule::default();
-                rule.dir_key = normalized_dir_key;
-                return rule;
+                return DatRule {
+                    dir_key: normalized_dir_key,
+                    ..Default::default()
+                };
             }
         })
     }

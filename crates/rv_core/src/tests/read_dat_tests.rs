@@ -8,22 +8,24 @@
         let dat_path = dir.path().join("sample.dat");
         fs::write(&dat_path, "test").unwrap();
 
-        let mut header = DatHeader::default();
-        header.id = Some("id-1".to_string());
-        header.name = Some("SampleDat".to_string());
-        header.root_dir = Some("Roms".to_string());
-        header.description = Some("Desc".to_string());
-        header.category = Some("Cat".to_string());
-        header.version = Some("1.0".to_string());
-        header.date = Some("2026-01-01".to_string());
-        header.author = Some("Author".to_string());
-        header.email = Some("a@example.com".to_string());
-        header.homepage = Some("https://example.com".to_string());
-        header.url = Some("https://example.com/dat".to_string());
-        header.header = Some("nes".to_string());
-        header.compression = Some("zip".to_string());
-        header.merge_type = Some("split".to_string());
-        header.dir = Some("full".to_string());
+        let header = DatHeader {
+            id: Some("id-1".to_string()),
+            name: Some("SampleDat".to_string()),
+            root_dir: Some("Roms".to_string()),
+            description: Some("Desc".to_string()),
+            category: Some("Cat".to_string()),
+            version: Some("1.0".to_string()),
+            date: Some("2026-01-01".to_string()),
+            author: Some("Author".to_string()),
+            email: Some("a@example.com".to_string()),
+            homepage: Some("https://example.com".to_string()),
+            url: Some("https://example.com/dat".to_string()),
+            header: Some("nes".to_string()),
+            compression: Some("zip".to_string()),
+            merge_type: Some("split".to_string()),
+            dir: Some("full".to_string()),
+            ..Default::default()
+        };
 
         let mut rv_dat = RvDat::new();
         DatUpdate::populate_rv_dat_from_header(&mut rv_dat, &header, &dat_path.to_string_lossy());
@@ -162,8 +164,10 @@
         )
         .unwrap();
 
-        let mut settings = Settings::default();
-        settings.dat_root = dat_root.to_string_lossy().into_owned();
+        let settings = Settings {
+            dat_root: dat_root.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
         update_settings(settings);
 
         let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
@@ -413,8 +417,10 @@
         fs::create_dir_all(&nested).unwrap();
         fs::write(nested.join("set.dat"), "test").unwrap();
 
-        let mut settings = Settings::default();
-        settings.dat_root = dat_root.to_string_lossy().into_owned();
+        let settings = Settings {
+            dat_root: dat_root.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
         update_settings(settings);
 
         let mut dats_found = Vec::new();
