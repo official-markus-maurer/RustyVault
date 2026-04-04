@@ -24,4 +24,3 @@ pub fn task_log(message: impl Into<String>) {
         }
     });
 }
-

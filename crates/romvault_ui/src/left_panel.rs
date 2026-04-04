@@ -13,7 +13,11 @@ pub fn draw_left_panel(
     egui::SidePanel::left("left_panel")
         .resizable(true)
         .default_width(400.0)
-        .frame(egui::Frame::none().inner_margin(8.0).fill(ctx.style().visuals.panel_fill))
+        .frame(
+            egui::Frame::none()
+                .inner_margin(8.0)
+                .fill(ctx.style().visuals.panel_fill),
+        )
         .show(ctx, |ui| {
             egui::Frame::none()
                 .fill(info_frame_fill)
@@ -37,9 +41,12 @@ pub fn draw_left_panel(
                         .spacing([10.0, 4.0])
                         .min_col_width(50.0)
                         .show(ui, |ui| {
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.label("Name:");
-                            });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label("Name:");
+                                },
+                            );
                             if let Some(node) = &app.selected_node {
                                 if let Some(dat) = &node.borrow().dat {
                                     ui.label(
@@ -54,9 +61,12 @@ pub fn draw_left_panel(
                                 ui.label("");
                             }
 
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.label("Version:");
-                            });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label("Version:");
+                                },
+                            );
                             if let Some(node) = &app.selected_node {
                                 if let Some(dat) = &node.borrow().dat {
                                     ui.label(
@@ -72,9 +82,12 @@ pub fn draw_left_panel(
                             }
                             ui.end_row();
 
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.label("Description:");
-                            });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label("Description:");
+                                },
+                            );
                             if let Some(node) = &app.selected_node {
                                 if let Some(dat) = &node.borrow().dat {
                                     ui.label(
@@ -89,9 +102,12 @@ pub fn draw_left_panel(
                                 ui.label("");
                             }
 
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.label("Date:");
-                            });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label("Date:");
+                                },
+                            );
                             if let Some(node) = &app.selected_node {
                                 if let Some(dat) = &node.borrow().dat {
                                     ui.label(
@@ -107,9 +123,12 @@ pub fn draw_left_panel(
                             }
                             ui.end_row();
 
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.label("Category:");
-                            });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label("Category:");
+                                },
+                            );
                             if let Some(node) = &app.selected_node {
                                 if let Some(dat) = &node.borrow().dat {
                                     ui.label(
@@ -127,9 +146,12 @@ pub fn draw_left_panel(
                             ui.label("");
                             ui.end_row();
 
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.label("Author:");
-                            });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label("Author:");
+                                },
+                            );
                             if let Some(node) = &app.selected_node {
                                 if let Some(dat) = &node.borrow().dat {
                                     ui.label(
@@ -147,9 +169,12 @@ pub fn draw_left_panel(
                             ui.label("");
                             ui.end_row();
 
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.label("ROM Path:");
-                            });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label("ROM Path:");
+                                },
+                            );
                             if let Some(node) = &app.selected_node {
                                 if let Some(dat) = &node.borrow().dat {
                                     ui.label(
@@ -212,27 +237,41 @@ pub fn draw_left_panel(
                         }
                     }
 
-                    egui::Grid::new("tree_status_grid").num_columns(4).show(ui, |ui| {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label("ROMs Got:");
-                        });
-                        ui.label(crate::format_number(got));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label("ROMs Missing:");
-                        });
-                        ui.label(crate::format_number(missing));
-                        ui.end_row();
+                    egui::Grid::new("tree_status_grid")
+                        .num_columns(4)
+                        .show(ui, |ui| {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label("ROMs Got:");
+                                },
+                            );
+                            ui.label(crate::format_number(got));
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label("ROMs Missing:");
+                                },
+                            );
+                            ui.label(crate::format_number(missing));
+                            ui.end_row();
 
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label("ROMs Fixable:");
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label("ROMs Fixable:");
+                                },
+                            );
+                            ui.label(crate::format_number(fixable));
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label("ROMs Unknown:");
+                                },
+                            );
+                            ui.label(crate::format_number(unknown));
+                            ui.end_row();
                         });
-                        ui.label(crate::format_number(fixable));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label("ROMs Unknown:");
-                        });
-                        ui.label(crate::format_number(unknown));
-                        ui.end_row();
-                    });
                 });
 
             ui.add_space(2.0);

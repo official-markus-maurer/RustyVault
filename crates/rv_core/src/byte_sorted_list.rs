@@ -29,7 +29,9 @@ impl<TStore, TInput> ByteSortedList<TStore, TInput> {
         TStore: Clone,
     {
         let bucket = (self.get_bucket)(value) as usize;
-        let list_guard = self.buckets[bucket].lock().unwrap_or_else(|e| e.into_inner());
+        let list_guard = self.buckets[bucket]
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (found, index) = self.search_on(value, &list_guard);
         if found == 0 {
             Some(list_guard[index].clone())
@@ -40,7 +42,9 @@ impl<TStore, TInput> ByteSortedList<TStore, TInput> {
 
     pub fn add_find(&self, value: &TInput) {
         let bucket = (self.get_bucket)(value) as usize;
-        let mut list_guard = self.buckets[bucket].lock().unwrap_or_else(|e| e.into_inner());
+        let mut list_guard = self.buckets[bucket]
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (found, index) = self.search_on(value, &list_guard);
         if found == 0 {
             (self.merge)(value, &mut list_guard[index]);
@@ -51,7 +55,9 @@ impl<TStore, TInput> ByteSortedList<TStore, TInput> {
 
     pub fn add_find_with_exact(&self, value: &TInput, exact: fn(&TInput, &TStore) -> bool) {
         let bucket = (self.get_bucket)(value) as usize;
-        let mut list_guard = self.buckets[bucket].lock().unwrap_or_else(|e| e.into_inner());
+        let mut list_guard = self.buckets[bucket]
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (found, mut index) = self.search_on(value, &list_guard);
         if found == 0 {
             let top = list_guard.len();
@@ -122,4 +128,3 @@ impl<TStore, TInput> ByteSortedList<TStore, TInput> {
         (res, index)
     }
 }
-

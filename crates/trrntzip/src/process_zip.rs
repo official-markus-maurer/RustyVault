@@ -148,7 +148,11 @@ impl ProcessZip {
 
                 let status = if item.is_dir {
                     if tz.out_zip_type == ZipStructure::ZipTrrnt {
-                        TorrentZipMake::zip_directory_with_control(&item.path, ZipStructure::ZipTrrnt, control.as_ref())
+                        TorrentZipMake::zip_directory_with_control(
+                            &item.path,
+                            ZipStructure::ZipTrrnt,
+                            control.as_ref(),
+                        )
                     } else {
                         TrrntZipStatus::CATCH_ERROR
                     }
@@ -167,4 +171,3 @@ impl ProcessZip {
         }
     }
 }
-

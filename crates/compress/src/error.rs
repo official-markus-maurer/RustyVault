@@ -28,4 +28,3 @@ pub fn clear_error() {
 pub fn get_error() -> ErrorState {
     state().read().map(|s| s.clone()).unwrap_or_default()
 }
-

@@ -420,4 +420,3 @@ pub fn draw_global_settings(app: &mut RomVaultApp, ctx: &egui::Context) {
         app.show_settings = false;
     }
 }
-

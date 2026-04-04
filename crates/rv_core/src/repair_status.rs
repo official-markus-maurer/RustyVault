@@ -1,16 +1,16 @@
 use crate::rv_file::RvFile;
-use std::rc::Rc;
 use std::cell::RefCell;
+use std::rc::Rc;
 
 /// Statistical accumulator for tracking the health of the ROM database.
-/// 
-/// `RepairStatus` is calculated dynamically by traversing the tree. It aggregates the 
-/// `RepStatus` of every individual file (e.g. `Correct`, `Missing`, `CanBeFixed`) to bubble 
+///
+/// `RepairStatus` is calculated dynamically by traversing the tree. It aggregates the
+/// `RepStatus` of every individual file (e.g. `Correct`, `Missing`, `CanBeFixed`) to bubble
 /// up folder-level and global statistics. This powers the main UI counters and progress bars.
-/// 
+///
 /// Differences from C#:
 /// - The logic is nearly identical to C#'s `ReportStatus` recursive aggregation.
-/// - Rust utilizes an internal caching layer (`cached_stats` on `RvFile`) to dramatically speed up 
+/// - Rust utilizes an internal caching layer (`cached_stats` on `RvFile`) to dramatically speed up
 ///   subsequent tree traversals by memoizing the `RepairStatus` of unchanged branches.
 #[derive(Clone, Copy)]
 pub struct RepairStatus {
@@ -18,7 +18,7 @@ pub struct RepairStatus {
     pub total_games: i32,
     /// Total number of ROMs
     pub total_roms: i32,
-    
+
     /// Number of games marked as `Correct`
     pub games_correct: i32,
     /// Number of games marked as `Missing`
@@ -27,7 +27,7 @@ pub struct RepairStatus {
     pub games_missing_mia: i32,
     /// Number of games marked as `CanBeFixed`
     pub games_fixes: i32,
-    
+
     /// Number of files marked as `Correct`
     pub roms_correct: i32,
     /// Number of files marked as `CorrectMIA`
@@ -119,7 +119,8 @@ impl RepairStatus {
         } else if self.roms_corrupt == self.total_roms
             || (self.roms_corrupt > 0
                 && plain_missing_roms == 0
-                && correct_roms + merged_roms + self.roms_corrupt + self.roms_fixes == self.total_roms)
+                && correct_roms + merged_roms + self.roms_corrupt + self.roms_fixes
+                    == self.total_roms)
         {
             crate::enums::ReportStatus::Corrupt
         } else if merged_roms == self.total_roms {
@@ -141,7 +142,7 @@ impl RepairStatus {
         }
     }
 
-    /// Recursively traverses a tree branch and calculates its exact `RepairStatus` by 
+    /// Recursively traverses a tree branch and calculates its exact `RepairStatus` by
     /// aggregating the status of all children. Automatically utilizes and updates `cached_stats`.
     pub fn report_status(&mut self, root: Rc<RefCell<RvFile>>) {
         let is_dir;
@@ -149,7 +150,7 @@ impl RepairStatus {
         let is_game;
         let rep_status;
         let children;
-        
+
         {
             let node = root.borrow();
             // If we already have cached stats, just use them and return immediately!
@@ -188,17 +189,21 @@ impl RepairStatus {
             is_file = node.is_file();
             is_game = node.game.is_some();
             rep_status = node.rep_status();
-            children = if is_dir { node.children.clone() } else { Vec::new() };
+            children = if is_dir {
+                node.children.clone()
+            } else {
+                Vec::new()
+            };
         }
-        
+
         // We calculate stats for this node specifically
         let mut node_stats = RepairStatus::new();
-        
+
         if is_dir {
             for child in &children {
                 let mut child_status = RepairStatus::new();
                 child_status.report_status(Rc::clone(child));
-                
+
                 // Add the child's *aggregate* stats to our node's running total.
                 // Since child_status.report_status automatically adds to its `self`,
                 // child_status ALREADY contains the full aggregate of that branch!
@@ -218,8 +223,8 @@ impl RepairStatus {
                 node_stats.roms_unneeded += child_status.roms_unneeded;
                 node_stats.roms_unknown += child_status.roms_unknown;
             }
-        } 
-        
+        }
+
         // Count it as a file if it is explicitly a file, OR if it's a game container (like a ZIP/7z)
         // BUT don't double count! If the game has children (ROMs), we counted the ROMs!
         // In RomVault, Dir nodes that act as games but have no children are counted as files.
@@ -234,14 +239,16 @@ impl RepairStatus {
                 RepStatus::CorrectMIA => {
                     node_stats.games_correct += 1;
                     node_stats.games_missing_mia += 1;
-                },
-                RepStatus::Missing | RepStatus::DirMissing | RepStatus::Corrupt | RepStatus::DirCorrupt | RepStatus::Incomplete => {
-                    node_stats.games_missing += 1
                 }
+                RepStatus::Missing
+                | RepStatus::DirMissing
+                | RepStatus::Corrupt
+                | RepStatus::DirCorrupt
+                | RepStatus::Incomplete => node_stats.games_missing += 1,
                 RepStatus::MissingMIA => {
                     node_stats.games_missing += 1;
                     node_stats.games_missing_mia += 1;
-                },
+                }
                 RepStatus::CanBeFixed
                 | RepStatus::CanBeFixedMIA
                 | RepStatus::CorruptCanBeFixed
@@ -266,14 +273,12 @@ impl RepairStatus {
                 RepStatus::CorrectMIA => {
                     node_stats.roms_correct += 1;
                     node_stats.roms_correct_mia += 1;
-                },
-                RepStatus::Missing | RepStatus::DirMissing => {
-                    node_stats.roms_missing += 1
                 }
+                RepStatus::Missing | RepStatus::DirMissing => node_stats.roms_missing += 1,
                 RepStatus::MissingMIA => {
                     node_stats.roms_missing += 1;
                     node_stats.roms_missing_mia += 1;
-                },
+                }
                 RepStatus::Corrupt | RepStatus::DirCorrupt | RepStatus::Incomplete => {
                     node_stats.roms_corrupt += 1;
                     node_stats.roms_missing += 1;
@@ -292,7 +297,9 @@ impl RepairStatus {
                 | RepStatus::IncompleteRemove => node_stats.roms_fixes += 1,
                 RepStatus::NotCollected => node_stats.roms_not_collected += 1,
                 RepStatus::UnNeeded => node_stats.roms_unneeded += 1,
-                RepStatus::Unknown | RepStatus::DirUnknown | RepStatus::UnScanned => node_stats.roms_unknown += 1,
+                RepStatus::Unknown | RepStatus::DirUnknown | RepStatus::UnScanned => {
+                    node_stats.roms_unknown += 1
+                }
                 _ => {}
             }
         }

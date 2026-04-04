@@ -125,7 +125,8 @@ pub fn write_zip64_extra(
 ) -> (Vec<u8>, u32, u32, u32) {
     let mut e_zip64 = Vec::<u8>::new();
 
-    let (header_uncompressed_size, header_compressed_size, header_relative_offset) = if !central_dir {
+    let (header_uncompressed_size, header_compressed_size, header_relative_offset) = if !central_dir
+    {
         if uncompressed_size >= 0xFFFF_FFFF || compressed_size >= 0xFFFF_FFFF {
             e_zip64.extend_from_slice(&uncompressed_size.to_le_bytes());
             e_zip64.extend_from_slice(&compressed_size.to_le_bytes());
@@ -155,11 +156,20 @@ pub fn write_zip64_extra(
             relative_offset_of_local_header as u32
         };
 
-        (header_uncompressed_size, header_compressed_size, header_relative_offset)
+        (
+            header_uncompressed_size,
+            header_compressed_size,
+            header_relative_offset,
+        )
     };
 
     if e_zip64.is_empty() {
-        return (Vec::new(), header_uncompressed_size, header_compressed_size, header_relative_offset);
+        return (
+            Vec::new(),
+            header_uncompressed_size,
+            header_compressed_size,
+            header_relative_offset,
+        );
     }
 
     let mut out = Vec::with_capacity(4 + e_zip64.len());
@@ -167,7 +177,12 @@ pub fn write_zip64_extra(
     out.extend_from_slice(&(e_zip64.len() as u16).to_le_bytes());
     out.extend_from_slice(&e_zip64);
 
-    (out, header_uncompressed_size, header_compressed_size, header_relative_offset)
+    (
+        out,
+        header_uncompressed_size,
+        header_compressed_size,
+        header_relative_offset,
+    )
 }
 
 fn utc_ticks_from_ntfs_datetime(ntfs_ticks: i64) -> i64 {
@@ -215,4 +230,3 @@ mod tests {
         assert_eq!(info.compressed_size, None);
     }
 }
-

@@ -43,7 +43,10 @@ fn test_parse_xml_dat() {
     assert!(rom.is_file());
     let rom_file = rom.file().unwrap();
     assert_eq!(rom_file.size, Some(1024));
-    assert_eq!(rom_file.crc.as_ref().unwrap(), &vec![0x12, 0x34, 0x56, 0x78]);
+    assert_eq!(
+        rom_file.crc.as_ref().unwrap(),
+        &vec![0x12, 0x34, 0x56, 0x78]
+    );
 
     let disk = &roms[1];
     assert_eq!(disk.name, "test_disk");

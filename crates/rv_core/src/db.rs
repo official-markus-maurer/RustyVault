@@ -1,15 +1,15 @@
+use crate::enums::ToSortDirType;
+use crate::rv_file::RvFile;
+use dat_reader::enums::{DatStatus, FileType};
+use std::cell::RefCell;
 use std::fs;
 use std::path::Path;
 use std::rc::Rc;
-use std::cell::RefCell;
-use dat_reader::enums::{DatStatus, FileType};
-use crate::rv_file::RvFile;
-use crate::enums::ToSortDirType;
 
 use crate::cache::Cache;
 
 /// Represents the global database state for the RomVault core.
-/// 
+///
 /// In the C# reference, this is managed as a static `DB` class containing the `dirTree`.
 /// In Rust, this is managed as a `thread_local!` instance of `DB` holding the root node of the file tree.
 /// The `dir_root` is a hierarchical tree of `RvFile` nodes representing physical and virtual (DAT) directories.
@@ -28,7 +28,7 @@ impl DB {
     }
 
     /// Initializes a new database instance.
-    /// 
+    ///
     /// If a valid cache file exists (`RomVault.db`), it loads the tree from disk.
     /// Otherwise, it initializes a fresh tree with default `RustyVault` and `ToSort` directories.
     pub fn new() -> Self {
@@ -48,7 +48,7 @@ impl DB {
             let rv_rc = Rc::new(RefCell::new(rv));
             rv_rc.borrow_mut().parent = Some(Rc::downgrade(&root));
             root_mut.child_add(Rc::clone(&rv_rc));
-            
+
             let mut ts = RvFile::new(FileType::Dir);
             ts.name = "ToSort".to_string();
             ts.set_dat_status(DatStatus::InToSort);
@@ -60,19 +60,21 @@ impl DB {
 
         Self::check_create_root_dirs();
 
-        Self {
-            dir_root: root,
-        }
+        Self { dir_root: root }
     }
 
     /// Checks for and creates essential physical root directories (`DatRoot`, `RustyVault`, `ToSort`).
-    /// 
+    ///
     /// This mimics the C# initialization behavior where physical paths are generated
     /// based on the global configuration upon starting up the DB.
     pub fn check_create_root_dirs() {
         // Create DatRoot
         let dat_root = crate::settings::get_settings().dat_root;
-        let dat_root_path = if dat_root.is_empty() { "DatRoot" } else { &dat_root };
+        let dat_root_path = if dat_root.is_empty() {
+            "DatRoot"
+        } else {
+            &dat_root
+        };
         if !Path::new(dat_root_path).exists() {
             let _ = fs::create_dir_all(dat_root_path);
         }
@@ -86,11 +88,14 @@ impl DB {
     pub fn get_to_sort_cache(&self) -> Rc<RefCell<RvFile>> {
         let root = self.dir_root.borrow();
         for child in &root.children {
-            if child.borrow().to_sort_status_is(ToSortDirType::TO_SORT_CACHE) {
+            if child
+                .borrow()
+                .to_sort_status_is(ToSortDirType::TO_SORT_CACHE)
+            {
                 return Rc::clone(child);
             }
         }
-        
+
         // Fallback to first child which is typically RustyVault or ToSort
         if root.children.len() > 1 {
             Rc::clone(&root.children[1])
@@ -103,7 +108,10 @@ impl DB {
     pub fn get_to_sort_primary(&self) -> Rc<RefCell<RvFile>> {
         let root = self.dir_root.borrow();
         for child in root.children.iter().skip(1) {
-            if child.borrow().to_sort_status_is(ToSortDirType::TO_SORT_PRIMARY) {
+            if child
+                .borrow()
+                .to_sort_status_is(ToSortDirType::TO_SORT_PRIMARY)
+            {
                 return Rc::clone(child);
             }
         }
@@ -119,7 +127,10 @@ impl DB {
     pub fn get_to_sort_file_only(&self) -> Rc<RefCell<RvFile>> {
         let root = self.dir_root.borrow();
         for child in root.children.iter().skip(1) {
-            if child.borrow().to_sort_status_is(ToSortDirType::TO_SORT_FILE_ONLY) {
+            if child
+                .borrow()
+                .to_sort_status_is(ToSortDirType::TO_SORT_FILE_ONLY)
+            {
                 return Rc::clone(child);
             }
         }
@@ -140,7 +151,7 @@ impl Default for DB {
 }
 
 thread_local! {
-    /// Global, thread-local database instance. 
+    /// Global, thread-local database instance.
     /// Mimics the C# static `DB` class structure while abiding by Rust's safety guarantees.
     pub static GLOBAL_DB: RefCell<Option<DB>> = const { RefCell::new(None) };
 }

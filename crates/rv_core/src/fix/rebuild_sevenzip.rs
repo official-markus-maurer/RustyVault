@@ -33,9 +33,16 @@ impl super::Fix {
         let temp_archive_path = format!("{}.rvfix.tmp", archive_path);
         let current_exists = Path::new(&archive_path).exists();
         let mut retained_entries = 0usize;
-        let mut any_changes = current_exists && archive_file.borrow().zip_struct != desired_zip_struct;
+        let mut any_changes =
+            current_exists && archive_file.borrow().zip_struct != desired_zip_struct;
         let mut entries = Vec::new();
-        Self::collect_archive_rebuild_entries(Rc::clone(&archive_file), "", "", &mut entries, &mut any_changes);
+        Self::collect_archive_rebuild_entries(
+            Rc::clone(&archive_file),
+            "",
+            "",
+            &mut entries,
+            &mut any_changes,
+        );
         Self::sort_archive_rebuild_entries(&mut entries, desired_zip_struct);
 
         let mut dir_has_children: HashMap<String, bool> = HashMap::new();
@@ -78,7 +85,11 @@ impl super::Fix {
             };
 
             if is_directory {
-                if dir_has_children.get(&archive_name).copied().unwrap_or(false) {
+                if dir_has_children
+                    .get(&archive_name)
+                    .copied()
+                    .unwrap_or(false)
+                {
                     any_changes = true;
                     continue;
                 }
@@ -114,7 +125,9 @@ impl super::Fix {
                     continue;
                 }
                 RepStatus::MoveToSort | RepStatus::MoveToCorrupt => {
-                    let Some(bytes) = Self::read_seven_zip_entry_bytes(&archive_path, &existing_child_name) else {
+                    let Some(bytes) =
+                        Self::read_seven_zip_entry_bytes(&archive_path, &existing_child_name)
+                    else {
                         return false;
                     };
                     let target_path = Self::get_archive_member_tosort_path(
@@ -133,7 +146,9 @@ impl super::Fix {
                     continue;
                 }
                 RepStatus::Rename => {
-                    let Some(bytes) = Self::read_seven_zip_entry_bytes(&archive_path, &existing_child_name) else {
+                    let Some(bytes) =
+                        Self::read_seven_zip_entry_bytes(&archive_path, &existing_child_name)
+                    else {
                         return false;
                     };
                     if existing_child_name != child_name {
@@ -159,8 +174,10 @@ impl super::Fix {
                         Self::is_fix_read_only(&source_ref)
                     };
                     let source_is_same_node = Rc::ptr_eq(&source_file, &entry.node);
-                    let source_is_same_archive =
-                        Self::source_uses_same_archive_path(Rc::clone(&source_file), Path::new(&archive_path));
+                    let source_is_same_archive = Self::source_uses_same_archive_path(
+                        Rc::clone(&source_file),
+                        Path::new(&archive_path),
+                    );
 
                     if !source_is_read_only && !source_is_same_node && !source_is_same_archive {
                         Self::queue_source_cleanup(source_file, queue);
@@ -177,7 +194,9 @@ impl super::Fix {
                         continue;
                     }
 
-                    let Some(bytes) = Self::read_seven_zip_entry_bytes(&archive_path, &existing_child_name) else {
+                    let Some(bytes) =
+                        Self::read_seven_zip_entry_bytes(&archive_path, &existing_child_name)
+                    else {
                         return false;
                     };
                     bytes
@@ -210,7 +229,10 @@ impl super::Fix {
                         child_ref.rep_status_reset();
                     }
                     RepStatus::MoveToSort => {
-                        child_ref.set_dat_got_status(dat_reader::enums::DatStatus::InToSort, GotStatus::Got);
+                        child_ref.set_dat_got_status(
+                            dat_reader::enums::DatStatus::InToSort,
+                            GotStatus::Got,
+                        );
                         child_ref.rep_status_reset();
                     }
                     RepStatus::MoveToCorrupt => {
@@ -300,7 +322,8 @@ impl super::Fix {
                     lz.set_pb(2);
                     lz.set_mode_normal();
                     lz.set_match_finder_bt4();
-                    EncoderConfiguration::new(EncoderMethod::LZMA).with_options(EncoderOptions::Lzma(lz))
+                    EncoderConfiguration::new(EncoderMethod::LZMA)
+                        .with_options(EncoderOptions::Lzma(lz))
                 }
             };
             writer.set_content_methods(vec![config]);
@@ -322,7 +345,9 @@ impl super::Fix {
                 file_entries.push(ArchiveEntry::new_file(&p.archive_name));
                 readers.push(SourceReader::new(std::io::Cursor::new(payload)));
             }
-            if !file_entries.is_empty() && writer.push_archive_entries(file_entries, readers).is_err() {
+            if !file_entries.is_empty()
+                && writer.push_archive_entries(file_entries, readers).is_err()
+            {
                 let _ = fs::remove_file(&temp_archive_path);
                 return false;
             }
@@ -330,7 +355,10 @@ impl super::Fix {
             for p in &planned {
                 if p.is_directory {
                     if writer
-                        .push_archive_entry::<&[u8]>(ArchiveEntry::new_directory(&p.archive_name), None)
+                        .push_archive_entry::<&[u8]>(
+                            ArchiveEntry::new_directory(&p.archive_name),
+                            None,
+                        )
                         .is_err()
                     {
                         let _ = fs::remove_file(&temp_archive_path);
@@ -340,12 +368,16 @@ impl super::Fix {
                 }
                 let payload = p.payload.clone().unwrap_or_default();
                 let config = match desired_zip_struct {
-                    ZipStructure::SevenZipSZSTD | ZipStructure::SevenZipNZSTD => EncoderConfiguration::new(EncoderMethod::ZSTD)
-                        .with_options(EncoderOptions::Zstd(ZstandardOptions::from_level(19))),
+                    ZipStructure::SevenZipSZSTD | ZipStructure::SevenZipNZSTD => {
+                        EncoderConfiguration::new(EncoderMethod::ZSTD)
+                            .with_options(EncoderOptions::Zstd(ZstandardOptions::from_level(19)))
+                    }
                     _ => {
                         let mut lz = LzmaOptions::from_level(9);
                         lz.set_dictionary_size(
-                            compress::seven_zip::seven_zip_dictionary_size_from_uncompressed_size(payload.len() as u64),
+                            compress::seven_zip::seven_zip_dictionary_size_from_uncompressed_size(
+                                payload.len() as u64,
+                            ),
                         );
                         lz.set_num_fast_bytes(64);
                         lz.set_lc(4);
@@ -353,12 +385,16 @@ impl super::Fix {
                         lz.set_pb(2);
                         lz.set_mode_normal();
                         lz.set_match_finder_bt4();
-                        EncoderConfiguration::new(EncoderMethod::LZMA).with_options(EncoderOptions::Lzma(lz))
+                        EncoderConfiguration::new(EncoderMethod::LZMA)
+                            .with_options(EncoderOptions::Lzma(lz))
                     }
                 };
                 writer.set_content_methods(vec![config]);
                 if writer
-                    .push_archive_entry(ArchiveEntry::new_file(&p.archive_name), Some(std::io::Cursor::new(payload)))
+                    .push_archive_entry(
+                        ArchiveEntry::new_file(&p.archive_name),
+                        Some(std::io::Cursor::new(payload)),
+                    )
                     .is_err()
                 {
                     let _ = fs::remove_file(&temp_archive_path);
@@ -391,7 +427,8 @@ impl super::Fix {
                     child_ref.rep_status_reset();
                 }
                 RepStatus::MoveToSort => {
-                    child_ref.set_dat_got_status(dat_reader::enums::DatStatus::InToSort, GotStatus::Got);
+                    child_ref
+                        .set_dat_got_status(dat_reader::enums::DatStatus::InToSort, GotStatus::Got);
                     child_ref.rep_status_reset();
                 }
                 RepStatus::MoveToCorrupt => {

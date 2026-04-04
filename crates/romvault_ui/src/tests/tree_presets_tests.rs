@@ -4,7 +4,9 @@ use std::rc::Rc;
 use dat_reader::enums::FileType;
 use rv_core::rv_file::{RvFile, TreeSelect};
 
-use crate::tree_presets::{apply_tree_state, collect_tree_state, read_preset_file, write_preset_file};
+use crate::tree_presets::{
+    apply_tree_state, collect_tree_state, read_preset_file, write_preset_file,
+};
 
 #[test]
 fn test_tree_presets_write_and_read_round_trip() {

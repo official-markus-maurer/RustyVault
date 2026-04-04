@@ -77,11 +77,11 @@ pub struct DatMetaData {
 }
 
 /// Logical representation of a DAT file within the internal database.
-/// 
+///
 /// `RvDat` holds the metadata (Name, Description, Version) and operational flags
 /// (e.g. `AutoAddedDirectory`, `MultiDatOverride`) extracted from a `.dat` file.
 /// It is usually bound to an `RvFile` representing the root directory of that DAT's games.
-/// 
+///
 /// Differences from C#:
 /// - The C# version tightly packs `DatData` strings into an array indexed by the enum.
 /// - The Rust version stores them dynamically in a `Vec<DatMetaData>` to optimize serialization
@@ -91,6 +91,10 @@ pub struct RvDat {
     /// List of key-value metadata pairs
     pub game_meta_data: Vec<DatMetaData>,
     /// Index in the global DAT list
+    #[serde(
+        default = "default_dat_index",
+        deserialize_with = "crate::rv_file::de_i32_compat"
+    )]
     pub dat_index: i32,
     /// Internal processing status
     pub status: DatUpdateStatus,
@@ -98,6 +102,10 @@ pub struct RvDat {
     pub time_stamp: i64,
     /// Operation flags configured for this DAT
     pub dat_flags: DatFlags,
+}
+
+fn default_dat_index() -> i32 {
+    -1
 }
 
 impl RvDat {
@@ -128,7 +136,10 @@ impl RvDat {
 
     /// Retrieves a metadata string by its `DatData` key
     pub fn get_data(&self, id: DatData) -> Option<String> {
-        self.game_meta_data.iter().find(|m| m.id == id).map(|m| m.value.clone())
+        self.game_meta_data
+            .iter()
+            .find(|m| m.id == id)
+            .map(|m| m.value.clone())
     }
 
     /// Checks if a specific `DatFlags` bit is set

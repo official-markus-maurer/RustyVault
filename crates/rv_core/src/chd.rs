@@ -68,7 +68,8 @@ pub fn parse_chd_header_from_bytes(buf: &[u8]) -> Option<ChdHeaderInfo> {
         _ => return None,
     }
 
-    let requires_parent = parentmd5.is_some_and(|p| !is_all_zero(p)) || parentsha1.is_some_and(|p| !is_all_zero(p));
+    let requires_parent =
+        parentmd5.is_some_and(|p| !is_all_zero(p)) || parentsha1.is_some_and(|p| !is_all_zero(p));
     let effective_sha1 = sha1.or(rawsha1);
 
     Some(ChdHeaderInfo {
@@ -122,4 +123,3 @@ mod tests {
         assert!(parse_chd_header_from_bytes(&b).is_none());
     }
 }
-

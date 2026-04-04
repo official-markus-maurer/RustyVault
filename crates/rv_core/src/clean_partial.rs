@@ -25,15 +25,20 @@ fn is_tree_selected(node: &RvFile) -> bool {
 fn status_check_file(rep: RepStatus, found_missing: &mut bool, found_got_or_fixable: &mut bool) {
     match rep {
         RepStatus::Missing | RepStatus::MissingMIA => *found_missing = true,
-        RepStatus::Correct | RepStatus::CorrectMIA | RepStatus::CanBeFixed | RepStatus::CanBeFixedMIA => {
-            *found_got_or_fixable = true
-        }
+        RepStatus::Correct
+        | RepStatus::CorrectMIA
+        | RepStatus::CanBeFixed
+        | RepStatus::CanBeFixedMIA => *found_got_or_fixable = true,
         RepStatus::MoveToSort | RepStatus::NotCollected => {}
         _ => {}
     }
 }
 
-fn status_check_dir(node: Rc<RefCell<RvFile>>, found_missing: &mut bool, found_got_or_fixable: &mut bool) {
+fn status_check_dir(
+    node: Rc<RefCell<RvFile>>,
+    found_missing: &mut bool,
+    found_got_or_fixable: &mut bool,
+) {
     let children = node.borrow().children.clone();
     for child in children {
         let child_is_dir = child.borrow().is_directory();
@@ -48,8 +53,12 @@ fn status_check_dir(node: Rc<RefCell<RvFile>>, found_missing: &mut bool, found_g
 
 fn status_set_file(node: &mut RvFile) {
     match node.rep_status() {
-        RepStatus::CanBeFixed | RepStatus::CanBeFixedMIA => node.set_rep_status(RepStatus::Incomplete),
-        RepStatus::Correct | RepStatus::CorrectMIA => node.set_rep_status(RepStatus::IncompleteRemove),
+        RepStatus::CanBeFixed | RepStatus::CanBeFixedMIA => {
+            node.set_rep_status(RepStatus::Incomplete)
+        }
+        RepStatus::Correct | RepStatus::CorrectMIA => {
+            node.set_rep_status(RepStatus::IncompleteRemove)
+        }
         _ => {}
     }
     node.cached_stats = None;
@@ -72,7 +81,11 @@ fn remove_partial_sets(game_dir: Rc<RefCell<RvFile>>) {
     }
     let mut found_missing = false;
     let mut found_got_or_fixable = false;
-    status_check_dir(Rc::clone(&game_dir), &mut found_missing, &mut found_got_or_fixable);
+    status_check_dir(
+        Rc::clone(&game_dir),
+        &mut found_missing,
+        &mut found_got_or_fixable,
+    );
     if !found_missing || !found_got_or_fixable {
         return;
     }
@@ -105,4 +118,3 @@ pub fn apply_complete_only(root: Rc<RefCell<RvFile>>) {
     let start = child0.unwrap_or_else(|| Rc::clone(&root));
     check_remove_partial(start, true);
 }
-

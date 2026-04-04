@@ -1,23 +1,23 @@
-use std::fs::{self, File};
-use std::io::{BufReader, BufWriter};
-use std::rc::{Rc, Weak};
-use std::cell::RefCell;
 use crate::rv_file::RvFile;
 use bincode;
 use memmap2::MmapOptions;
+use std::cell::RefCell;
+use std::fs::{self, File};
+use std::io::{BufReader, BufWriter};
+use std::rc::{Rc, Weak};
 
 /// Cache management system for serializing and deserializing the RomVault database.
-/// 
+///
 /// The `Cache` struct is responsible for saving the entire state of the file tree
 /// (`DB::dir_root`) to a local binary file, allowing instantaneous startup times
 /// without having to re-parse all DATs and re-scan the entire physical disk.
-/// 
+///
 /// Differences from C#:
 /// - The C# reference uses a highly optimized, manually packed `BinaryWriter`/`BinaryReader`
-///   stream implementation (`DB.Write` / `DB.Read`). It manually walks the tree and packs 
+///   stream implementation (`DB.Write` / `DB.Read`). It manually walks the tree and packs
 ///   enums into bit-fields.
 /// - The Rust implementation delegates serialization entirely to the `serde` framework
-///   via the `bincode` format, which offers near-native performance automatically. 
+///   via the `bincode` format, which offers near-native performance automatically.
 /// - Rust utilizes `memmap2` for zero-copy memory-mapped file loading during cache reads,
 ///   massively accelerating deserialization of large trees compared to standard buffered I/O.
 pub struct Cache;
@@ -56,7 +56,9 @@ impl Cache {
             );
         }
 
-        let parent = cache_path.parent().unwrap_or_else(|| std::path::Path::new(""));
+        let parent = cache_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new(""));
         let file_name = cache_path
             .file_name()
             .and_then(|s| s.to_str())
@@ -68,7 +70,7 @@ impl Cache {
     }
 
     /// Reads the binary cache file from disk and deserializes it into the `dir_root` tree.
-    /// 
+    ///
     /// If memory mapping (`mmap`) is available, it performs a zero-copy read. Otherwise,
     /// it falls back to a standard buffered reader. After deserialization, it invokes
     /// `relink_parents` to reconstruct the `Weak` pointer tree hierarchy that `serde` skips.
@@ -79,63 +81,92 @@ impl Cache {
             return None;
         }
 
-        let file = match File::open(path) {
-            Ok(f) => f,
-            Err(_) => return None,
-        };
+        let config_varint = bincode::config::standard().with_variable_int_encoding();
+        let config_fixed = bincode::config::standard();
 
-        // Configure bincode
-        let config = bincode::config::standard().with_variable_int_encoding();
-
-        // Try a zero-copy memory-mapped read first for maximum throughput
         let start_time = std::time::Instant::now();
-        let root: Rc<RefCell<RvFile>> = if let Ok(mmap) = unsafe { MmapOptions::new().map(&file) } {
-            match bincode::serde::decode_from_slice(&mmap, config) {
-                Ok((r, _bytes_read)) => {
-                    println!("Deserialized cache via mmap in {:?}", start_time.elapsed());
-                    r
+
+        let mut mmap_error: Option<String> = None;
+        if let Ok(file) = File::open(path) {
+            if let Ok(mmap) = unsafe { MmapOptions::new().map(&file) } {
+                match bincode::serde::decode_from_slice(&mmap, config_varint) {
+                    Ok((r, _bytes_read)) => {
+                        println!("Deserialized cache via mmap in {:?}", start_time.elapsed());
+                        let relink_start = std::time::Instant::now();
+                        Self::relink_parents(Rc::clone(&r), None, None);
+                        println!("Relinked parents in {:?}", relink_start.elapsed());
+                        return Some(r);
+                    }
+                    Err(e) => mmap_error = Some(format!("{:?}", e)),
                 }
-                Err(e) => {
-                    println!("mmap decode failed ({:?}); falling back to buffered read", e);
-                    let mut reader = BufReader::with_capacity(16 * 1024 * 1024, file);
-                    match bincode::serde::decode_from_std_read(&mut reader, config) {
-                        Ok(r) => {
-                            println!("Deserialized cache in {:?}", start_time.elapsed());
-                            r
-                        }
-                        Err(e) => {
-                            println!("Error reading cache: {:?}", e);
-                            return None;
-                        }
+                match bincode::serde::decode_from_slice(&mmap, config_fixed) {
+                    Ok((r, _bytes_read)) => {
+                        println!("Deserialized cache via mmap in {:?}", start_time.elapsed());
+                        let relink_start = std::time::Instant::now();
+                        Self::relink_parents(Rc::clone(&r), None, None);
+                        println!("Relinked parents in {:?}", relink_start.elapsed());
+                        return Some(r);
+                    }
+                    Err(e) => {
+                        let next = format!("{:?}", e);
+                        mmap_error = Some(match mmap_error.take() {
+                            Some(prev) => format!("{prev}; {next}"),
+                            None => next,
+                        });
                     }
                 }
             }
-        } else {
+        }
+
+        if let Some(e) = &mmap_error {
+            println!("mmap decode failed ({e}); falling back to buffered read");
+        }
+
+        let mut buffered_error: Option<String> = None;
+        if let Ok(file) = File::open(path) {
             let mut reader = BufReader::with_capacity(16 * 1024 * 1024, file);
-            match bincode::serde::decode_from_std_read(&mut reader, config) {
+            match bincode::serde::decode_from_std_read(&mut reader, config_varint) {
                 Ok(r) => {
                     println!("Deserialized cache in {:?}", start_time.elapsed());
-                    r
+                    let relink_start = std::time::Instant::now();
+                    Self::relink_parents(Rc::clone(&r), None, None);
+                    println!("Relinked parents in {:?}", relink_start.elapsed());
+                    return Some(r);
+                }
+                Err(e) => buffered_error = Some(format!("{:?}", e)),
+            }
+        }
+
+        if let Ok(file) = File::open(path) {
+            let mut reader = BufReader::with_capacity(16 * 1024 * 1024, file);
+            match bincode::serde::decode_from_std_read(&mut reader, config_fixed) {
+                Ok(r) => {
+                    println!("Deserialized cache in {:?}", start_time.elapsed());
+                    let relink_start = std::time::Instant::now();
+                    Self::relink_parents(Rc::clone(&r), None, None);
+                    println!("Relinked parents in {:?}", relink_start.elapsed());
+                    return Some(r);
                 }
                 Err(e) => {
-                    println!("Error reading cache: {:?}", e);
-                    return None;
+                    let next = format!("{:?}", e);
+                    buffered_error = Some(match buffered_error.take() {
+                        Some(prev) => format!("{prev}; {next}"),
+                        None => next,
+                    });
                 }
             }
-        };
+        }
 
-        let relink_start = std::time::Instant::now();
-        // Post-deserialization: re-link the 'parent' Weak pointers and resolve dat references
-        Self::relink_parents(Rc::clone(&root), None, None);
-        println!("Relinked parents in {:?}", relink_start.elapsed());
-
-        Some(root)
+        if let Some(e) = buffered_error {
+            println!("Error reading cache: {:?}", e);
+        }
+        None
     }
 
     /// Serializes the entire `RvFile` tree back to disk using `bincode` into the standard `RustyVault3_3.Cache` file format.
     pub fn write_cache(root: Rc<RefCell<RvFile>>) {
         Self::prepare_for_serialize(Rc::clone(&root));
-        
+
         let (cache_path, backup_path, tmp_path) = Self::cache_paths();
         if tmp_path.exists() {
             let _ = fs::remove_file(&tmp_path);
@@ -185,13 +216,17 @@ impl Cache {
         }
     }
 
-    fn relink_parents(root: Rc<RefCell<RvFile>>, parent: Option<Weak<RefCell<RvFile>>>, parent_dir_dats: Option<Vec<Rc<RefCell<crate::rv_dat::RvDat>>>>) {
+    fn relink_parents(
+        root: Rc<RefCell<RvFile>>,
+        parent: Option<Weak<RefCell<RvFile>>>,
+        parent_dir_dats: Option<Vec<Rc<RefCell<crate::rv_dat::RvDat>>>>,
+    ) {
         let mut stack = vec![(Rc::clone(&root), parent, parent_dir_dats)];
-        
+
         while let Some((node, p, p_dats)) = stack.pop() {
             let mut n = node.borrow_mut();
             n.parent = p.clone();
-            
+
             // Fixup: any item in ToSort should have a datStatus of InToSort
             if let Some(parent_weak) = &p {
                 if let Some(parent_rc) = parent_weak.upgrade() {
@@ -200,14 +235,15 @@ impl Cache {
                     }
                 }
             }
-            
-            if (n.file_type == dat_reader::enums::FileType::Dir || 
-                n.file_type == dat_reader::enums::FileType::Zip || 
-                n.file_type == dat_reader::enums::FileType::SevenZip) && 
-                n.dir_status.is_none() {
+
+            if (n.file_type == dat_reader::enums::FileType::Dir
+                || n.file_type == dat_reader::enums::FileType::Zip
+                || n.file_type == dat_reader::enums::FileType::SevenZip)
+                && n.dir_status.is_none()
+            {
                 n.dir_status = Some(crate::enums::ReportStatus::Unknown);
             }
-            
+
             // Resolve dat index
             if let Some(idx) = n.dat_index_for_serde {
                 if let Some(ref dats) = p_dats {
@@ -216,16 +252,20 @@ impl Cache {
                     }
                 }
             }
-            
+
             let weak_node = Rc::downgrade(&node);
             let current_dats = if !n.dir_dats.is_empty() {
                 Some(n.dir_dats.clone())
             } else {
                 p_dats.clone()
             };
-            
+
             for child in n.children.iter().rev() {
-                stack.push((Rc::clone(child), Some(weak_node.clone()), current_dats.clone()));
+                stack.push((
+                    Rc::clone(child),
+                    Some(weak_node.clone()),
+                    current_dats.clone(),
+                ));
             }
         }
     }

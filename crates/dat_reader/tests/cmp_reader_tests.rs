@@ -19,7 +19,10 @@ fn test_parse_cmp_dat() {
     let dat_header = read_cmp_dat(cmp, "test.dat").expect("Failed to parse CMP");
 
     assert_eq!(dat_header.name.as_deref(), Some("Test CMP Dat"));
-    assert_eq!(dat_header.description.as_deref(), Some("A Test CMP DAT File"));
+    assert_eq!(
+        dat_header.description.as_deref(),
+        Some("A Test CMP DAT File")
+    );
     assert_eq!(dat_header.version.as_deref(), Some("1.0"));
     assert_eq!(dat_header.author.as_deref(), Some("RustyRoms"));
 
@@ -42,7 +45,10 @@ fn test_parse_cmp_dat() {
     assert!(rom.is_file());
     let rom_file = rom.file().unwrap();
     assert_eq!(rom_file.size, Some(1024));
-    assert_eq!(rom_file.crc.as_ref().unwrap(), &vec![0x12, 0x34, 0x56, 0x78]);
+    assert_eq!(
+        rom_file.crc.as_ref().unwrap(),
+        &vec![0x12, 0x34, 0x56, 0x78]
+    );
 
     let disk = &roms[1];
     assert_eq!(disk.name, "test_disk");

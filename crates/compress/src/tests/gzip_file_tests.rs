@@ -50,4 +50,3 @@ fn gzip_write_then_read_headers_and_stream() {
 
     let _ = fs::remove_file(&path);
 }
-

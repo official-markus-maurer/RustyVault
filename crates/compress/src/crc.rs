@@ -67,4 +67,3 @@ mod tests {
         assert_eq!(crc.total_bytes_read(), 9);
     }
 }
-

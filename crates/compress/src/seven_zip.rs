@@ -1,10 +1,10 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
-use std::io::{Read, Write, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::collections::HashMap;
 
 use crc32fast::Hasher as Crc32Hasher;
 
@@ -13,122 +13,43 @@ use crate::i_compress::ICompress;
 use crate::structured_archive::ZipStructure;
 use crate::zip_enums::{ZipOpenType, ZipReturn};
 
+use sevenz_rust::encoder_options::{EncoderOptions, LzmaOptions, ZstandardOptions};
 use sevenz_rust::{
-    Archive,
-    ArchiveEntry,
-    ArchiveWriter,
-    BlockDecoder,
-    EncoderConfiguration,
-    EncoderMethod,
-    Password,
+    Archive, ArchiveEntry, ArchiveWriter, EncoderConfiguration, EncoderMethod, Password,
     SourceReader,
 };
-use sevenz_rust::encoder_options::{EncoderOptions, LzmaOptions, ZstandardOptions};
 
-struct SevenZipPendingWrite {
-    header_index: usize,
-    file: Rc<RefCell<File>>,
-    mod_time: Option<i64>,
-}
-
-struct SharedFileWriter {
-    file: Rc<RefCell<File>>,
-}
-
-impl Write for SharedFileWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.file.borrow_mut().write(buf)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.file.borrow_mut().flush()
-    }
-}
+mod internals;
+pub use internals::{extract_entry_bytes, seven_zip_dictionary_size_from_uncompressed_size};
+use internals::{SevenZipPendingWrite, SharedFileWriter};
 
 /// ICompress wrapper for `.7z` archives.
-/// 
-/// `SevenZipFile` implements the `ICompress` trait for 7z files, allowing the scanner to 
+///
+/// `SevenZipFile` implements the `ICompress` trait for 7z files, allowing the scanner to
 /// open, read headers, and extract payloads from 7-Zip archives.
-/// 
+///
 /// Differences from C#:
-/// - The C# `Compress.SevenZip` library is a massively complex custom LZMA decoder built 
-///   specifically to handle solid-block streaming and chunked hashing without extracting 
+/// - The C# `Compress.SevenZip` library is a massively complex custom LZMA decoder built
+///   specifically to handle solid-block streaming and chunked hashing without extracting
 ///   the entire solid block to disk.
-/// - The Rust version utilizes the `sevenz-rust` crate. It successfully reads and extracts 
-///   files, but currently lacks the granular solid-block stream-hashing optimizations present 
+/// - The Rust version utilizes the `sevenz-rust` crate. It successfully reads and extracts
+///   files, but currently lacks the granular solid-block stream-hashing optimizations present
 ///   in the custom C# engine, meaning it may use more memory when extracting very large solid 7z files.
 pub struct SevenZipFile {
     zip_filename: String,
     zip_open_type: ZipOpenType,
     time_stamp: i64,
-    
+
     // In read mode, we hold the loaded archive
     archive: Option<Archive>,
     file: Option<File>,
     staging_dir: Option<PathBuf>,
     pending_write: Option<SevenZipPendingWrite>,
     temp_open_path: Option<PathBuf>,
-    
+
     file_headers: Vec<FileHeader>,
     file_comment: String,
     zip_struct: ZipStructure,
-}
-
-fn logical_name_eq(left: &str, right: &str) -> bool {
-    #[cfg(windows)]
-    {
-        left.eq_ignore_ascii_case(right)
-    }
-    #[cfg(not(windows))]
-    {
-        left == right
-    }
-}
-
-pub fn extract_entry_bytes(archive_path: &str, entry_name: &str) -> Result<Option<Vec<u8>>, ZipReturn> {
-    let mut file = File::open(archive_path).map_err(|_| ZipReturn::ZipErrorGettingDataStream)?;
-    let password = Password::empty();
-    let archive = Archive::read(&mut file, &password).map_err(|_| ZipReturn::ZipErrorGettingDataStream)?;
-
-    let mut found: Option<Vec<u8>> = None;
-    for block_index in 0..archive.blocks.len() {
-        let decoder = BlockDecoder::new(1, block_index, &archive, &password, &mut file);
-        let mut each = |entry: &ArchiveEntry, reader: &mut dyn Read| -> Result<bool, sevenz_rust::Error> {
-            if found.is_some() {
-                let _ = std::io::copy(reader, &mut std::io::sink());
-                return Ok(false);
-            }
-            if logical_name_eq(entry.name(), entry_name) {
-                let mut buffer = Vec::new();
-                reader.read_to_end(&mut buffer)?;
-                found = Some(buffer);
-                return Ok(false);
-            }
-            let _ = std::io::copy(reader, &mut std::io::sink());
-            Ok(true)
-        };
-        let _ = decoder.for_each_entries(&mut each).map_err(|_| ZipReturn::ZipErrorGettingDataStream)?;
-        if found.is_some() {
-            break;
-        }
-    }
-
-    Ok(found)
-}
-
-pub fn seven_zip_dictionary_size_from_uncompressed_size(uncompressed_size: u64) -> u32 {
-    const DICT_SIZES: [u32; 22] = [
-        0x10000, 0x18000, 0x20000, 0x30000, 0x40000, 0x60000, 0x80000, 0xC0000, 0x100000,
-        0x180000, 0x200000, 0x300000, 0x400000, 0x600000, 0x800000, 0xC00000, 0x1000000,
-        0x1800000, 0x2000000, 0x3000000, 0x4000000, 0x6000000,
-    ];
-
-    for v in DICT_SIZES {
-        if v as u64 >= uncompressed_size {
-            return v;
-        }
-    }
-    DICT_SIZES[DICT_SIZES.len() - 1]
 }
 
 impl SevenZipFile {
@@ -148,7 +69,11 @@ impl SevenZipFile {
         }
     }
 
-    pub fn zip_file_open_stream<R: Read + Seek>(&mut self, mut stream: R, read_headers: bool) -> ZipReturn {
+    pub fn zip_file_open_stream<R: Read + Seek>(
+        &mut self,
+        mut stream: R,
+        read_headers: bool,
+    ) -> ZipReturn {
         self.zip_file_close();
         let mut bytes = Vec::new();
         if stream.seek(SeekFrom::Start(0)).is_err() {
@@ -176,7 +101,11 @@ impl SevenZipFile {
         String::new()
     }
 
-    pub fn zip_file_create_with_structure(&mut self, new_filename: &str, zip_struct: ZipStructure) -> ZipReturn {
+    pub fn zip_file_create_with_structure(
+        &mut self,
+        new_filename: &str,
+        zip_struct: ZipStructure,
+    ) -> ZipReturn {
         if self.zip_open_type != ZipOpenType::Closed {
             return ZipReturn::ZipFileAlreadyOpen;
         }
@@ -353,11 +282,16 @@ impl SevenZipFile {
         };
         writer.set_encrypt_header(false);
 
-        let solid = matches!(self.zip_struct, ZipStructure::SevenZipSLZMA | ZipStructure::SevenZipSZSTD);
+        let solid = matches!(
+            self.zip_struct,
+            ZipStructure::SevenZipSLZMA | ZipStructure::SevenZipSZSTD
+        );
         if solid {
             let config = match self.zip_struct {
-                ZipStructure::SevenZipSZSTD | ZipStructure::SevenZipNZSTD => EncoderConfiguration::new(EncoderMethod::ZSTD)
-                    .with_options(EncoderOptions::Zstd(ZstandardOptions::from_level(19))),
+                ZipStructure::SevenZipSZSTD | ZipStructure::SevenZipNZSTD => {
+                    EncoderConfiguration::new(EncoderMethod::ZSTD)
+                        .with_options(EncoderOptions::Zstd(ZstandardOptions::from_level(19)))
+                }
                 _ => {
                     let mut lz = LzmaOptions::from_level(9);
                     lz.set_dictionary_size(1 << 24);
@@ -367,7 +301,8 @@ impl SevenZipFile {
                     lz.set_pb(2);
                     lz.set_mode_normal();
                     lz.set_match_finder_bt4();
-                    EncoderConfiguration::new(EncoderMethod::LZMA).with_options(EncoderOptions::Lzma(lz))
+                    EncoderConfiguration::new(EncoderMethod::LZMA)
+                        .with_options(EncoderOptions::Lzma(lz))
                 }
             };
             writer.set_content_methods(vec![config]);
@@ -392,7 +327,9 @@ impl SevenZipFile {
                 file_entries.push(ArchiveEntry::new_file(name));
                 readers.push(SourceReader::new(src));
             }
-            if !file_entries.is_empty() && writer.push_archive_entries(file_entries, readers).is_err() {
+            if !file_entries.is_empty()
+                && writer.push_archive_entries(file_entries, readers).is_err()
+            {
                 let _ = fs::remove_file(&temp_path);
                 return ZipReturn::ZipErrorWritingToOutputStream;
             }
@@ -414,22 +351,30 @@ impl SevenZipFile {
                     return ZipReturn::ZipErrorWritingToOutputStream;
                 };
                 let config = match self.zip_struct {
-                    ZipStructure::SevenZipSZSTD | ZipStructure::SevenZipNZSTD => EncoderConfiguration::new(EncoderMethod::ZSTD)
-                        .with_options(EncoderOptions::Zstd(ZstandardOptions::from_level(19))),
+                    ZipStructure::SevenZipSZSTD | ZipStructure::SevenZipNZSTD => {
+                        EncoderConfiguration::new(EncoderMethod::ZSTD)
+                            .with_options(EncoderOptions::Zstd(ZstandardOptions::from_level(19)))
+                    }
                     _ => {
                         let mut lz = LzmaOptions::from_level(9);
-                        lz.set_dictionary_size(seven_zip_dictionary_size_from_uncompressed_size(src.metadata().map(|m| m.len()).unwrap_or(0)));
+                        lz.set_dictionary_size(seven_zip_dictionary_size_from_uncompressed_size(
+                            src.metadata().map(|m| m.len()).unwrap_or(0),
+                        ));
                         lz.set_num_fast_bytes(64);
                         lz.set_lc(4);
                         lz.set_lp(0);
                         lz.set_pb(2);
                         lz.set_mode_normal();
                         lz.set_match_finder_bt4();
-                        EncoderConfiguration::new(EncoderMethod::LZMA).with_options(EncoderOptions::Lzma(lz))
+                        EncoderConfiguration::new(EncoderMethod::LZMA)
+                            .with_options(EncoderOptions::Lzma(lz))
                     }
                 };
                 writer.set_content_methods(vec![config]);
-                if writer.push_archive_entry(ArchiveEntry::new_file(name), Some(src)).is_err() {
+                if writer
+                    .push_archive_entry(ArchiveEntry::new_file(name), Some(src))
+                    .is_err()
+                {
                     let _ = fs::remove_file(&temp_path);
                     return ZipReturn::ZipErrorWritingToOutputStream;
                 }
@@ -495,7 +440,7 @@ impl SevenZipFile {
             if file.has_access_date {
                 fh.accessed_time = set_time(file.access_date());
             }
-            
+
             self.file_headers.push(fh);
         }
 
@@ -576,7 +521,10 @@ impl SevenZipFile {
         let stored_header_offset = u64::from_le_bytes(rv_hdr[16..24].try_into().unwrap());
         let stored_header_size = u64::from_le_bytes(rv_hdr[24..32].try_into().unwrap());
 
-        if stored_crc != next_header_crc || stored_header_offset != header_pos || stored_header_size != next_header_size {
+        if stored_crc != next_header_crc
+            || stored_header_offset != header_pos
+            || stored_header_size != next_header_size
+        {
             return ZipStructure::None;
         }
 
@@ -687,7 +635,9 @@ pub fn apply_romvault7z_marker(path: &Path, zip_struct: ZipStructure) -> std::io
 
     let mut already_has_marker = false;
     if original_header_pos >= 32
-        && input.seek(SeekFrom::Start(original_header_pos - 32)).is_ok()
+        && input
+            .seek(SeekFrom::Start(original_header_pos - 32))
+            .is_ok()
     {
         let mut existing = [0u8; 32];
         if input.read_exact(&mut existing).is_ok() && existing[..11] == *b"RomVault7Z0" {
@@ -728,7 +678,10 @@ pub fn apply_romvault7z_marker(path: &Path, zip_struct: ZipStructure) -> std::io
     output.write_all(&signature)?;
     input.seek(SeekFrom::Start(32))?;
     let to_copy = original_header_pos.saturating_sub(32);
-    std::io::copy(&mut std::io::Read::by_ref(&mut input).take(to_copy), &mut output)?;
+    std::io::copy(
+        &mut std::io::Read::by_ref(&mut input).take(to_copy),
+        &mut output,
+    )?;
     output.write_all(&marker)?;
     input.seek(SeekFrom::Start(original_header_pos))?;
     std::io::copy(&mut input, &mut output)?;
@@ -756,9 +709,14 @@ impl ICompress for SevenZipFile {
         self.zip_open_type
     }
 
-    fn zip_file_open(&mut self, new_filename: &str, timestamp: i64, read_headers: bool) -> ZipReturn {
+    fn zip_file_open(
+        &mut self,
+        new_filename: &str,
+        timestamp: i64,
+        read_headers: bool,
+    ) -> ZipReturn {
         self.zip_file_close();
-        
+
         let path = Path::new(new_filename);
         if !path.exists() {
             return ZipReturn::ZipErrorFileNotFound;
@@ -789,7 +747,7 @@ impl ICompress for SevenZipFile {
         if crc_status != ZipReturn::ZipGood {
             return crc_status;
         }
-        
+
         let password = Password::empty();
         let archive = match sevenz_rust::Archive::read(&mut file, &password) {
             Ok(a) => a,
@@ -836,7 +794,10 @@ impl ICompress for SevenZipFile {
         self.file_comment.clear();
     }
 
-    fn zip_file_open_read_stream(&mut self, index: usize) -> Result<(Box<dyn Read>, u64), ZipReturn> {
+    fn zip_file_open_read_stream(
+        &mut self,
+        index: usize,
+    ) -> Result<(Box<dyn Read>, u64), ZipReturn> {
         if self.zip_open_type != ZipOpenType::OpenRead {
             return Err(ZipReturn::ZipReadingFromOutputFile);
         }

@@ -1,13 +1,13 @@
 use crate::rv_file::RvFile;
 use crate::scanned_file::ScannedFile;
-use dat_reader::enums::FileType;
 use crate::settings::EScanLevel;
+use dat_reader::enums::FileType;
 
 /// Logic for comparing physically scanned files against database nodes.
-/// 
+///
 /// `FileCompare` evaluates whether a `ScannedFile` (physical) correctly matches an `RvFile` (logical)
 /// based on name, size, timestamps, and cryptographic hashes.
-/// 
+///
 /// Differences from C#:
 /// - The C# implementation contains deep logic for `Phase2Test`, which attempts to fuzzy-match files
 ///   that might have incorrect names or be stripped of extraneous headers.
@@ -18,7 +18,10 @@ pub struct FileCompare;
 /// Performs a basic alphabetical name comparison between a DB file and a scanned file.
 pub fn compare_db_to_file(db_file: &RvFile, file_c: &ScannedFile) -> i32 {
     let name_cmp = if cfg!(windows) {
-        db_file.name.to_ascii_lowercase().cmp(&file_c.name.to_ascii_lowercase())
+        db_file
+            .name
+            .to_ascii_lowercase()
+            .cmp(&file_c.name.to_ascii_lowercase())
     } else {
         db_file.name.cmp(&file_c.name)
     };
@@ -34,7 +37,9 @@ impl FileCompare {
         if index_case == 0 {
             db_name.cmp(test_name)
         } else if cfg!(windows) {
-            db_name.to_ascii_lowercase().cmp(&test_name.to_ascii_lowercase())
+            db_name
+                .to_ascii_lowercase()
+                .cmp(&test_name.to_ascii_lowercase())
         } else {
             db_name.cmp(test_name)
         }
@@ -69,7 +74,8 @@ impl FileCompare {
     }
 
     fn header_requirement_matches(db_file: &RvFile, test_file: &ScannedFile) -> bool {
-        !db_file.header_file_type_required() || db_file.header_file_type() == test_file.header_file_type
+        !db_file.header_file_type_required()
+            || db_file.header_file_type() == test_file.header_file_type
     }
 
     fn phase_2_supported_leaf_type(file_type: FileType) -> bool {
@@ -86,10 +92,15 @@ impl FileCompare {
     }
 
     /// Core evaluation logic that matches physical metadata against logical expected metadata.
-    /// 
+    ///
     /// This function strictly evaluates "Phase 1" equivalence: Exact File Name, Size, CRC,
     /// SHA1, and MD5 matching depending on the strictness of the current `EScanLevel` settings.
-    pub fn phase_1_test(db_file: &RvFile, test_file: &ScannedFile, e_scan_level: EScanLevel, index_case: i32) -> (bool, bool) {
+    pub fn phase_1_test(
+        db_file: &RvFile,
+        test_file: &ScannedFile,
+        e_scan_level: EScanLevel,
+        index_case: i32,
+    ) -> (bool, bool) {
         let mut matched_alt = false;
 
         // Name comparison
@@ -107,7 +118,10 @@ impl FileCompare {
         }
 
         // Directories and container nodes don't need deep hashing matches at this level
-        if db_file_type == FileType::Dir || db_file_type == FileType::Zip || db_file_type == FileType::SevenZip {
+        if db_file_type == FileType::Dir
+            || db_file_type == FileType::Zip
+            || db_file_type == FileType::SevenZip
+        {
             return (true, matched_alt);
         }
 
@@ -149,15 +163,25 @@ impl FileCompare {
     }
 
     fn compare_with_alt(db_file: &RvFile, test_file: &ScannedFile, matched_alt: &mut bool) -> bool {
-        let has_primary_identity =
-            db_file.size.is_some() || db_file.crc.is_some() || db_file.sha1.is_some() || db_file.md5.is_some();
+        let has_primary_identity = db_file.size.is_some()
+            || db_file.crc.is_some()
+            || db_file.sha1.is_some()
+            || db_file.md5.is_some();
 
         // Standard compare
         let mut match_ok = has_primary_identity;
-        if db_file.size.is_some() && db_file.size != test_file.size { match_ok = false; }
-        if db_file.crc.is_some() && db_file.crc != test_file.crc { match_ok = false; }
-        if db_file.sha1.is_some() && db_file.sha1 != test_file.sha1 { match_ok = false; }
-        if db_file.md5.is_some() && db_file.md5 != test_file.md5 { match_ok = false; }
+        if db_file.size.is_some() && db_file.size != test_file.size {
+            match_ok = false;
+        }
+        if db_file.crc.is_some() && db_file.crc != test_file.crc {
+            match_ok = false;
+        }
+        if db_file.sha1.is_some() && db_file.sha1 != test_file.sha1 {
+            match_ok = false;
+        }
+        if db_file.md5.is_some() && db_file.md5 != test_file.md5 {
+            match_ok = false;
+        }
 
         if match_ok {
             *matched_alt = false;
@@ -169,14 +193,36 @@ impl FileCompare {
         let alt_test_sha1 = test_file.alt_sha1.as_ref().or(test_file.sha1.as_ref());
         let alt_test_md5 = test_file.alt_md5.as_ref().or(test_file.md5.as_ref());
 
-        let scanned_has_alt_identity =
-            test_file.alt_size.is_some() || test_file.alt_crc.is_some() || test_file.alt_sha1.is_some() || test_file.alt_md5.is_some();
+        let scanned_has_alt_identity = test_file.alt_size.is_some()
+            || test_file.alt_crc.is_some()
+            || test_file.alt_sha1.is_some()
+            || test_file.alt_md5.is_some();
         if scanned_has_alt_identity {
             let mut primary_vs_alt_ok = has_primary_identity;
-            if db_file.size.is_some() && db_file.size != alt_test_size { primary_vs_alt_ok = false; }
-            if db_file.crc.as_ref().is_some_and(|v| Some(v) != alt_test_crc) { primary_vs_alt_ok = false; }
-            if db_file.sha1.as_ref().is_some_and(|v| Some(v) != alt_test_sha1) { primary_vs_alt_ok = false; }
-            if db_file.md5.as_ref().is_some_and(|v| Some(v) != alt_test_md5) { primary_vs_alt_ok = false; }
+            if db_file.size.is_some() && db_file.size != alt_test_size {
+                primary_vs_alt_ok = false;
+            }
+            if db_file
+                .crc
+                .as_ref()
+                .is_some_and(|v| Some(v) != alt_test_crc)
+            {
+                primary_vs_alt_ok = false;
+            }
+            if db_file
+                .sha1
+                .as_ref()
+                .is_some_and(|v| Some(v) != alt_test_sha1)
+            {
+                primary_vs_alt_ok = false;
+            }
+            if db_file
+                .md5
+                .as_ref()
+                .is_some_and(|v| Some(v) != alt_test_md5)
+            {
+                primary_vs_alt_ok = false;
+            }
 
             if primary_vs_alt_ok {
                 *matched_alt = true;
@@ -186,10 +232,30 @@ impl FileCompare {
 
         // Alt compare
         let mut alt_ok = true;
-        if db_file.alt_size.is_some() && db_file.alt_size != alt_test_size { alt_ok = false; }
-        if db_file.alt_crc.as_ref().is_some_and(|v| Some(v) != alt_test_crc) { alt_ok = false; }
-        if db_file.alt_sha1.as_ref().is_some_and(|v| Some(v) != alt_test_sha1) { alt_ok = false; }
-        if db_file.alt_md5.as_ref().is_some_and(|v| Some(v) != alt_test_md5) { alt_ok = false; }
+        if db_file.alt_size.is_some() && db_file.alt_size != alt_test_size {
+            alt_ok = false;
+        }
+        if db_file
+            .alt_crc
+            .as_ref()
+            .is_some_and(|v| Some(v) != alt_test_crc)
+        {
+            alt_ok = false;
+        }
+        if db_file
+            .alt_sha1
+            .as_ref()
+            .is_some_and(|v| Some(v) != alt_test_sha1)
+        {
+            alt_ok = false;
+        }
+        if db_file
+            .alt_md5
+            .as_ref()
+            .is_some_and(|v| Some(v) != alt_test_md5)
+        {
+            alt_ok = false;
+        }
 
         if alt_ok
             && (db_file.alt_size.is_some()
@@ -244,7 +310,10 @@ impl FileCompare {
             let full_path = if parent_path.as_os_str().is_empty() {
                 test_file.name.clone()
             } else {
-                parent_path.join(&test_file.name).to_string_lossy().to_string()
+                parent_path
+                    .join(&test_file.name)
+                    .to_string_lossy()
+                    .to_string()
             };
 
             if let Ok(mut sf) = crate::scanner::Scanner::scan_raw_file(&full_path) {
@@ -269,7 +338,11 @@ impl FileCompare {
     /// In C#, if Phase 1 fails, the scanner will execute `Populate.FromAFile` to perform
     /// a deep cryptographic hash of the loose file on disk right then and there.
     /// In our Rust version, if we get here, we check if the file needs deep scanning.
-    pub fn phase_2_test(db_file: &RvFile, test_file: &mut ScannedFile, index_case: i32) -> (bool, bool) {
+    pub fn phase_2_test(
+        db_file: &RvFile,
+        test_file: &mut ScannedFile,
+        index_case: i32,
+    ) -> (bool, bool) {
         let mut matched_alt = false;
 
         // Name comparison
@@ -302,7 +375,10 @@ impl FileCompare {
         (matched, matched_alt)
     }
 
-    pub fn phase_2_name_agnostic_test(db_file: &RvFile, test_file: &mut ScannedFile) -> (bool, bool) {
+    pub fn phase_2_name_agnostic_test(
+        db_file: &RvFile,
+        test_file: &mut ScannedFile,
+    ) -> (bool, bool) {
         let mut matched_alt = false;
 
         if !Self::phase_2_supported_leaf_type(db_file.file_type)
@@ -322,8 +398,8 @@ impl FileCompare {
         }
 
         if !Self::db_file_has_name_agnostic_identity(db_file) {
-            let timestamp_confident =
-                db_file.file_mod_time_stamp > 0 && db_file.file_mod_time_stamp == test_file.file_mod_time_stamp;
+            let timestamp_confident = db_file.file_mod_time_stamp > 0
+                && db_file.file_mod_time_stamp == test_file.file_mod_time_stamp;
             if !timestamp_confident {
                 return (false, matched_alt);
             }

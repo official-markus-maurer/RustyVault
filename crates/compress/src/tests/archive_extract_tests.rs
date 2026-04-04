@@ -1,4 +1,4 @@
-use crate::{ArchiveExtract, ICompress, ZipReturn, ZipFile};
+use crate::{ArchiveExtract, ICompress, ZipFile, ZipReturn};
 use crc32fast::Hasher as Crc32Hasher;
 use std::fs;
 use std::io::Write;
@@ -20,7 +20,13 @@ fn unique_temp(name: &str, ext: &str) -> String {
 fn archive_extract_zip_extracts_and_verifies_crc() {
     let zip_path = unique_temp("compress_extract", "zip");
     let out_dir = std::env::temp_dir()
-        .join(format!("compress_extract_out_{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()))
+        .join(format!(
+            "compress_extract_out_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
         .to_string_lossy()
         .to_string();
 

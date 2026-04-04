@@ -3,14 +3,14 @@ use crate::enums::FileType;
 use crate::var_fix;
 
 /// ClrMamePro (CMP) DAT parser.
-/// 
-/// `cmp_reader.rs` handles the legacy non-XML ClrMamePro DAT format (which uses curly braces `{ }` 
+///
+/// `cmp_reader.rs` handles the legacy non-XML ClrMamePro DAT format (which uses curly braces `{ }`
 /// and space-separated key-value pairs).
-/// 
+///
 /// Differences from C#:
 /// - The C# `CmpReader` operates directly on a `StreamReader`, buffering line by line.
 /// - The Rust version reads the entire text buffer into memory and uses a custom `Chars` iterator
-///   to tokenize strings (`gn`, `gn_rest`) with zero/low allocations, providing extremely fast 
+///   to tokenize strings (`gn`, `gn_rest`) with zero/low allocations, providing extremely fast
 ///   parsing of legacy text DATs.
 pub struct DatFileLoader<'a> {
     _input: &'a str,
@@ -38,7 +38,7 @@ impl<'a> DatFileLoader<'a> {
     pub fn gn_rest(&mut self) -> String {
         self.next_token.clear();
         self.buffer.clear();
-        
+
         let mut in_comment = false;
 
         while let Some(c) = self.chars.clone().next() {
@@ -62,7 +62,7 @@ impl<'a> DatFileLoader<'a> {
                 self.chars.next();
                 continue;
             }
-            
+
             // Check for comment
             if c == '/' {
                 let mut lookahead = self.chars.clone();
@@ -145,7 +145,7 @@ impl<'a> DatFileLoader<'a> {
                 self.chars.next();
                 return self.next_token.clone();
             }
-            
+
             // Check for comment
             if !in_quotes && c == '/' {
                 let mut lookahead = self.chars.clone();
@@ -266,9 +266,9 @@ fn load_dir_from_dat(dfl: &mut DatFileLoader, parent_dir: &mut DatDir) -> Result
     if dfl.next_token != "(" {
         return Err("Expected ( after dir".to_string());
     }
-    
+
     let mut name = String::new();
-    
+
     dfl.gn();
     while dfl.next_token != ")" && !dfl.end_of_stream() {
         let key = dfl.next_token.to_lowercase();
@@ -278,7 +278,7 @@ fn load_dir_from_dat(dfl: &mut DatFileLoader, parent_dir: &mut DatDir) -> Result
         }
         dfl.gn();
     }
-    
+
     let dir = DatNode::new_dir(name, FileType::UnSet);
     parent_dir.add_child(dir);
     dfl.gn();
@@ -322,7 +322,11 @@ fn load_game_from_dat(dfl: &mut DatFileLoader, parent_dir: &mut DatDir) -> Resul
     Ok(())
 }
 
-fn load_rom_from_dat(dfl: &mut DatFileLoader, parent_dir: &mut DatDir, node_type: &str) -> Result<(), String> {
+fn load_rom_from_dat(
+    dfl: &mut DatFileLoader,
+    parent_dir: &mut DatDir,
+    node_type: &str,
+) -> Result<(), String> {
     dfl.gn();
     if dfl.next_token != "(" {
         return Err(format!("Expected ( after {}", node_type));
@@ -340,7 +344,7 @@ fn load_rom_from_dat(dfl: &mut DatFileLoader, parent_dir: &mut DatDir, node_type
     while dfl.next_token != ")" && !dfl.end_of_stream() {
         let key = dfl.next_token.to_lowercase();
         let val = dfl.gn();
-        
+
         match key.as_str() {
             "name" => {
                 if node_type == "disk" {
@@ -349,11 +353,31 @@ fn load_rom_from_dat(dfl: &mut DatFileLoader, parent_dir: &mut DatDir, node_type
                     file.name = val;
                 }
             }
-            "size" => { if let Some(f) = file.file_mut() { f.size = var_fix::u64_opt(&val); } }
-            "crc" => { if let Some(f) = file.file_mut() { f.crc = var_fix::clean_md5_sha1(&val, 8); } }
-            "sha1" => { if let Some(f) = file.file_mut() { f.sha1 = var_fix::clean_md5_sha1(&val, 40); } }
-            "sha256" => { if let Some(f) = file.file_mut() { f.sha256 = var_fix::clean_md5_sha1(&val, 64); } }
-            "md5" => { if let Some(f) = file.file_mut() { f.md5 = var_fix::clean_md5_sha1(&val, 32); } }
+            "size" => {
+                if let Some(f) = file.file_mut() {
+                    f.size = var_fix::u64_opt(&val);
+                }
+            }
+            "crc" => {
+                if let Some(f) = file.file_mut() {
+                    f.crc = var_fix::clean_md5_sha1(&val, 8);
+                }
+            }
+            "sha1" => {
+                if let Some(f) = file.file_mut() {
+                    f.sha1 = var_fix::clean_md5_sha1(&val, 40);
+                }
+            }
+            "sha256" => {
+                if let Some(f) = file.file_mut() {
+                    f.sha256 = var_fix::clean_md5_sha1(&val, 64);
+                }
+            }
+            "md5" => {
+                if let Some(f) = file.file_mut() {
+                    f.md5 = var_fix::clean_md5_sha1(&val, 32);
+                }
+            }
             "merge" => {
                 if let Some(f) = file.file_mut() {
                     f.merge = Some(if node_type == "disk" {
@@ -363,12 +387,16 @@ fn load_rom_from_dat(dfl: &mut DatFileLoader, parent_dir: &mut DatDir, node_type
                     });
                 }
             }
-            "status" => { if let Some(f) = file.file_mut() { f.status = Some(var_fix::to_lower(&val)); } }
+            "status" => {
+                if let Some(f) = file.file_mut() {
+                    f.status = Some(var_fix::to_lower(&val));
+                }
+            }
             _ => {}
         }
         dfl.gn();
     }
-    
+
     parent_dir.add_child(file);
     dfl.gn();
     Ok(())

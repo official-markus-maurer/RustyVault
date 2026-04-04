@@ -26,4 +26,3 @@ mod tests {
         assert_eq!(i_compare_null(Some(1), Some(2)), -1);
     }
 }
-

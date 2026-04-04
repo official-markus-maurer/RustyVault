@@ -1,22 +1,22 @@
-use std::rc::Rc;
-use std::cell::RefCell;
+use crate::compare::FileCompare;
 use crate::rv_file::{FileStatus, RvFile};
 use crate::scanned_file::ScannedFile;
-use crate::compare::FileCompare;
 use dat_reader::enums::FileType;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// Synchronization engine between the physical filesystem and the internal database tree.
-/// 
+///
 /// `FileScanning` compares the `ScannedFile` output produced by the `Scanner` against the
 /// existing `RvFile` nodes in the `dir_root` tree. It updates the `GotStatus` of nodes
-/// (e.g. `Got`, `NotGot`, `Corrupt`) based on whether the physical files still exist and match 
+/// (e.g. `Got`, `NotGot`, `Corrupt`) based on whether the physical files still exist and match
 /// their expected cryptographic hashes.
-/// 
+///
 /// Differences from C#:
-/// - The C# `FileScanning` algorithm contains extensive `Phase2` deep-scan matching, CHD format 
+/// - The C# `FileScanning` algorithm contains extensive `Phase2` deep-scan matching, CHD format
 ///   validation, and highly complex status propagation rules.
-/// - The Rust version implements a simplified 3-way merge algorithm (DB <-> FS). It correctly 
-///   handles basic matching (`Phase 1`), marking files as `Got` or inserting `NotInDat` orphans, 
+/// - The Rust version implements a simplified 3-way merge algorithm (DB <-> FS). It correctly
+///   handles basic matching (`Phase 1`), marking files as `Got` or inserting `NotInDat` orphans,
 ///   but skips some of the advanced header/CHD deep scan recoveries.
 pub struct FileScanning;
 
@@ -40,7 +40,11 @@ impl FileScanning {
     }
 
     fn ascii_lower(byte: u8) -> u8 {
-        if byte.is_ascii_uppercase() { byte + 0x20 } else { byte }
+        if byte.is_ascii_uppercase() {
+            byte + 0x20
+        } else {
+            byte
+        }
     }
 
     fn compare_dir_names_case(left: &str, right: &str) -> std::cmp::Ordering {
@@ -103,7 +107,11 @@ impl FileScanning {
         path_a.cmp(path_b)
     }
 
-    fn compare_db_child_names(container_type: FileType, left: &str, right: &str) -> std::cmp::Ordering {
+    fn compare_db_child_names(
+        container_type: FileType,
+        left: &str,
+        right: &str,
+    ) -> std::cmp::Ordering {
         match container_type {
             FileType::Zip => Self::compare_trrnt_zip_names_case(left, right),
             FileType::SevenZip => Self::compare_trrnt_7zip_names(left, right),
@@ -115,11 +123,7 @@ impl FileScanning {
     /// Recursively walks a physical directory tree alongside a DB directory tree,
     /// syncing the physical findings into the database.
     pub fn scan_dir(db_dir: Rc<RefCell<RvFile>>, file_dir: &mut ScannedFile) {
-        Self::scan_dir_with_level(
-            db_dir,
-            file_dir,
-            crate::settings::EScanLevel::Level2,
-        );
+        Self::scan_dir_with_level(db_dir, file_dir, crate::settings::EScanLevel::Level2);
     }
 
     pub fn scan_dir_with_level(
@@ -143,7 +147,7 @@ impl FileScanning {
         for child in file_dir.children.iter_mut() {
             child.search_found = false;
         }
-        
+
         let mut db_index = 0;
         let mut file_index = 0;
 
@@ -227,14 +231,23 @@ impl FileScanning {
 
                                 let (matched, matched_alt) = {
                                     let db_b = db_rc.borrow();
-                                    FileCompare::phase_1_test(&db_b, &file_dir.children[file_pos], scan_level, index_case)
+                                    FileCompare::phase_1_test(
+                                        &db_b,
+                                        &file_dir.children[file_pos],
+                                        scan_level,
+                                        index_case,
+                                    )
                                 };
 
                                 if !matched {
                                     continue;
                                 }
 
-                                Self::match_found(Rc::clone(db_rc), &file_dir.children[file_pos], matched_alt);
+                                Self::match_found(
+                                    Rc::clone(db_rc),
+                                    &file_dir.children[file_pos],
+                                    matched_alt,
+                                );
                                 db_rc.borrow_mut().search_found = true;
                                 file_dir.children[file_pos].search_found = true;
 
@@ -243,7 +256,11 @@ impl FileScanning {
                                     match db_b.file_type {
                                         FileType::Dir => true,
                                         FileType::Zip | FileType::SevenZip => {
-                                            Self::should_scan_archive_contents(&db_b, &file_dir.children[file_pos], scan_level)
+                                            Self::should_scan_archive_contents(
+                                                &db_b,
+                                                &file_dir.children[file_pos],
+                                                scan_level,
+                                            )
                                         }
                                         _ => false,
                                     }
@@ -273,7 +290,11 @@ impl FileScanning {
                                     continue;
                                 }
 
-                                Self::match_found(Rc::clone(db_rc), &file_dir.children[file_pos], matched_alt);
+                                Self::match_found(
+                                    Rc::clone(db_rc),
+                                    &file_dir.children[file_pos],
+                                    matched_alt,
+                                );
                                 db_rc.borrow_mut().search_found = true;
                                 file_dir.children[file_pos].search_found = true;
 
@@ -282,7 +303,11 @@ impl FileScanning {
                                     match db_b.file_type {
                                         FileType::Dir => true,
                                         FileType::Zip | FileType::SevenZip => {
-                                            Self::should_scan_archive_contents(&db_b, &file_dir.children[file_pos], scan_level)
+                                            Self::should_scan_archive_contents(
+                                                &db_b,
+                                                &file_dir.children[file_pos],
+                                                scan_level,
+                                            )
                                         }
                                         _ => false,
                                     }
@@ -325,12 +350,22 @@ impl FileScanning {
                                 Self::scan_dir_with_level(Rc::clone(&db_c), file_child, scan_level);
                             }
                             FileType::Zip | FileType::SevenZip => {
-                                if Self::should_scan_archive_contents(&db_c.borrow(), file_child, scan_level) {
-                                    if db_c.borrow().file_mod_time_stamp != file_child.file_mod_time_stamp {
+                                if Self::should_scan_archive_contents(
+                                    &db_c.borrow(),
+                                    file_child,
+                                    scan_level,
+                                ) {
+                                    if db_c.borrow().file_mod_time_stamp
+                                        != file_child.file_mod_time_stamp
+                                    {
                                         db_c.borrow_mut().mark_as_missing();
                                         Self::match_found(Rc::clone(&db_c), file_child, alt_match);
                                     }
-                                    Self::scan_dir_with_level(Rc::clone(&db_c), file_child, scan_level);
+                                    Self::scan_dir_with_level(
+                                        Rc::clone(&db_c),
+                                        file_child,
+                                        scan_level,
+                                    );
                                 }
                             }
                             _ => {}
@@ -342,7 +377,11 @@ impl FileScanning {
                             db_index += 1;
                             continue;
                         }
-                        Self::db_file_not_found(Rc::clone(db_rc), Rc::clone(&db_dir), &mut db_index);
+                        Self::db_file_not_found(
+                            Rc::clone(db_rc),
+                            Rc::clone(&db_dir),
+                            &mut db_index,
+                        );
                     }
 
                     for fi in 0..files_count {
@@ -402,7 +441,7 @@ impl FileScanning {
 
     fn match_found(db_child: Rc<RefCell<RvFile>>, file_child: &ScannedFile, alt_match: bool) {
         let mut db_c = db_child.borrow_mut();
-        
+
         // Invalidate stats cache since status is changing
         db_c.cached_stats = None;
         Self::apply_scanned_metadata(&mut db_c, file_child);
@@ -411,29 +450,33 @@ impl FileScanning {
         } else {
             db_c.file_status_clear(FileStatus::IS_ALT_FILE);
         }
-        
+
         match db_c.file_type {
             FileType::Zip | FileType::SevenZip => {
                 let status = db_c.dat_status();
                 db_c.set_dat_got_status(status, dat_reader::enums::GotStatus::Got);
-            },
+            }
             FileType::Dir => {
                 let status = db_c.dat_status();
                 db_c.set_dat_got_status(status, dat_reader::enums::GotStatus::Got);
-            },
+            }
             FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly => {
                 let status = db_c.dat_status();
                 db_c.set_dat_got_status(status, dat_reader::enums::GotStatus::Got);
-            },
+            }
             _ => {}
         }
         db_c.rep_status_reset();
     }
 
     fn should_mark_corrupt(db_child: &RvFile, file_child: &ScannedFile) -> bool {
-        let compatible_leaf_types =
-            matches!(db_child.file_type, FileType::File | FileType::FileOnly | FileType::FileZip | FileType::FileSevenZip)
-                && matches!(file_child.file_type, FileType::File | FileType::FileOnly | FileType::FileZip | FileType::FileSevenZip);
+        let compatible_leaf_types = matches!(
+            db_child.file_type,
+            FileType::File | FileType::FileOnly | FileType::FileZip | FileType::FileSevenZip
+        ) && matches!(
+            file_child.file_type,
+            FileType::File | FileType::FileOnly | FileType::FileZip | FileType::FileSevenZip
+        );
         db_child.dat_status() != dat_reader::enums::DatStatus::NotInDat
             && db_child.dat_status() != dat_reader::enums::DatStatus::InToSort
             && !db_child.is_directory()
@@ -486,8 +529,10 @@ impl FileScanning {
         };
 
         let mut scanned = file_child.clone();
-        if matches!(scanned.file_type, FileType::File | FileType::FileOnly | FileType::FileZip | FileType::FileSevenZip)
-            && scan_level != crate::settings::EScanLevel::Level1
+        if matches!(
+            scanned.file_type,
+            FileType::File | FileType::FileOnly | FileType::FileZip | FileType::FileSevenZip
+        ) && scan_level != crate::settings::EScanLevel::Level1
             && !scanned.deep_scanned
             && scanned.got_status != dat_reader::enums::GotStatus::FileLocked
         {
@@ -501,8 +546,9 @@ impl FileScanning {
             }
         }
 
-        let rc_child = Self::rv_file_from_scanned_file(&scanned, new_dat_status, Rc::clone(&db_dir));
-        
+        let rc_child =
+            Self::rv_file_from_scanned_file(&scanned, new_dat_status, Rc::clone(&db_dir));
+
         let mut dir = db_dir.borrow_mut();
         dir.cached_stats = None; // Invalidate parent cache
         dir.child_insert(db_index, rc_child);
@@ -540,14 +586,20 @@ impl FileScanning {
         rc_child
     }
 
-    fn db_file_not_found(db_child: Rc<RefCell<RvFile>>, db_dir: Rc<RefCell<RvFile>>, db_index: &mut usize) {
+    fn db_file_not_found(
+        db_child: Rc<RefCell<RvFile>>,
+        db_dir: Rc<RefCell<RvFile>>,
+        db_index: &mut usize,
+    ) {
         let should_remove = {
             let mut c = db_child.borrow_mut();
             c.cached_stats = None;
-            
+
             // If it's a known Dat file/directory, we shouldn't fully remove it on missing scan
             // Just mark it as NotGot
-            if c.dat_status() == dat_reader::enums::DatStatus::NotInDat || c.dat_status() == dat_reader::enums::DatStatus::InToSort {
+            if c.dat_status() == dat_reader::enums::DatStatus::NotInDat
+                || c.dat_status() == dat_reader::enums::DatStatus::InToSort
+            {
                 c.file_remove()
             } else {
                 false
@@ -556,7 +608,7 @@ impl FileScanning {
 
         let mut dir = db_dir.borrow_mut();
         dir.cached_stats = None; // Invalidate parent cache
-        
+
         if should_remove {
             dir.child_remove(*db_index);
         } else {
@@ -565,7 +617,10 @@ impl FileScanning {
                 FileType::Zip | FileType::SevenZip | FileType::Dir => {
                     c.mark_as_missing();
                 }
-                FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly => {
+                FileType::File
+                | FileType::FileZip
+                | FileType::FileSevenZip
+                | FileType::FileOnly => {
                     let status = c.dat_status();
                     c.set_dat_got_status(status, dat_reader::enums::GotStatus::NotGot);
                 }

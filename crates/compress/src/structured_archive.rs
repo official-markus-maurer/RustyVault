@@ -1,19 +1,19 @@
 /// Defines the known formatting and structure of an archive.
-/// 
+///
 /// `ZipStructure` tracks whether a file is a standard archive or if it has been formatted
 /// to a deterministic standard like `TorrentZip` or `RVZSTD`.
-/// 
+///
 /// Differences from C#:
 /// - Identical 1:1 mapping to the C# `Compress.ZipStructure` enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ZipStructure {
-    None = 0,          // No structure
-    ZipTrrnt = 1,      // Original Trrntzip
-    ZipTDC = 2,        // Total DOS Collection, Date Time Deflate
-    SevenZipTrrnt = 4, // this is the original t7z format
-    ZipZSTD = 5,       // ZSTD Compression
-    SevenZipSLZMA = 8, // Solid-LZMA this is rv7zip today
-    SevenZipNLZMA = 9, // NonSolid-LZMA
+    None = 0,           // No structure
+    ZipTrrnt = 1,       // Original Trrntzip
+    ZipTDC = 2,         // Total DOS Collection, Date Time Deflate
+    SevenZipTrrnt = 4,  // this is the original t7z format
+    ZipZSTD = 5,        // ZSTD Compression
+    SevenZipSLZMA = 8,  // Solid-LZMA this is rv7zip today
+    SevenZipNLZMA = 9,  // NonSolid-LZMA
     SevenZipSZSTD = 10, // Solid-zSTD
     SevenZipNZSTD = 11, // NonSolid-zSTD
 }

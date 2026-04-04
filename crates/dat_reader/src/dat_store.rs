@@ -3,11 +3,11 @@ use crate::enums::{DatStatus, FileType, HeaderFileType, ZipStructure};
 pub const TRRNTZIP_DOS_DATETIME: i64 = ((8600u32 as i64) << 16) | 48128i64;
 
 /// In-memory Abstract Syntax Tree (AST) for parsed DAT files.
-/// 
+///
 /// `dat_store.rs` defines the hierarchical structures (`DatHeader`, `DatNode`, `DatDir`, `DatFile`, `DatGame`)
-/// that represent the raw parsed contents of an XML/CMP DAT file before it is folded into the 
+/// that represent the raw parsed contents of an XML/CMP DAT file before it is folded into the
 /// core `rv_core::DB` file tree.
-/// 
+///
 /// Differences from C#:
 /// - The C# `DatReader` directly interacts with the core `RvFile` and `RvDir` database nodes.
 /// - The Rust version completely decouples the parsing phase from the database representation,
@@ -181,7 +181,8 @@ impl DatDir {
 
         if res == 0 {
             if find_first {
-                while mid > 0 && Self::compare_node_names(dir_type, needle, &children[mid - 1]) == 0 {
+                while mid > 0 && Self::compare_node_names(dir_type, needle, &children[mid - 1]) == 0
+                {
                     mid -= 1;
                 }
             } else {

@@ -205,11 +205,11 @@ pub struct EmulatorInfoWrapper {
 }
 
 /// Global configuration state for the RomVault core.
-/// 
+///
 /// `Settings` mirrors the exact XML schema of the original C# `RomVault3cfg.xml`.
 /// It dictates archive parsing, DAT directory mapping, compression configurations (ZSTD/7Z),
 /// and global ignore lists.
-/// 
+///
 /// Differences from C#:
 /// - The Rust version uses `quick-xml` combined with custom Serde wrappers (e.g., `DatRulesWrapper`)
 ///   to precisely replicate the nested XML array structure that C#'s `XmlSerializer` generates by default.
@@ -224,7 +224,7 @@ pub struct Settings {
     pub cache_file: String,
     /// Target fix logic depth
     pub fix_level: EFixLevel,
-    
+
     /// Array of directory-specific configurations
     #[serde(rename = "DatRules")]
     pub dat_rules: DatRulesWrapper,
@@ -237,14 +237,14 @@ pub struct Settings {
     /// Emulator setup mapping
     #[serde(rename = "EInfo")]
     pub e_info: EmulatorInfoWrapper,
-    
+
     /// Prompt user before deleting items
     pub double_check_delete: bool,
     /// Write debug logs to disk
     pub debug_logs_enabled: bool,
     /// Show granular reports in Fix UI
     pub detailed_fix_reporting: bool,
-    
+
     /// UI Filter flag
     #[serde(rename = "chkBoxShowComplete")]
     pub chk_box_show_complete: bool,
@@ -263,10 +263,10 @@ pub struct Settings {
     /// UI Filter flag
     #[serde(rename = "chkBoxShowMerged")]
     pub chk_box_show_merged: bool,
-    
+
     /// Default export directory for Fix DATs
     pub fix_dat_out_path: Option<String>,
-    
+
     /// Verify CHD headers
     #[serde(rename = "CheckCHDVersion")]
     pub check_chd_version: bool,
@@ -326,7 +326,12 @@ impl Default for Settings {
             cache_file: String::new(),
             fix_level: EFixLevel::Level1,
             dat_rules: DatRulesWrapper { items: Vec::new() },
-            dir_mappings: DirMappingsWrapper { items: vec![DirMapping { dir_key: "RustyVault".to_string(), dir_path: "RomRoot".to_string() }] },
+            dir_mappings: DirMappingsWrapper {
+                items: vec![DirMapping {
+                    dir_key: "RustyVault".to_string(),
+                    dir_path: "RomRoot".to_string(),
+                }],
+            },
             ignore_files: IgnoreFilesWrapper { items: Vec::new() },
             e_info: EmulatorInfoWrapper { items: Vec::new() },
             double_check_delete: true,
@@ -387,7 +392,8 @@ fn canonicalize_settings(mut settings: Settings) -> Settings {
         .iter()
         .any(|m| !normalize_dir_key(&m.dir_key).is_empty());
 
-    let mut mapping_map: std::collections::BTreeMap<String, DirMapping> = std::collections::BTreeMap::new();
+    let mut mapping_map: std::collections::BTreeMap<String, DirMapping> =
+        std::collections::BTreeMap::new();
     for mut m in settings.dir_mappings.items {
         let key = normalize_dir_key(&m.dir_key);
         if key.is_empty() {
@@ -407,7 +413,8 @@ fn canonicalize_settings(mut settings: Settings) -> Settings {
         }
     }
 
-    let mut rule_map: std::collections::BTreeMap<String, DatRule> = std::collections::BTreeMap::new();
+    let mut rule_map: std::collections::BTreeMap<String, DatRule> =
+        std::collections::BTreeMap::new();
     for mut r in settings.dat_rules.items {
         let key = normalize_dir_key(&r.dir_key);
         if key.is_empty() {
@@ -460,10 +467,12 @@ fn canonicalize_settings(mut settings: Settings) -> Settings {
     let rustyvault_key = "rustyvault".to_string();
     #[cfg(not(windows))]
     let rustyvault_key = "RustyVault".to_string();
-    mapping_map.entry(rustyvault_key).or_insert_with(|| DirMapping {
-        dir_key: "RustyVault".to_string(),
-        dir_path: "RomRoot".to_string(),
-    });
+    mapping_map
+        .entry(rustyvault_key)
+        .or_insert_with(|| DirMapping {
+            dir_key: "RustyVault".to_string(),
+            dir_path: "RomRoot".to_string(),
+        });
     #[cfg(windows)]
     let tosort_key = "tosort".to_string();
     #[cfg(not(windows))]
@@ -476,7 +485,10 @@ fn canonicalize_settings(mut settings: Settings) -> Settings {
     settings.dir_mappings.items = mapping_map.into_values().collect();
 
     settings.dat_rules.items = rule_map.into_values().collect();
-    settings.dat_rules.items.sort_by(|a, b| a.dir_key.cmp(&b.dir_key));
+    settings
+        .dat_rules
+        .items
+        .sort_by(|a, b| a.dir_key.cmp(&b.dir_key));
     settings
 }
 
@@ -501,11 +513,14 @@ pub fn load_settings_from_file() {
                     let dat_root_path = Path::new(&settings.dat_root);
                     if dat_root_path.is_relative() {
                         if let Ok(current_dir) = std::env::current_dir() {
-                            settings.dat_root = current_dir.join(dat_root_path).to_string_lossy().into_owned();
+                            settings.dat_root = current_dir
+                                .join(dat_root_path)
+                                .to_string_lossy()
+                                .into_owned();
                         }
                     }
                 }
-                
+
                 GLOBAL_SETTINGS.with(|s| {
                     *s.borrow_mut() = canonicalize_settings(settings);
                 });
@@ -515,7 +530,7 @@ pub fn load_settings_from_file() {
             }
         }
     }
-    
+
     // If file doesn't exist or parsing failed, save default settings to file
     let new_settings = Settings::default();
     GLOBAL_SETTINGS.with(|s| {
@@ -529,25 +544,25 @@ pub fn load_settings_from_file() {
 pub fn write_settings_to_file(settings: &Settings) -> Result<(), Box<dyn std::error::Error>> {
     let settings = canonicalize_settings(settings.clone());
     let xml_str = quick_xml::se::to_string(&settings)?;
-    
+
     // Quick-xml doesn't add the XML declaration by default
     let full_xml = format!("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n{}", xml_str);
-    
+
     let path = "RomVault3cfg.xml";
     let temp_path = "RomVault3cfg.xml.temp";
     let backup_path = "RomVault3cfg.xmlbackup";
-    
+
     std::fs::write(temp_path, full_xml)?;
-    
+
     if Path::new(path).exists() {
         if Path::new(backup_path).exists() {
             let _ = std::fs::remove_file(backup_path);
         }
         let _ = std::fs::rename(path, backup_path);
     }
-    
+
     std::fs::rename(temp_path, path)?;
-    
+
     Ok(())
 }
 
@@ -590,7 +605,10 @@ fn physical_path_starts_with(path: &std::path::Path, base: &std::path::Path) -> 
     }
 }
 
-pub fn strip_physical_prefix(path: &std::path::Path, base: &std::path::Path) -> Option<std::path::PathBuf> {
+pub fn strip_physical_prefix(
+    path: &std::path::Path,
+    base: &std::path::Path,
+) -> Option<std::path::PathBuf> {
     #[cfg(windows)]
     {
         let path_components: Vec<_> = path.components().collect();
@@ -622,150 +640,151 @@ pub fn strip_physical_prefix(path: &std::path::Path, base: &std::path::Path) -> 
     }
 }
 
-    /// Finds the longest configured physical directory mapping that prefixes the provided path.
-    pub fn find_mapping_for_physical_path(path: &std::path::Path) -> Option<(String, std::path::PathBuf)> {
-        GLOBAL_SETTINGS.with(|s| {
-            let settings = s.borrow();
-            settings
+/// Finds the longest configured physical directory mapping that prefixes the provided path.
+pub fn find_mapping_for_physical_path(
+    path: &std::path::Path,
+) -> Option<(String, std::path::PathBuf)> {
+    GLOBAL_SETTINGS.with(|s| {
+        let settings = s.borrow();
+        settings
+            .dir_mappings
+            .items
+            .iter()
+            .filter_map(|mapping| {
+                let mapping_path = std::path::PathBuf::from(&mapping.dir_path);
+                if physical_path_starts_with(path, &mapping_path) {
+                    Some((normalize_dir_key(&mapping.dir_key), mapping_path))
+                } else {
+                    None
+                }
+            })
+            .max_by_key(|(_, mapping_path)| mapping_path.components().count())
+    })
+}
+
+/// Resolves a logical directory key to a physical path, walking up to the closest parent
+/// mapping and appending any unmatched suffix segments.
+pub fn find_dir_mapping(dir_key: &str) -> Option<String> {
+    GLOBAL_SETTINGS.with(|s| {
+        let settings = s.borrow();
+        let normalized_dir_key = normalize_dir_key(dir_key);
+        let requested_parts: Vec<&str> = normalized_dir_key
+            .split('\\')
+            .filter(|part| !part.is_empty())
+            .collect();
+
+        for prefix_len in (1..=requested_parts.len()).rev() {
+            let candidate_key = requested_parts[..prefix_len].join("\\");
+            if let Some(mapping) = settings
                 .dir_mappings
                 .items
                 .iter()
-                .filter_map(|mapping| {
-                    let mapping_path = std::path::PathBuf::from(&mapping.dir_path);
-                    if physical_path_starts_with(path, &mapping_path) {
-                        Some((normalize_dir_key(&mapping.dir_key), mapping_path))
-                    } else {
-                        None
-                    }
-                })
-                .max_by_key(|(_, mapping_path)| mapping_path.components().count())
-        })
-    }
-
-    /// Resolves a logical directory key to a physical path, walking up to the closest parent
-    /// mapping and appending any unmatched suffix segments.
-    pub fn find_dir_mapping(dir_key: &str) -> Option<String> {
-        GLOBAL_SETTINGS.with(|s| {
-            let settings = s.borrow();
-            let normalized_dir_key = normalize_dir_key(dir_key);
-            let requested_parts: Vec<&str> = normalized_dir_key
-                .split('\\')
-                .filter(|part| !part.is_empty())
-                .collect();
-
-            for prefix_len in (1..=requested_parts.len()).rev() {
-                let candidate_key = requested_parts[..prefix_len].join("\\");
-                if let Some(mapping) = settings
-                    .dir_mappings
-                    .items
-                    .iter()
-                    .find(|m| logical_dir_key_eq(&normalize_dir_key(&m.dir_key), &candidate_key))
-                {
-                    let mut resolved = std::path::PathBuf::from(&mapping.dir_path);
-                    for suffix in &requested_parts[prefix_len..] {
-                        resolved.push(suffix);
-                    }
-                    return Some(resolved.to_string_lossy().into_owned());
-                }
-            }
-
-            None
-        })
-    }
-
-    /// Looks up a specific DatRule by its `dir_key`.
-    pub fn find_rule(dir_key: &str) -> DatRule {
-        GLOBAL_SETTINGS.with(|s| {
-            let settings = s.borrow();
-            let normalized_dir_key = normalize_dir_key(dir_key);
-            let mut current = normalized_dir_key.as_str();
-
-            loop {
-                if let Some(rule) = settings
-                    .dat_rules
-                    .items
-                    .iter()
-                    .find(|r| logical_dir_key_eq(&normalize_dir_key(&r.dir_key), current))
-                {
-                    return rule.clone();
-                }
-
-                if let Some((parent, _)) = current.rsplit_once('\\') {
-                    current = parent;
-                    continue;
-                }
-
-                return DatRule {
-                    dir_key: normalized_dir_key,
-                    ..Default::default()
-                };
-            }
-        })
-    }
-
-    /// Updates or inserts a specific physical `DirMapping` by its `dir_key`.
-    pub fn set_dir_mapping(mapping: DirMapping) {
-        GLOBAL_SETTINGS.with(|s| {
-            let mut settings_ref = s.borrow_mut();
-            let mut settings = settings_ref.clone();
-
-            let normalized_dir_key = normalize_dir_key(&mapping.dir_key);
-            let mut normalized_mapping = mapping;
-            normalized_mapping.dir_key = normalized_dir_key.clone();
-
-            if let Some(pos) = settings
-                .dir_mappings
-                .items
-                .iter()
-                .position(|m| logical_dir_key_eq(&normalize_dir_key(&m.dir_key), &normalized_dir_key))
+                .find(|m| logical_dir_key_eq(&normalize_dir_key(&m.dir_key), &candidate_key))
             {
-                settings.dir_mappings.items[pos] = normalized_mapping;
-            } else {
-                settings.dir_mappings.items.push(normalized_mapping);
+                let mut resolved = std::path::PathBuf::from(&mapping.dir_path);
+                for suffix in &requested_parts[prefix_len..] {
+                    resolved.push(suffix);
+                }
+                return Some(resolved.to_string_lossy().into_owned());
             }
+        }
 
-            *settings_ref = canonicalize_settings(settings);
-        });
-    }
+        None
+    })
+}
 
-    /// Updates or inserts a specific DatRule by its `dir_key`.
-    pub fn set_rule(rule: DatRule) {
-        GLOBAL_SETTINGS.with(|s| {
-            let mut settings_ref = s.borrow_mut();
-            let mut settings = settings_ref.clone();
+/// Looks up a specific DatRule by its `dir_key`.
+pub fn find_rule(dir_key: &str) -> DatRule {
+    GLOBAL_SETTINGS.with(|s| {
+        let settings = s.borrow();
+        let normalized_dir_key = normalize_dir_key(dir_key);
+        let mut current = normalized_dir_key.as_str();
 
-            let normalized_dir_key = normalize_dir_key(&rule.dir_key);
-            let mut normalized_rule = rule;
-            normalized_rule.dir_key = normalized_dir_key.clone();
-
-            if let Some(pos) = settings
+        loop {
+            if let Some(rule) = settings
                 .dat_rules
                 .items
                 .iter()
-                .position(|r| logical_dir_key_eq(&normalize_dir_key(&r.dir_key), &normalized_dir_key))
+                .find(|r| logical_dir_key_eq(&normalize_dir_key(&r.dir_key), current))
             {
-                settings.dat_rules.items[pos] = normalized_rule;
-            } else {
-                settings.dat_rules.items.push(normalized_rule);
+                return rule.clone();
             }
 
-            *settings_ref = canonicalize_settings(settings);
-        });
-    }
+            if let Some((parent, _)) = current.rsplit_once('\\') {
+                current = parent;
+                continue;
+            }
 
-    pub fn delete_rule(dir_key: &str) {
-        GLOBAL_SETTINGS.with(|s| {
-            let mut settings_ref = s.borrow_mut();
-            let mut settings = settings_ref.clone();
-            let normalized_dir_key = normalize_dir_key(dir_key);
+            return DatRule {
+                dir_key: normalized_dir_key,
+                ..Default::default()
+            };
+        }
+    })
+}
 
-            settings.dat_rules.items.retain(|r| {
-                !logical_dir_key_eq(&normalize_dir_key(&r.dir_key), &normalized_dir_key)
-            });
+/// Updates or inserts a specific physical `DirMapping` by its `dir_key`.
+pub fn set_dir_mapping(mapping: DirMapping) {
+    GLOBAL_SETTINGS.with(|s| {
+        let mut settings_ref = s.borrow_mut();
+        let mut settings = settings_ref.clone();
 
-            *settings_ref = canonicalize_settings(settings);
-        });
-    }
+        let normalized_dir_key = normalize_dir_key(&mapping.dir_key);
+        let mut normalized_mapping = mapping;
+        normalized_mapping.dir_key = normalized_dir_key.clone();
+
+        if let Some(pos) =
+            settings.dir_mappings.items.iter().position(|m| {
+                logical_dir_key_eq(&normalize_dir_key(&m.dir_key), &normalized_dir_key)
+            })
+        {
+            settings.dir_mappings.items[pos] = normalized_mapping;
+        } else {
+            settings.dir_mappings.items.push(normalized_mapping);
+        }
+
+        *settings_ref = canonicalize_settings(settings);
+    });
+}
+
+/// Updates or inserts a specific DatRule by its `dir_key`.
+pub fn set_rule(rule: DatRule) {
+    GLOBAL_SETTINGS.with(|s| {
+        let mut settings_ref = s.borrow_mut();
+        let mut settings = settings_ref.clone();
+
+        let normalized_dir_key = normalize_dir_key(&rule.dir_key);
+        let mut normalized_rule = rule;
+        normalized_rule.dir_key = normalized_dir_key.clone();
+
+        if let Some(pos) =
+            settings.dat_rules.items.iter().position(|r| {
+                logical_dir_key_eq(&normalize_dir_key(&r.dir_key), &normalized_dir_key)
+            })
+        {
+            settings.dat_rules.items[pos] = normalized_rule;
+        } else {
+            settings.dat_rules.items.push(normalized_rule);
+        }
+
+        *settings_ref = canonicalize_settings(settings);
+    });
+}
+
+pub fn delete_rule(dir_key: &str) {
+    GLOBAL_SETTINGS.with(|s| {
+        let mut settings_ref = s.borrow_mut();
+        let mut settings = settings_ref.clone();
+        let normalized_dir_key = normalize_dir_key(dir_key);
+
+        settings
+            .dat_rules
+            .items
+            .retain(|r| !logical_dir_key_eq(&normalize_dir_key(&r.dir_key), &normalized_dir_key));
+
+        *settings_ref = canonicalize_settings(settings);
+    });
+}
 
 #[cfg(test)]
 #[path = "tests/settings_tests.rs"]

@@ -17,11 +17,12 @@ pub fn draw_log_panel(app: &mut RomVaultApp, ctx: &egui::Context, fill: egui::Co
                 });
             });
             ui.separator();
-            egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
-                for log in &app.task_logs {
-                    ui.label(log);
-                }
-            });
+            egui::ScrollArea::vertical()
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    for log in &app.task_logs {
+                        ui.label(log);
+                    }
+                });
         });
 }
-

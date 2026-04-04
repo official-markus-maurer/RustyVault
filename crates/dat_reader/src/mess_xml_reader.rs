@@ -4,11 +4,11 @@ use crate::var_fix;
 use roxmltree::{Document, Node};
 
 /// Parser for MESS Software List XML formats.
-/// 
-/// `mess_xml_reader.rs` is responsible for parsing the slightly specialized XML format 
-/// used by MESS (Multi Emulator Super System) software lists. It translates `<software>`, 
+///
+/// `mess_xml_reader.rs` is responsible for parsing the slightly specialized XML format
+/// used by MESS (Multi Emulator Super System) software lists. It translates `<software>`,
 /// `<dataarea>`, and `<diskarea>` nodes into the standard `DatNode` hierarchy.
-/// 
+///
 /// Differences from C#:
 /// - Similar to `xml_reader.rs`, this uses `roxmltree` for fast, zero-copy in-memory DOM parsing
 ///   rather than the stateful stream-reading approach of the C# `MessXmlReader`.
@@ -126,8 +126,12 @@ fn load_rom(parent_dir: &mut DatDir, rom_node: Node, index_continue: &mut Option
         let mut d_rom = DatNode::new_file(n.to_string(), FileType::UnSet);
         if let Some(f) = d_rom.file_mut() {
             f.size = rom_node.attribute("size").and_then(var_fix::u64_opt);
-            f.crc = rom_node.attribute("crc").and_then(|s| var_fix::clean_md5_sha1(s, 8));
-            f.sha1 = rom_node.attribute("sha1").and_then(|s| var_fix::clean_md5_sha1(s, 40));
+            f.crc = rom_node
+                .attribute("crc")
+                .and_then(|s| var_fix::clean_md5_sha1(s, 8));
+            f.sha1 = rom_node
+                .attribute("sha1")
+                .and_then(|s| var_fix::clean_md5_sha1(s, 40));
             f.status = rom_node.attribute("status").map(var_fix::to_lower);
         }
         parent_dir.add_child(d_rom);
@@ -136,7 +140,10 @@ fn load_rom(parent_dir: &mut DatDir, rom_node: Node, index_continue: &mut Option
         if let Some(idx) = index_continue {
             if let Some(node) = parent_dir.children.get_mut(*idx) {
                 if let Some(f) = node.file_mut() {
-                    let extra_size = rom_node.attribute("size").and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+                    let extra_size = rom_node
+                        .attribute("size")
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .unwrap_or(0);
                     if let Some(size) = f.size.as_mut() {
                         *size += extra_size;
                     } else {
@@ -157,7 +164,9 @@ fn load_disk(parent_dir: &mut DatDir, disk_node: Node) {
     let mut d_disk = DatNode::new_file(name, FileType::UnSet);
     if let Some(f) = d_disk.file_mut() {
         f.is_disk = true;
-        f.sha1 = disk_node.attribute("sha1").and_then(|s| var_fix::clean_md5_sha1(s, 40));
+        f.sha1 = disk_node
+            .attribute("sha1")
+            .and_then(|s| var_fix::clean_md5_sha1(s, 40));
         f.status = disk_node.attribute("status").map(var_fix::to_lower);
     }
 

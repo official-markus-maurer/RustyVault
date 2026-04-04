@@ -6,11 +6,11 @@ use std::io::Write;
 use std::path::Path;
 use std::rc::Rc;
 
-use compress::structured_archive::get_compression_type;
 use compress::i_compress::ICompress;
+use compress::structured_archive::get_compression_type;
+use compress::zip_file::ZipFile as CompressZipFile;
 use compress::ZipReturn;
 use compress::ZipStructure as CompressZipStructure;
-use compress::zip_file::ZipFile as CompressZipFile;
 use dat_reader::enums::{DatStatus, FileType, GotStatus, ZipStructure};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
@@ -24,7 +24,8 @@ impl super::Fix {
         entry_bytes: &[u8],
     ) -> Option<super::TorrentZipBuiltEntry> {
         let compressed_data = compress::deflate_raw_best(entry_bytes).or_else(|| {
-            let mut encoder = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::best());
+            let mut encoder =
+                flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::best());
             encoder.write_all(entry_bytes).ok()?;
             encoder.finish().ok()
         })?;
@@ -103,7 +104,9 @@ impl super::Fix {
         }
     }
 
-    pub(super) fn build_torrentzip_archive(entries: &[super::TorrentZipBuiltEntry]) -> Option<Vec<u8>> {
+    pub(super) fn build_torrentzip_archive(
+        entries: &[super::TorrentZipBuiltEntry],
+    ) -> Option<Vec<u8>> {
         let mut archive_bytes = Vec::new();
         let mut central_directory = Vec::new();
 
@@ -181,11 +184,20 @@ impl super::Fix {
         let temp_zip_path = format!("{}.rvfix.tmp", zip_path);
         let current_exists = Path::new(&zip_path).exists();
         let write_exact_torrentzip = matches!(desired_zip_struct, ZipStructure::ZipTrrnt);
-        let write_structured_zip = matches!(desired_zip_struct, ZipStructure::ZipZSTD | ZipStructure::ZipTDC);
+        let write_structured_zip = matches!(
+            desired_zip_struct,
+            ZipStructure::ZipZSTD | ZipStructure::ZipTDC
+        );
         let mut retained_entries = 0usize;
         let mut any_changes = current_exists && zip_file.borrow().zip_struct != desired_zip_struct;
         let mut entries = Vec::new();
-        Self::collect_archive_rebuild_entries(Rc::clone(&zip_file), "", "", &mut entries, &mut any_changes);
+        Self::collect_archive_rebuild_entries(
+            Rc::clone(&zip_file),
+            "",
+            "",
+            &mut entries,
+            &mut any_changes,
+        );
         Self::sort_archive_rebuild_entries(&mut entries, desired_zip_struct);
         let mut torrentzip_entries: Vec<super::TorrentZipBuiltEntry> = Vec::new();
         let mut structured_writer = if write_structured_zip {
@@ -195,7 +207,9 @@ impl super::Fix {
                 _ => CompressZipStructure::None,
             };
             let mut zip_out = CompressZipFile::new();
-            if zip_out.zip_file_create_with_structure(&temp_zip_path, compress_struct) != ZipReturn::ZipGood {
+            if zip_out.zip_file_create_with_structure(&temp_zip_path, compress_struct)
+                != ZipReturn::ZipGood
+            {
                 return false;
             }
             Some((zip_out, compress_struct))
@@ -286,7 +300,9 @@ impl super::Fix {
                     }
                     retained_entries += 1;
                 } else if writer.as_mut().is_none_or(|writer| {
-                    writer.add_directory(format!("{}/", child_name.trim_end_matches('/')), options).is_err()
+                    writer
+                        .add_directory(format!("{}/", child_name.trim_end_matches('/')), options)
+                        .is_err()
                 }) {
                     let _ = fs::remove_file(&temp_zip_path);
                     return false;
@@ -302,7 +318,8 @@ impl super::Fix {
                     continue;
                 }
                 RepStatus::MoveToSort | RepStatus::MoveToCorrupt => {
-                    let Some(bytes) = Self::read_zip_entry_bytes(&zip_path, &existing_child_name) else {
+                    let Some(bytes) = Self::read_zip_entry_bytes(&zip_path, &existing_child_name)
+                    else {
                         let _ = fs::remove_file(&temp_zip_path);
                         return false;
                     };
@@ -323,7 +340,8 @@ impl super::Fix {
                     continue;
                 }
                 RepStatus::Rename => {
-                    let Some(bytes) = Self::read_zip_entry_bytes(&zip_path, &existing_child_name) else {
+                    let Some(bytes) = Self::read_zip_entry_bytes(&zip_path, &existing_child_name)
+                    else {
                         let _ = fs::remove_file(&temp_zip_path);
                         return false;
                     };
@@ -353,12 +371,18 @@ impl super::Fix {
                         Self::is_fix_read_only(&source_ref)
                     };
                     let source_is_same_node = Rc::ptr_eq(&source_file, &entry.node);
-                    let source_is_same_archive =
-                        Self::source_uses_same_archive_path(Rc::clone(&source_file), Path::new(&zip_path));
+                    let source_is_same_archive = Self::source_uses_same_archive_path(
+                        Rc::clone(&source_file),
+                        Path::new(&zip_path),
+                    );
 
                     if write_exact_torrentzip {
-                        let built_entry = Self::maybe_reuse_torrentzip_stream_from_source(Rc::clone(&source_file))
-                            .or_else(|| Self::compress_torrentzip_entry(&child_name.replace('\\', "/"), &bytes));
+                        let built_entry = Self::maybe_reuse_torrentzip_stream_from_source(
+                            Rc::clone(&source_file),
+                        )
+                        .or_else(|| {
+                            Self::compress_torrentzip_entry(&child_name.replace('\\', "/"), &bytes)
+                        });
                         let Some(built_entry) = built_entry else {
                             let _ = fs::remove_file(&temp_zip_path);
                             return false;
@@ -388,7 +412,8 @@ impl super::Fix {
                         continue;
                     }
 
-                    let Some(bytes) = Self::read_zip_entry_bytes(&zip_path, &existing_child_name) else {
+                    let Some(bytes) = Self::read_zip_entry_bytes(&zip_path, &existing_child_name)
+                    else {
                         let _ = fs::remove_file(&temp_zip_path);
                         return false;
                     };
@@ -398,11 +423,16 @@ impl super::Fix {
 
             if write_exact_torrentzip {
                 let built_entry = if existing_child_name == child_name {
-                    Self::maybe_reuse_torrentzip_stream_from_existing(&zip_path, &existing_child_name)
+                    Self::maybe_reuse_torrentzip_stream_from_existing(
+                        &zip_path,
+                        &existing_child_name,
+                    )
                 } else {
                     None
                 }
-                .or_else(|| Self::compress_torrentzip_entry(&child_name.replace('\\', "/"), &entry_bytes));
+                .or_else(|| {
+                    Self::compress_torrentzip_entry(&child_name.replace('\\', "/"), &entry_bytes)
+                });
                 let Some(built_entry) = built_entry else {
                     let _ = fs::remove_file(&temp_zip_path);
                     return false;
@@ -433,7 +463,8 @@ impl super::Fix {
                 }
                 retained_entries += 1;
             } else if writer.as_mut().is_none_or(|writer| {
-                writer.start_file(child_name, options).is_err() || writer.write_all(&entry_bytes).is_err()
+                writer.start_file(child_name, options).is_err()
+                    || writer.write_all(&entry_bytes).is_err()
             }) {
                 let _ = fs::remove_file(&temp_zip_path);
                 return false;

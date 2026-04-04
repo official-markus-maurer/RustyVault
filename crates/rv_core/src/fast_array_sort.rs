@@ -13,4 +13,3 @@ pub fn sort_array<T: Clone>(input: &[T], sort: impl Fn(&T, &T) -> i32) -> Vec<T>
     out.sort_by(|a, b| sort(a, b).cmp(&0));
     out
 }
-

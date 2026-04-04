@@ -41,14 +41,12 @@ impl NameFix {
     fn clean_dots(path: &str) -> String {
         let mut ret = path.to_string();
         loop {
-            let Some(index) = ret.find(r"\..\")
-            else {
+            let Some(index) = ret.find(r"\..\") else {
                 break;
             };
             let path1 = &ret[..index];
             let path2 = &ret[index + 4..];
-            let Some(path1_back) = path1.rfind('\\')
-            else {
+            let Some(path1_back) = path1.rfind('\\') else {
                 ret = path2.to_string();
                 continue;
             };

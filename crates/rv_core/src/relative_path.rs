@@ -60,9 +60,6 @@ mod tests {
 
     #[test]
     fn relative_path_basic() {
-        assert_eq!(
-            make_relative("C:\\a\\b\\c", "C:\\a\\b\\d\\e"),
-            "..\\d\\e"
-        );
+        assert_eq!(make_relative("C:\\a\\b\\c", "C:\\a\\b\\d\\e"), "..\\d\\e");
     }
 }

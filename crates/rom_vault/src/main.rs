@@ -1,17 +1,17 @@
-use std::io::{self, Write};
-use std::cell::RefCell;
-use std::rc::Rc;
+use dat_reader::enums::FileType;
 use rv_core::db::{init_db, GLOBAL_DB};
 use rv_core::file_scanning::FileScanning;
-use rv_core::scanner::Scanner;
 use rv_core::find_fixes::FindFixes;
 use rv_core::fix::Fix;
 use rv_core::read_dat::DatUpdate;
 use rv_core::repair_status::RepairStatus;
 use rv_core::rv_file::RvFile;
 use rv_core::scanned_file::ScannedFile;
+use rv_core::scanner::Scanner;
 use rv_core::settings::EScanLevel;
-use dat_reader::enums::FileType;
+use std::cell::RefCell;
+use std::io::{self, Write};
+use std::rc::Rc;
 
 fn render_repair_report(report: &RepairStatus) -> Vec<String> {
     vec![
@@ -51,14 +51,21 @@ fn count_selected_actionable_fixes(node: Rc<RefCell<RvFile>>) -> i32 {
     let (is_selected, rep_status, is_dir, children) = {
         let n = node.borrow();
         (
-            matches!(n.tree_checked, rv_core::rv_file::TreeSelect::Selected | rv_core::rv_file::TreeSelect::Locked),
+            matches!(
+                n.tree_checked,
+                rv_core::rv_file::TreeSelect::Selected | rv_core::rv_file::TreeSelect::Locked
+            ),
             n.rep_status(),
             n.is_directory(),
             n.children.clone(),
         )
     };
 
-    let mut count = if is_selected && is_actionable_fix_status(rep_status) { 1 } else { 0 };
+    let mut count = if is_selected && is_actionable_fix_status(rep_status) {
+        1
+    } else {
+        0
+    };
 
     if is_dir {
         for child in children {
@@ -74,7 +81,10 @@ fn current_fixable_count(root: Rc<RefCell<RvFile>>) -> i32 {
 }
 
 fn branch_has_selected_nodes(node: &RvFile) -> bool {
-    if matches!(node.tree_checked, rv_core::rv_file::TreeSelect::Selected | rv_core::rv_file::TreeSelect::Locked) {
+    if matches!(
+        node.tree_checked,
+        rv_core::rv_file::TreeSelect::Selected | rv_core::rv_file::TreeSelect::Locked
+    ) {
         return true;
     }
 
@@ -102,7 +112,11 @@ fn rescan_selected_roots(root: Rc<RefCell<RvFile>>, scan_level: EScanLevel) {
 
         let physical_path = rv_core::settings::find_dir_mapping(&name).unwrap_or(name.clone());
         let rule = rv_core::settings::find_rule(&name);
-        let files = Scanner::scan_directory_with_level_and_ignore(&physical_path, scan_level, &rule.ignore_files.items);
+        let files = Scanner::scan_directory_with_level_and_ignore(
+            &physical_path,
+            scan_level,
+            &rule.ignore_files.items,
+        );
         let mut root_scan = ScannedFile::new(FileType::Dir);
         root_scan.name = name.clone();
         root_scan.children = files;
@@ -113,14 +127,14 @@ fn rescan_selected_roots(root: Rc<RefCell<RvFile>>, scan_level: EScanLevel) {
 }
 
 /// Headless CLI binary for the RomVault engine.
-/// 
+///
 /// `rom_vault` provides a fully text-based command line interface to interact with the
 /// core `RustyVault` engine (`rv_core`) without needing to launch the `egui` desktop application.
-/// 
+///
 /// Differences from C#:
-/// - The original C# application (`RomVault`) only shipped as a WinForms desktop application 
-///   without a dedicated interactive CLI headless loop. 
-/// - This Rust port includes this CLI binary specifically to allow the engine to run on headless 
+/// - The original C# application (`RomVault`) only shipped as a WinForms desktop application
+///   without a dedicated interactive CLI headless loop.
+/// - This Rust port includes this CLI binary specifically to allow the engine to run on headless
 ///   servers (e.g. Linux Docker containers, NAS systems) for automated ROM management.
 fn main() {
     rv_core::settings::load_settings_from_file();
@@ -152,21 +166,21 @@ fn main() {
     GLOBAL_DB.with(|db_ref| {
         if let Some(db) = db_ref.borrow().as_ref() {
             let root = db.dir_root.clone();
-            
+
             // Basic CLI loop
             loop {
                 print!("> ");
                 io::stdout().flush().unwrap();
-                
+
                 let mut input = String::new();
                 io::stdin().read_line(&mut input).unwrap();
                 let cmd = input.trim().to_lowercase();
                 let parts: Vec<&str> = cmd.split_whitespace().collect();
-                
+
                 if parts.is_empty() {
                     continue;
                 }
-                
+
                 match parts[0] {
                     "exit" | "quit" => break,
                     "help" => {
@@ -180,7 +194,7 @@ fn main() {
                         println!("  fixdat <out_dir>  - Generate a Fix DAT of missing files");
                         println!("  status            - Show current DB root tree status");
                         println!("  exit/quit         - Exit the application");
-                    },
+                    }
                     "update_dats" => {
                         if parts.len() < 2 {
                             println!("Usage: update_dats <directory_path>");
@@ -188,7 +202,7 @@ fn main() {
                             let path = parts[1..].join(" ");
                             DatUpdate::update_dat(root.clone(), &path);
                         }
-                    },
+                    }
                     "scan" => {
                         if parts.len() < 2 {
                             println!("Usage: scan <directory_path>");
@@ -197,12 +211,13 @@ fn main() {
                             println!("Scanning directory: {}", path);
                             let files = Scanner::scan_directory(&path);
                             println!("Found {} files/folders.", files.len());
-                            
+
                             // Mocking the top level integration
                             // We construct a mock ScannedFile root to hold the results
-                            let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
+                            let mut root_scan =
+                                rv_core::scanned_file::ScannedFile::new(FileType::Dir);
                             root_scan.children = files;
-                            
+
                             // To properly scan against the root we'd need to match the node
                             // For CLI simplicity, we just assume they want to scan RustyVault
                             let mut target_node = root.clone();
@@ -214,10 +229,13 @@ fn main() {
                             }
 
                             println!("Integrating scanned files into database tree...");
-                            rv_core::file_scanning::FileScanning::scan_dir(target_node, &mut root_scan);
+                            rv_core::file_scanning::FileScanning::scan_dir(
+                                target_node,
+                                &mut root_scan,
+                            );
                             println!("Integration complete.");
                         }
-                    },
+                    }
                     "scan_arch" => {
                         if parts.len() < 2 {
                             println!("Usage: scan_arch <file_path>");
@@ -230,25 +248,28 @@ fn main() {
                             } else {
                                 FileType::File
                             };
-                            
+
                             println!("Deep scanning archive: {}", path);
                             match Scanner::scan_archive_file(file_type, &path, 0, true) {
                                 Ok(arch) => {
-                                    println!("Archive scanned successfully. Comment: '{}'", arch.comment);
+                                    println!(
+                                        "Archive scanned successfully. Comment: '{}'",
+                                        arch.comment
+                                    );
                                     println!("Found {} files inside:", arch.children.len());
                                     for c in arch.children {
                                         println!(" - {} (size: {:?})", c.name, c.size);
                                     }
-                                },
+                                }
                                 Err(e) => println!("Error scanning archive: {:?}", e),
                             }
                         }
-                    },
+                    }
                     "find_fixes" => {
                         println!("Running FindFixes on current DB tree...");
                         recompute_fix_plan(root.clone());
                         println!("FindFixes completed.");
-                    },
+                    }
                     "fix" => {
                         println!("Refreshing DB from disk...");
                         rescan_selected_roots(root.clone(), EScanLevel::Level2);
@@ -267,14 +288,14 @@ fn main() {
                         println!("Refreshing final repair state...");
                         recompute_fix_plan(root.clone());
                         println!("Fixes completed.");
-                    },
+                    }
                     "report" => {
                         let mut report = RepairStatus::new();
                         report.report_status(root.clone());
                         for line in render_repair_report(&report) {
                             println!("{line}");
                         }
-                    },
+                    }
                     "fixdat" => {
                         if parts.len() < 2 {
                             println!("Usage: fixdat <out_directory>");
@@ -283,10 +304,14 @@ fn main() {
                             println!("Generating Fix DATs in: {}", path);
                             // Ensure the output directory exists
                             let _ = std::fs::create_dir_all(&path);
-                            rv_core::fix_dat_report::FixDatReport::recursive_dat_tree(&path, root.clone(), false);
+                            rv_core::fix_dat_report::FixDatReport::recursive_dat_tree(
+                                &path,
+                                root.clone(),
+                                false,
+                            );
                             println!("Fix DAT generation complete.");
                         }
-                    },
+                    }
                     "status" => {
                         let root_borrow = root.borrow();
                         println!("DB Root Node: {} children", root_borrow.children.len());
@@ -297,11 +322,16 @@ fn main() {
                                 println!("    DATs attached: {}", c.dir_dats.len());
                                 for (j, d) in c.children.iter().enumerate() {
                                     let cd = d.borrow();
-                                    println!("      [{}] {} (Dats: {})", j, cd.name, cd.dir_dats.len());
+                                    println!(
+                                        "      [{}] {} (Dats: {})",
+                                        j,
+                                        cd.name,
+                                        cd.dir_dats.len()
+                                    );
                                 }
                             }
                         }
-                    },
+                    }
                     _ => {
                         println!("Unknown command. Type 'help' for a list of commands.");
                     }

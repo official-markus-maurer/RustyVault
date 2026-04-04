@@ -4,7 +4,11 @@ use crate::RomVaultApp;
 
 pub fn draw_central_panel(app: &mut RomVaultApp, ctx: &egui::Context) {
     egui::CentralPanel::default()
-        .frame(egui::Frame::none().fill(ctx.style().visuals.panel_fill).inner_margin(8.0))
+        .frame(
+            egui::Frame::none()
+                .fill(ctx.style().visuals.panel_fill)
+                .inner_margin(8.0),
+        )
         .show(ctx, |ui| {
             egui::TopBottomPanel::top("info_and_filters_panel")
                 .resizable(false)
@@ -34,4 +38,3 @@ pub fn draw_central_panel(app: &mut RomVaultApp, ctx: &egui::Context) {
                 });
         });
 }
-

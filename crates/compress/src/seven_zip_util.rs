@@ -7,11 +7,20 @@ pub fn mem_set(buffer: &mut [u8], start: usize, val: u8, len: usize) {
     }
 }
 
-pub fn mem_crypt(dest: &mut [u8], dest_point: usize, source: &[u8], source_point: usize, len: usize) {
+pub fn mem_crypt(
+    dest: &mut [u8],
+    dest_point: usize,
+    source: &[u8],
+    source_point: usize,
+    len: usize,
+) {
     if dest_point >= dest.len() || source_point >= source.len() {
         return;
     }
-    let max_len = std::cmp::min(len, std::cmp::min(dest.len() - dest_point, source.len() - source_point));
+    let max_len = std::cmp::min(
+        len,
+        std::cmp::min(dest.len() - dest_point, source.len() - source_point),
+    );
     for i in (0..max_len).rev() {
         dest[dest_point + i] = source[source_point + i];
     }
@@ -136,7 +145,10 @@ pub fn write_bool_flags<W: Write>(w: &mut W, b_array: &[bool]) -> std::io::Resul
     Ok(())
 }
 
-pub fn read_bool_flags_default_true<R: Read>(r: &mut R, num_items: usize) -> std::io::Result<Vec<bool>> {
+pub fn read_bool_flags_default_true<R: Read>(
+    r: &mut R,
+    num_items: usize,
+) -> std::io::Result<Vec<bool>> {
     let mut b = [0u8; 1];
     r.read_exact(&mut b)?;
     if b[0] == 0 {

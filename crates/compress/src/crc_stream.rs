@@ -112,4 +112,3 @@ mod tests {
         assert_eq!(s.crc_u32(), crc32fast::hash(&data[..4]));
     }
 }
-

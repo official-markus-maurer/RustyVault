@@ -1,61 +1,165 @@
 /// Asset loading macros and utilities.
-/// 
+///
 /// `assets.rs` provides macros like `include_asset!` and `include_toolbar_image!`
 /// to embed static image resources directly into the Rust binary at compile time.
-/// 
+///
 /// Differences from C#:
 /// - C# uses `.resx` files and Visual Studio's built-in resource manager.
 /// - Rust utilizes `include_bytes!` and an internal `egui` caching layer to embed
 ///   and serve raw PNG/SVG bytes efficiently to the immediate-mode UI renderer.
+static DARK_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+pub(crate) static FALLBACK_PNG_1X1_TRANSPARENT: &[u8] = &[
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x04, 0x00, 0x00, 0x00, 0xB5, 0x1C, 0x0C,
+    0x02, 0x00, 0x00, 0x00, 0x0B, 0x49, 0x44, 0x41, 0x54, 0x78, 0xDA, 0x63, 0xFC, 0xFF, 0x1F, 0x00,
+    0x03, 0x03, 0x01, 0xFF, 0xA5, 0xFC, 0x91, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
+    0x42, 0x60, 0x82,
+];
+
 #[macro_export]
 macro_rules! include_asset {
     ($file:literal) => {
-        eframe::egui::ImageSource::Bytes {
-            uri: std::borrow::Cow::Borrowed(concat!("bytes://", $file)),
-            bytes: include_bytes!(concat!("../../../assets/images/", $file)).into(),
-        }
+        $crate::assets::themed_image_source($file, $crate::assets::FALLBACK_PNG_1X1_TRANSPARENT)
     };
 }
 
-pub fn processed_image_source(
+pub fn set_dark_mode(is_dark: bool) {
+    DARK_MODE.store(is_dark, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[macro_export]
+macro_rules! include_toolbar_image {
+    ($file:literal) => {
+        $crate::assets::themed_image_source($file, $crate::assets::FALLBACK_PNG_1X1_TRANSPARENT)
+    };
+}
+
+fn is_dark_mode() -> bool {
+    DARK_MODE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn try_read_asset_file(is_dark: bool, name: &str) -> Option<Vec<u8>> {
+    let env_key = if is_dark {
+        "RUSTYROMS_ASSETS_DARK"
+    } else {
+        "RUSTYROMS_ASSETS_LIGHT"
+    };
+    if let Ok(dir) = std::env::var(env_key) {
+        let base = std::path::PathBuf::from(dir);
+        let p = base.join(name);
+        if let Ok(bytes) = std::fs::read(&p) {
+            return Some(bytes);
+        }
+    }
+
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            roots.push(
+                exe_dir
+                    .join("assets")
+                    .join(if is_dark { "dark" } else { "light" }),
+            );
+            roots.push(exe_dir.join("assets").join(if is_dark {
+                "images_dark"
+            } else {
+                "images_light"
+            }));
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        roots.push(
+            cwd.join("assets")
+                .join(if is_dark { "dark" } else { "light" }),
+        );
+        roots.push(cwd.join("assets").join(if is_dark {
+            "images_dark"
+        } else {
+            "images_light"
+        }));
+    }
+
+    for root in roots {
+        let p = root.join(name);
+        if let Ok(bytes) = std::fs::read(&p) {
+            return Some(bytes);
+        }
+    }
+
+    None
+}
+
+pub fn themed_image_source(
     name: &'static str,
-    raw_bytes: &'static [u8],
+    fallback_bytes: &'static [u8],
 ) -> eframe::egui::ImageSource<'static> {
     use eframe::egui;
     use std::borrow::Cow;
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
 
-    static CACHE: OnceLock<Mutex<HashMap<&'static str, egui::load::Bytes>>> = OnceLock::new();
+    static CACHE: OnceLock<Mutex<HashMap<String, egui::load::Bytes>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
 
+    let is_dark = is_dark_mode();
+    let theme_key = if is_dark { "dark" } else { "light" };
+    let cache_key = format!("{}/{}", theme_key, name);
+
     if let Ok(cache) = cache.lock() {
-        if let Some(bytes) = cache.get(name) {
+        if let Some(bytes) = cache.get(&cache_key) {
             return egui::ImageSource::Bytes {
-                uri: Cow::Owned(format!("bytes://processed/{}", name)),
+                uri: Cow::Owned(format!("bytes://{}", cache_key)),
                 bytes: bytes.clone(),
             };
         }
     }
 
-    let processed: Vec<u8> = raw_bytes.to_vec();
+    let raw = try_read_asset_file(is_dark, name).unwrap_or_else(|| fallback_bytes.to_vec());
+    let bytes: egui::load::Bytes = raw.into();
 
-    let bytes: egui::load::Bytes = processed.into();
     if let Ok(mut cache) = cache.lock() {
-        cache.insert(name, bytes.clone());
+        cache.insert(cache_key.clone(), bytes.clone());
     }
+
     egui::ImageSource::Bytes {
-        uri: Cow::Owned(format!("bytes://processed/{}", name)),
+        uri: Cow::Owned(format!("bytes://{}", cache_key)),
         bytes,
     }
 }
 
-#[macro_export]
-macro_rules! include_toolbar_image {
-    ($file:literal) => {
-        $crate::assets::processed_image_source(
-            $file,
-            include_bytes!(concat!("../../../assets/images/", $file)),
-        )
-    };
+pub fn themed_image_source_optional(
+    name: &'static str,
+) -> Option<eframe::egui::ImageSource<'static>> {
+    use eframe::egui;
+    use std::borrow::Cow;
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
+    static CACHE: OnceLock<Mutex<HashMap<String, egui::load::Bytes>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+
+    let is_dark = is_dark_mode();
+    let theme_key = if is_dark { "dark" } else { "light" };
+    let cache_key = format!("{}/{}", theme_key, name);
+
+    if let Ok(cache) = cache.lock() {
+        if let Some(bytes) = cache.get(&cache_key) {
+            return Some(egui::ImageSource::Bytes {
+                uri: Cow::Owned(format!("bytes://{}", cache_key)),
+                bytes: bytes.clone(),
+            });
+        }
+    }
+
+    let raw = try_read_asset_file(is_dark, name)?;
+    let bytes: egui::load::Bytes = raw.into();
+
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(cache_key.clone(), bytes.clone());
+    }
+
+    Some(egui::ImageSource::Bytes {
+        uri: Cow::Owned(format!("bytes://{}", cache_key)),
+        bytes,
+    })
 }

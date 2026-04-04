@@ -14,7 +14,9 @@ pub fn set_thread_count(thread_count: Option<i32>) -> usize {
 
 pub fn create_dir_for_file(filename: &str) -> std::io::Result<()> {
     let path = Path::new(filename);
-    let Some(parent) = path.parent() else { return Ok(()); };
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
     if parent.as_os_str().is_empty() {
         return Ok(());
     }
@@ -66,13 +68,17 @@ pub fn utc_ticks_to_dos_date_time(ticks: i64) -> (u16, u16) {
     }
 
     let (year, month, day, hour, minute, second) = ticks_to_ymdhms(ticks);
-    let dos_file_date = ((day & 0x1F) | ((month & 0x0F) << 5) | (((year - 1980) & 0x7F) << 9)) as u16;
-    let dos_file_time = (((second >> 1) & 0x1F) | ((minute & 0x3F) << 5) | ((hour & 0x1F) << 11)) as u16;
+    let dos_file_date =
+        ((day & 0x1F) | ((month & 0x0F) << 5) | (((year - 1980) & 0x7F) << 9)) as u16;
+    let dos_file_time =
+        (((second >> 1) & 0x1F) | ((minute & 0x3F) << 5) | ((hour & 0x1F) << 11)) as u16;
     (dos_file_date, dos_file_time)
 }
 
 pub fn zip_date_time_to_string(zip_file_date_time: Option<i64>) -> String {
-    let Some(t) = zip_file_date_time else { return String::new(); };
+    let Some(t) = zip_file_date_time else {
+        return String::new();
+    };
     if t == 0 || t == i64::MIN {
         return String::new();
     }

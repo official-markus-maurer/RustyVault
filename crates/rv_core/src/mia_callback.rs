@@ -10,14 +10,29 @@ thread_local! {
     static REPORTED_KEYS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
 }
 
-fn collect_found_mia_files(node: Rc<RefCell<crate::rv_file::RvFile>>, out: &mut Vec<Rc<RefCell<crate::rv_file::RvFile>>>) {
+fn collect_found_mia_files(
+    node: Rc<RefCell<crate::rv_file::RvFile>>,
+    out: &mut Vec<Rc<RefCell<crate::rv_file::RvFile>>>,
+) {
     let (children, file_type, dat_status, got_status) = {
         let n = node.borrow();
-        (n.children.clone(), n.file_type, n.dat_status(), n.got_status())
+        (
+            n.children.clone(),
+            n.file_type,
+            n.dat_status(),
+            n.got_status(),
+        )
     };
 
-    if matches!(file_type, FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly | FileType::Zip | FileType::SevenZip)
-        && dat_status == DatStatus::InDatMIA
+    if matches!(
+        file_type,
+        FileType::File
+            | FileType::FileZip
+            | FileType::FileSevenZip
+            | FileType::FileOnly
+            | FileType::Zip
+            | FileType::SevenZip
+    ) && dat_status == DatStatus::InDatMIA
         && got_status == GotStatus::Got
     {
         out.push(Rc::clone(&node));
@@ -81,20 +96,22 @@ pub fn report_found_mia(root: Rc<RefCell<crate::rv_file::RvFile>>) {
             let _ = writeln!(file, "[{now}] Found MIA: {}", name);
             crate::task_reporter::task_log(format!("[MIA] Found: {}", name));
         } else {
-            let crc_hex = crc.as_ref().map(|v| crate::to_hex_string(Some(v.as_slice()))).unwrap_or_default();
+            let crc_hex = crc
+                .as_ref()
+                .map(|v| crate::to_hex_string(Some(v.as_slice())))
+                .unwrap_or_default();
             let sha1_hex = sha1
                 .as_ref()
                 .map(|v| crate::to_hex_string(Some(v.as_slice())))
                 .unwrap_or_default();
-            let md5_hex = md5.as_ref().map(|v| crate::to_hex_string(Some(v.as_slice()))).unwrap_or_default();
+            let md5_hex = md5
+                .as_ref()
+                .map(|v| crate::to_hex_string(Some(v.as_slice())))
+                .unwrap_or_default();
             let _ = writeln!(
                 file,
                 "[{now}] Found MIA: {} | size={:?} crc={} sha1={} md5={}",
-                full_name,
-                size,
-                crc_hex,
-                sha1_hex,
-                md5_hex
+                full_name, size, crc_hex, sha1_hex, md5_hex
             );
             crate::task_reporter::task_log(format!("[MIA] Found: {}", full_name));
         }

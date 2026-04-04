@@ -3,18 +3,22 @@ use std::path::Path as StdPath;
 use crate::name_fix::NameFix;
 
 /// Cross-platform wrapper for path string manipulation.
-/// 
+///
 /// `Path` mimics the static methods of the C# `System.IO.Path` class,
 /// providing standard wrappers for extracting file extensions, names, and directories
 /// from string paths.
-/// 
+///
 /// Differences from C#:
 /// - Internally utilizes Rust's highly robust `std::path::Path` rather than raw string splitting.
 pub struct Path;
 
 impl Path {
     pub fn dir_separator_char() -> char {
-        if cfg!(unix) { '/' } else { '\\' }
+        if cfg!(unix) {
+            '/'
+        } else {
+            '\\'
+        }
     }
 
     pub fn fix_slash(path: &str) -> String {
@@ -65,13 +69,18 @@ impl Path {
             (None, Some(b)) => Some(b),
             (Some(a), Some(b)) => Some(a.max(b)),
         };
-        let Some(i) = use_pos else { return String::new() };
+        let Some(i) = use_pos else {
+            return String::new();
+        };
         path[..i].to_string()
     }
 
     pub fn combine(path1: &str, path2: &str) -> String {
         if cfg!(unix) {
-            return StdPath::new(path1).join(path2).to_string_lossy().into_owned();
+            return StdPath::new(path1)
+                .join(path2)
+                .to_string_lossy()
+                .into_owned();
         }
 
         if path2.is_empty() {

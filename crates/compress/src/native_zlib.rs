@@ -45,7 +45,11 @@ pub fn deflate_raw_best(data: &[u8]) -> Option<Vec<u8>> {
     const Z_BEST_COMPRESSION: c_int = 9;
     const ZLIB_123_VERSION: &[u8] = b"1.2.3\0";
 
-    unsafe extern "C" fn zlib_alloc(_opaque: *mut c_void, items: c_uint, size: c_uint) -> *mut c_void {
+    unsafe extern "C" fn zlib_alloc(
+        _opaque: *mut c_void,
+        items: c_uint,
+        size: c_uint,
+    ) -> *mut c_void {
         unsafe { libc::malloc(items as usize * size as usize) }
     }
 
@@ -85,7 +89,12 @@ pub fn deflate_raw_best(data: &[u8]) -> Option<Vec<u8>> {
             return None;
         }
 
-        let mut output = vec![0u8; data.len().saturating_add(data.len() / 10).saturating_add(64)];
+        let mut output = vec![
+            0u8;
+            data.len()
+                .saturating_add(data.len() / 10)
+                .saturating_add(64)
+        ];
         let mut success = false;
         loop {
             if stream.total_out as usize == output.len() {

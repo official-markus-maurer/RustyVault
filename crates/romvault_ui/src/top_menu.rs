@@ -216,4 +216,3 @@ pub fn draw_top_menu(app: &mut RomVaultApp, ctx: &egui::Context) {
         });
     });
 }
-

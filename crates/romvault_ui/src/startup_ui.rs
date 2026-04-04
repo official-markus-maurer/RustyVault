@@ -13,16 +13,21 @@ pub fn draw_startup(app: &mut RomVaultApp, ctx: &egui::Context) -> bool {
         .resizable(false)
         .title_bar(true)
         .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-        .fixed_pos(egui::pos2(screen.center().x - 180.0, screen.center().y - 100.0))
+        .fixed_pos(egui::pos2(
+            screen.center().x - 180.0,
+            screen.center().y - 100.0,
+        ))
         .show(ctx, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add(egui::Spinner::new().size(24.0));
                 ui.add_space(8.0);
                 ui.label(egui::RichText::new("Loading cache and preparing UI...").strong());
                 ui.add_space(6.0);
-                egui::ScrollArea::vertical().max_height(120.0).show(ui, |ui| {
-                    ui.label(&app.startup_status);
-                });
+                egui::ScrollArea::vertical()
+                    .max_height(120.0)
+                    .show(ui, |ui| {
+                        ui.label(&app.startup_status);
+                    });
             });
         });
 
@@ -65,4 +70,3 @@ pub fn draw_startup(app: &mut RomVaultApp, ctx: &egui::Context) -> bool {
 
     false
 }
-

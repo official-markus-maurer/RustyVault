@@ -4,14 +4,14 @@ use crate::var_fix;
 use roxmltree::{Document, Node};
 
 /// Standard XML DAT parser.
-/// 
+///
 /// `xml_reader.rs` handles standard Logiqx and MAME XML DAT files, converting their
 /// `<header>`, `<game>`, `<rom>`, and `<disk>` tags into the internal `DatNode` AST.
-/// 
+///
 /// Differences from C#:
 /// - C# uses `System.Xml.XmlReader` for stateful, forward-only stream parsing to minimize RAM.
 /// - The Rust version uses `roxmltree`, which parses the entire XML document into an immutable,
-///   in-memory DOM tree in one extremely fast pass, allowing for highly ergonomic node traversal 
+///   in-memory DOM tree in one extremely fast pass, allowing for highly ergonomic node traversal
 ///   at the cost of requiring the entire file buffer to fit into RAM simultaneously.
 pub fn read_xml_dat(xml: &str, filename: &str) -> Result<DatHeader, String> {
     let doc = Document::parse(xml).map_err(|e| format!("Failed to parse XML: {}", e))?;
@@ -128,7 +128,11 @@ fn load_game_from_dat(parent_dir: &mut DatDir, game_node: Node) {
         None => return,
     };
 
-    let file_type = match game_node.attribute("type").map(|s| s.to_lowercase()).as_deref() {
+    let file_type = match game_node
+        .attribute("type")
+        .map(|s| s.to_lowercase())
+        .as_deref()
+    {
         Some("dir") => FileType::Dir,
         Some("zip") => FileType::Zip,
         Some("7z") => FileType::SevenZip,
@@ -227,10 +231,18 @@ fn load_rom_from_dat(parent_dir: &mut DatDir, rom_node: Node) {
         if let Some(size) = rom_node.attribute("size") {
             f.size = var_fix::u64_opt(size);
         }
-        f.crc = rom_node.attribute("crc").and_then(|s| var_fix::clean_md5_sha1(s, 8));
-        f.sha1 = rom_node.attribute("sha1").and_then(|s| var_fix::clean_md5_sha1(s, 40));
-        f.sha256 = rom_node.attribute("sha256").and_then(|s| var_fix::clean_md5_sha1(s, 64));
-        f.md5 = rom_node.attribute("md5").and_then(|s| var_fix::clean_md5_sha1(s, 32));
+        f.crc = rom_node
+            .attribute("crc")
+            .and_then(|s| var_fix::clean_md5_sha1(s, 8));
+        f.sha1 = rom_node
+            .attribute("sha1")
+            .and_then(|s| var_fix::clean_md5_sha1(s, 40));
+        f.sha256 = rom_node
+            .attribute("sha256")
+            .and_then(|s| var_fix::clean_md5_sha1(s, 64));
+        f.md5 = rom_node
+            .attribute("md5")
+            .and_then(|s| var_fix::clean_md5_sha1(s, 32));
         f.merge = rom_node.attribute("merge").map(|s| s.to_string());
         f.status = rom_node.attribute("status").map(var_fix::to_lower);
         f.region = rom_node.attribute("region").map(var_fix::to_lower);
@@ -249,9 +261,15 @@ fn load_disk_from_dat(parent_dir: &mut DatDir, disk_node: Node) {
     let mut d_file = DatNode::new_file(name, FileType::File);
 
     if let Some(f) = d_file.file_mut() {
-        f.sha1 = disk_node.attribute("sha1").and_then(|s| var_fix::clean_md5_sha1(s, 40));
-        f.sha256 = disk_node.attribute("sha256").and_then(|s| var_fix::clean_md5_sha1(s, 64));
-        f.md5 = disk_node.attribute("md5").and_then(|s| var_fix::clean_md5_sha1(s, 32));
+        f.sha1 = disk_node
+            .attribute("sha1")
+            .and_then(|s| var_fix::clean_md5_sha1(s, 40));
+        f.sha256 = disk_node
+            .attribute("sha256")
+            .and_then(|s| var_fix::clean_md5_sha1(s, 64));
+        f.md5 = disk_node
+            .attribute("md5")
+            .and_then(|s| var_fix::clean_md5_sha1(s, 32));
         f.merge = disk_node.attribute("merge").map(var_fix::clean_chd);
         f.status = disk_node.attribute("status").map(var_fix::to_lower);
         f.mia = disk_node.attribute("mia").map(|s| s.to_string());

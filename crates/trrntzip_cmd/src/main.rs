@@ -5,13 +5,13 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use compress::structured_archive::ZipStructure;
-use trrntzip::torrent_zip::TorrentZip;
 use rv_io::directory::Directory;
 use rv_io::directory_info::DirectoryInfo;
+use trrntzip::torrent_zip::TorrentZip;
 
 /// CLI tool for verifying and rebuilding `.zip` files into `TorrentZip` format.
-/// 
-/// `trrntzip_cmd` mirrors the exact command-line arguments and capabilities of the C# 
+///
+/// `trrntzip_cmd` mirrors the exact command-line arguments and capabilities of the C#
 /// `TrrntZip.Net` utility, allowing users to normalize archive file metadata (like timestamps
 /// and file ordering) so their CRCs are deterministic across all computers.
 fn main() {
@@ -119,14 +119,20 @@ fn main() {
         }
 
         let path = Path::new(&target);
-        let mut dir = path.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+        let mut dir = path
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
         if dir.is_empty() {
             dir = env::current_dir()
                 .ok()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default();
         }
-        let pattern = path.file_name().map(|p| p.to_string_lossy().to_string()).unwrap_or(target.clone());
+        let pattern = path
+            .file_name()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or(target.clone());
         let dir_info = DirectoryInfo::new(&dir);
         let files = dir_info.get_files(&pattern);
         for file in files {
@@ -145,7 +151,9 @@ fn main() {
         }
     }
 
-    if let Some(f) = log_file.as_mut() { let _ = f.flush(); }
+    if let Some(f) = log_file.as_mut() {
+        let _ = f.flush();
+    }
 
     if gui_launch {
         println!("Complete. Press Enter to exit.");
@@ -155,7 +163,9 @@ fn main() {
 }
 
 fn log_line(file: &mut Option<File>, line: &str) {
-    if let Some(f) = file.as_mut() { let _ = writeln!(f, "{}", line); }
+    if let Some(f) = file.as_mut() {
+        let _ = writeln!(f, "{}", line);
+    }
 }
 
 fn process_dir(dir_name: &str, tz: &TorrentZip, no_recursion: bool, log_file: &mut Option<File>) {

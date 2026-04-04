@@ -8,7 +8,11 @@ pub fn draw_dir_settings(app: &mut RomVaultApp, ctx: &egui::Context) {
     }
 
     let mut close_dir_settings = false;
-    let default_height = if app.dir_settings_compact { 360.0 } else { 650.0 };
+    let default_height = if app.dir_settings_compact {
+        360.0
+    } else {
+        650.0
+    };
     egui::Window::new("Directory Settings")
         .open(&mut app.show_dir_settings)
         .default_width(450.0)
@@ -484,4 +488,3 @@ pub fn draw_dir_settings(app: &mut RomVaultApp, ctx: &egui::Context) {
         app.show_dir_settings = false;
     }
 }
-

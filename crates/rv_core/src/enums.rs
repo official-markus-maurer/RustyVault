@@ -1,12 +1,14 @@
 /// Core status enums for the file tree nodes.
-/// 
-/// `enums.rs` contains the exact 1:1 mapping of the C# `RepStatus`, `ReportStatus`, 
+///
+/// `enums.rs` contains the exact 1:1 mapping of the C# `RepStatus`, `ReportStatus`,
 /// and `ToSortDirType` enums. These dictate the fundamental state machine of RomVault.
-/// 
+///
 /// Differences from C#:
-/// - `ToSortDirType` in C# is a standard bit-flag enum. In Rust, we utilize the `bitflags` 
+/// - `ToSortDirType` in C# is a standard bit-flag enum. In Rust, we utilize the `bitflags`
 ///   crate to ensure type-safe bitwise operations (`|`, `&`) without raw integer casting.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum RepStatus {
     // Scanning Status:
     /// Error state
@@ -79,11 +81,13 @@ pub enum RepStatus {
     Incomplete,
 
     /// Marker for enum boundary
-    EndValue
+    EndValue,
 }
 
 /// Aggregated repair status used for UI rendering and tree summarization.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum ReportStatus {
     /// Status not yet computed
     Unknown,

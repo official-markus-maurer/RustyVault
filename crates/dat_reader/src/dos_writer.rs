@@ -62,7 +62,12 @@ impl DatDosWriter {
         Ok(())
     }
 
-    fn write_file<W: Write>(writer: &mut W, node: &DatNode, file: &DatFile, indent: usize) -> io::Result<()> {
+    fn write_file<W: Write>(
+        writer: &mut W,
+        node: &DatNode,
+        file: &DatFile,
+        indent: usize,
+    ) -> io::Result<()> {
         write!(writer, "{}file (", "\t".repeat(indent))?;
         write!(writer, " name {}", node.name)?;
         if let Some(size) = file.size {
@@ -84,4 +89,3 @@ impl DatDosWriter {
         Ok(())
     }
 }
-

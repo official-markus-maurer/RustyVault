@@ -1,10 +1,9 @@
 use std::io::{Read, Write};
 
 pub fn write_byte_array<W: Write>(w: &mut W, b: &[u8]) -> std::io::Result<()> {
-    let len: u8 = b
-        .len()
-        .try_into()
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "byte array too long"))?;
+    let len: u8 = b.len().try_into().map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "byte array too long")
+    })?;
     w.write_all(&[len])?;
     w.write_all(b)?;
     Ok(())
@@ -67,7 +66,9 @@ pub fn i_compare(b1: Option<&[u8]>, b2: Option<&[u8]>) -> i32 {
 }
 
 pub fn to_hex_string(b: Option<&[u8]>) -> String {
-    let Some(b) = b else { return String::new(); };
+    let Some(b) = b else {
+        return String::new();
+    };
     let mut out = String::with_capacity(b.len() * 2);
     for v in b {
         out.push_str(&format!("{:02x}", v));

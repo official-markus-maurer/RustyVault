@@ -32,7 +32,9 @@ impl super::Fix {
                 | ZipStructure::SevenZipSLZMA
                 | ZipStructure::SevenZipNLZMA
                 | ZipStructure::SevenZipSZSTD
-                | ZipStructure::SevenZipNZSTD => TorrentZipCheck::trrnt_7zip_string_compare(&zf_a, &zf_b),
+                | ZipStructure::SevenZipNZSTD => {
+                    TorrentZipCheck::trrnt_7zip_string_compare(&zf_a, &zf_b)
+                }
                 _ => TorrentZipCheck::trrnt_zip_string_compare(&zf_a, &zf_b),
             };
 
@@ -40,4 +42,3 @@ impl super::Fix {
         });
     }
 }
-

@@ -20,4 +20,3 @@ impl FileStream {
         fs::File::create(NameFix::add_long_path_prefix(path))
     }
 }
-

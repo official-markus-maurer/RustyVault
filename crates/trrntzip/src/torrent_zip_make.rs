@@ -2,11 +2,11 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use compress::deflate_raw_best;
-use compress::structured_archive::ZipStructure;
 use crate::process_control::ProcessControl;
 use crate::torrent_zip_check::TorrentZipCheck;
 use crate::trrntzip_status::TrrntZipStatus;
+use compress::deflate_raw_best;
+use compress::structured_archive::ZipStructure;
 use crc32fast::Hasher as Crc32Hasher;
 
 pub struct TorrentZipMake;
@@ -104,10 +104,18 @@ impl TorrentZipMake {
                         stack.push(p);
                     } else if p.is_file() {
                         saw_file = true;
-                        let rel = p.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
+                        let rel = p
+                            .strip_prefix(root)
+                            .unwrap()
+                            .to_string_lossy()
+                            .replace('\\', "/");
                         files.push(rel);
                         if let Some(parent) = p.parent() {
-                            let mut dir_rel = parent.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
+                            let mut dir_rel = parent
+                                .strip_prefix(root)
+                                .unwrap()
+                                .to_string_lossy()
+                                .replace('\\', "/");
                             if !dir_rel.is_empty() && !dir_rel.ends_with('/') {
                                 dir_rel.push('/');
                             }
@@ -117,7 +125,11 @@ impl TorrentZipMake {
                         }
                     }
                 }
-                let mut dir_rel = path.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
+                let mut dir_rel = path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
                 if !dir_rel.is_empty() && !dir_rel.ends_with('/') {
                     dir_rel.push('/');
                 }
@@ -128,18 +140,62 @@ impl TorrentZipMake {
             }
         }
 
-        files.sort_by(|a, b| TorrentZipCheck::trrnt_zip_string_compare(&crate::zipped_file::ZippedFile { index: 0, name: a.clone(), size: 0, crc: None, sha1: None, is_dir: false }, &crate::zipped_file::ZippedFile { index: 0, name: b.clone(), size: 0, crc: None, sha1: None, is_dir: false }).cmp(&0));
+        files.sort_by(|a, b| {
+            TorrentZipCheck::trrnt_zip_string_compare(
+                &crate::zipped_file::ZippedFile {
+                    index: 0,
+                    name: a.clone(),
+                    size: 0,
+                    crc: None,
+                    sha1: None,
+                    is_dir: false,
+                },
+                &crate::zipped_file::ZippedFile {
+                    index: 0,
+                    name: b.clone(),
+                    size: 0,
+                    crc: None,
+                    sha1: None,
+                    is_dir: false,
+                },
+            )
+            .cmp(&0)
+        });
 
         let mut dir_markers: Vec<String> = all_dirs
             .into_iter()
             .filter(|d| !dirs_with_files.contains(d))
             .collect();
-        dir_markers.sort_by(|a, b| TorrentZipCheck::trrnt_zip_string_compare(&crate::zipped_file::ZippedFile { index: 0, name: a.clone(), size: 0, crc: None, sha1: None, is_dir: true }, &crate::zipped_file::ZippedFile { index: 0, name: b.clone(), size: 0, crc: None, sha1: None, is_dir: true }).cmp(&0));
+        dir_markers.sort_by(|a, b| {
+            TorrentZipCheck::trrnt_zip_string_compare(
+                &crate::zipped_file::ZippedFile {
+                    index: 0,
+                    name: a.clone(),
+                    size: 0,
+                    crc: None,
+                    sha1: None,
+                    is_dir: true,
+                },
+                &crate::zipped_file::ZippedFile {
+                    index: 0,
+                    name: b.clone(),
+                    size: 0,
+                    crc: None,
+                    sha1: None,
+                    is_dir: true,
+                },
+            )
+            .cmp(&0)
+        });
 
         (files, dir_markers)
     }
 
-    pub fn zip_directory_with_control(dir: &str, output_type: ZipStructure, control: Option<&ProcessControl>) -> TrrntZipStatus {
+    pub fn zip_directory_with_control(
+        dir: &str,
+        output_type: ZipStructure,
+        control: Option<&ProcessControl>,
+    ) -> TrrntZipStatus {
         let path = Path::new(dir);
         if !path.exists() || !path.is_dir() {
             return TrrntZipStatus::CATCH_ERROR;
@@ -158,7 +214,11 @@ impl TorrentZipMake {
         let mut entries = Vec::with_capacity(files.len() + dirs.len());
 
         for d in dirs {
-            let name = if d.ends_with('/') { d } else { format!("{}/", d) };
+            let name = if d.ends_with('/') {
+                d
+            } else {
+                format!("{}/", d)
+            };
             entries.push(RawZipEntry {
                 flags: Self::flags_for(&name),
                 name,
@@ -243,7 +303,11 @@ mod tests {
         let mut f2 = fs::File::create(root.join("sub").join("b.bin")).unwrap();
         f2.write_all(b"bbbbbbbb").unwrap();
 
-        let status = TorrentZipMake::zip_directory_with_control(root.to_string_lossy().as_ref(), ZipStructure::ZipTrrnt, None);
+        let status = TorrentZipMake::zip_directory_with_control(
+            root.to_string_lossy().as_ref(),
+            ZipStructure::ZipTrrnt,
+            None,
+        );
         assert_eq!(status, TrrntZipStatus::VALID_TRRNTZIP);
 
         let zip_path = tmp.path().join("dir.zip");

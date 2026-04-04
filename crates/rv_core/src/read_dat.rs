@@ -1,25 +1,25 @@
+use crate::rv_dat::{DatData, RvDat};
+use crate::rv_file::{FileStatus, RvFile};
+use crate::rv_game::RvGame;
+use dat_reader::dat_store::{DatHeader, DatNode};
+use dat_reader::enums::DatStatus;
+use dat_reader::enums::{FileType, HeaderFileType};
+use dat_reader::read_dat;
+use rayon::prelude::*;
+use std::cell::RefCell;
 use std::fs;
 use std::path::Path;
 use std::rc::Rc;
-use std::cell::RefCell;
-use crate::rv_file::{FileStatus, RvFile};
-use dat_reader::read_dat;
-use dat_reader::enums::{FileType, HeaderFileType};
-use crate::rv_dat::{RvDat, DatData};
-use dat_reader::dat_store::{DatHeader, DatNode};
-use crate::rv_game::RvGame;
-use dat_reader::enums::DatStatus;
-use rayon::prelude::*;
 
 /// Central engine for reading DAT files and integrating them into the `DB` tree.
-/// 
+///
 /// `DatUpdate` reads the physical `.dat` / `.xml` files residing in the `DatRoot` folder,
 /// parses them using `dat_reader`, and translates the resulting `DatNode` hierarchies into
 /// `RvFile` nodes within the `dir_root` DB tree.
-/// 
+///
 /// Differences from C#:
 /// - The C# implementation uses background workers for XML parsing but integrates into the UI thread synchronously.
-/// - The Rust version implements highly scalable parallelization via `rayon`. It first reads and parses 
+/// - The Rust version implements highly scalable parallelization via `rayon`. It first reads and parses
 ///   ALL `.dat` files simultaneously in parallel (since XML/CMP parsing is CPU bound and independent).
 ///   It then sequentially integrates the parsed ASTs into the `Rc<RefCell<RvFile>>` tree, dramatically
 ///   reducing the "Update DATs" time for large `DatRoot` setups.
@@ -163,7 +163,9 @@ impl DatUpdate {
             new_rv.zip_struct = existing.zip_struct;
         }
         new_rv.file_status.remove(Self::PRESERVED_PHYSICAL_FLAGS);
-        new_rv.file_status.insert(existing.file_status & Self::PRESERVED_PHYSICAL_FLAGS);
+        new_rv
+            .file_status
+            .insert(existing.file_status & Self::PRESERVED_PHYSICAL_FLAGS);
 
         if existing.file_status_is(FileStatus::HEADER_FILE_TYPE_FROM_HEADER) {
             let required = new_rv.header_file_type & HeaderFileType::REQUIRED;
@@ -171,7 +173,9 @@ impl DatUpdate {
         }
     }
 
-    fn preserve_unmatched_existing_subtree(node_rc: Rc<RefCell<RvFile>>) -> Option<Rc<RefCell<RvFile>>> {
+    fn preserve_unmatched_existing_subtree(
+        node_rc: Rc<RefCell<RvFile>>,
+    ) -> Option<Rc<RefCell<RvFile>>> {
         let children = {
             let mut node = node_rc.borrow_mut();
             std::mem::take(&mut node.children)
@@ -221,7 +225,7 @@ impl DatUpdate {
     /// Recursively scans `dat_dir_path`, parses all found DATs in parallel, and merges them into `root`.
     pub fn update_dat(root: Rc<RefCell<RvFile>>, dat_dir_path: &str) {
         println!("Scanning for DATs in {}...", dat_dir_path);
-        
+
         let mut dats_found = Vec::new();
         Self::scan_dat_dir(dat_dir_path, &mut dats_found);
 
@@ -239,14 +243,30 @@ impl DatUpdate {
         if let Some(rv_dir) = romvault_dir {
             // Use Rayon to read and parse the DAT files in parallel!
             // Parsing the XML/CMP is entirely CPU bound and independent of the DB state.
-            let parsed_results: Vec<(String, String, Result<dat_reader::dat_store::DatHeader, String>)> = dats_found
+            let parsed_results: Vec<(
+                String,
+                String,
+                Result<dat_reader::dat_store::DatHeader, String>,
+            )> = dats_found
                 .into_par_iter()
                 .map(|(dat_path, virtual_dir)| {
                     if let Ok(buffer) = fs::read(&dat_path) {
-                        let file_name = Path::new(&dat_path).file_name().unwrap_or_default().to_string_lossy().into_owned();
-                        (dat_path.clone(), virtual_dir.clone(), read_dat(&buffer, &file_name))
+                        let file_name = Path::new(&dat_path)
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .into_owned();
+                        (
+                            dat_path.clone(),
+                            virtual_dir.clone(),
+                            read_dat(&buffer, &file_name),
+                        )
                     } else {
-                        (dat_path.clone(), virtual_dir.clone(), Err("Could not read file from disk".to_string()))
+                        (
+                            dat_path.clone(),
+                            virtual_dir.clone(),
+                            Err("Could not read file from disk".to_string()),
+                        )
                     }
                 })
                 .collect();
@@ -258,11 +278,11 @@ impl DatUpdate {
                 match parse_result {
                     Ok(dat_header) => {
                         println!("Successfully parsed DAT: {:?}", dat_header.name);
-                        
+
                         // 1. Create a new RvDat entry
-        // 2. Find or create the directory for this DAT in RustyVault
+                        // 2. Find or create the directory for this DAT in RustyVault
                         let mut current_parent = Rc::clone(&rv_dir);
-                        
+
                         // First, traverse the physical directory path from DatRoot
                         if !virtual_dir.is_empty() {
                             // Split virtual_dir by both separators to be safe
@@ -275,7 +295,8 @@ impl DatUpdate {
                                 {
                                     let mut cp_mut = current_parent.borrow_mut();
                                     cp_mut.cached_stats = None;
-                                    let (res, index) = cp_mut.child_name_search(FileType::Dir, part);
+                                    let (res, index) =
+                                        cp_mut.child_name_search(FileType::Dir, part);
                                     if res == 0 && index < cp_mut.children.len() {
                                         found = Some(Rc::clone(&cp_mut.children[index]));
                                     }
@@ -283,10 +304,14 @@ impl DatUpdate {
                                         let mut new_dir = RvFile::new(FileType::Dir);
                                         new_dir.name = part.to_string();
                                         // Virtual directories for organizing DATs should not be removed if they are missing on disk
-                                        new_dir.set_dat_got_status(dat_reader::enums::DatStatus::InDatCollect, dat_reader::enums::GotStatus::NotGot);
+                                        new_dir.set_dat_got_status(
+                                            dat_reader::enums::DatStatus::InDatCollect,
+                                            dat_reader::enums::GotStatus::NotGot,
+                                        );
                                         new_dir.rep_status_reset();
                                         let d_rc = Rc::new(RefCell::new(new_dir));
-                                        d_rc.borrow_mut().parent = Some(Rc::downgrade(&current_parent));
+                                        d_rc.borrow_mut().parent =
+                                            Some(Rc::downgrade(&current_parent));
                                         cp_mut.child_add(Rc::clone(&d_rc));
                                         found = Some(d_rc);
                                     }
@@ -296,19 +321,22 @@ impl DatUpdate {
                         }
 
                         // Now handle the actual DAT name directory
-                        let dir_name = dat_header.name.clone().unwrap_or_else(|| "Unknown_DAT".to_string());
-                        
+                        let dir_name = dat_header
+                            .name
+                            .clone()
+                            .unwrap_or_else(|| "Unknown_DAT".to_string());
+
                         let mut rv_dir_mut = current_parent.borrow_mut();
-                        
+
                         // Invalidate the cache of the parent
                         rv_dir_mut.cached_stats = None;
                         let mut target_dir = None;
-                        
+
                         let (res, index) = rv_dir_mut.child_name_search(FileType::Dir, &dir_name);
                         if res == 0 && index < rv_dir_mut.children.len() {
                             target_dir = Some(Rc::clone(&rv_dir_mut.children[index]));
                         }
-                        
+
                         let (target_dir, existing_children) = match target_dir {
                             Some(d) => {
                                 let existing_children = {
@@ -317,11 +345,14 @@ impl DatUpdate {
                                     std::mem::take(&mut existing.children)
                                 };
                                 (d, existing_children)
-                            },
+                            }
                             None => {
                                 let mut new_dir = RvFile::new(FileType::Dir);
                                 new_dir.name = dir_name;
-                                new_dir.set_dat_got_status(dat_reader::enums::DatStatus::InDatCollect, dat_reader::enums::GotStatus::NotGot);
+                                new_dir.set_dat_got_status(
+                                    dat_reader::enums::DatStatus::InDatCollect,
+                                    dat_reader::enums::GotStatus::NotGot,
+                                );
                                 new_dir.rep_status_reset();
                                 let d_rc = Rc::new(RefCell::new(new_dir));
                                 d_rc.borrow_mut().parent = Some(Rc::downgrade(&current_parent));
@@ -332,14 +363,19 @@ impl DatUpdate {
 
                         let rv_dat_rc = {
                             let existing = target_dir.borrow().dir_dats.first().cloned();
-                            let dat_rc = existing.unwrap_or_else(|| Rc::new(RefCell::new(RvDat::new())));
+                            let dat_rc =
+                                existing.unwrap_or_else(|| Rc::new(RefCell::new(RvDat::new())));
                             {
                                 let mut dat_mut = dat_rc.borrow_mut();
-                                Self::populate_rv_dat_from_header(&mut dat_mut, &dat_header, &dat_path);
+                                Self::populate_rv_dat_from_header(
+                                    &mut dat_mut,
+                                    &dat_header,
+                                    &dat_path,
+                                );
                             }
                             dat_rc
                         };
-                        
+
                         // 3. Attach the parsed dat data into the tree and map recursively
                         {
                             let mut td = target_dir.borrow_mut();
@@ -347,7 +383,7 @@ impl DatUpdate {
                             td.dir_dats.clear();
                             td.dir_dats.push(Rc::clone(&rv_dat_rc));
                         }
-                        
+
                         // Recursive mapping
                         let mut existing_children = existing_children;
                         for dat_child in &dat_header.base_dir.children {
@@ -359,12 +395,14 @@ impl DatUpdate {
                             );
                         }
                         for leftover in existing_children {
-                            if let Some(preserved) = Self::preserve_unmatched_existing_subtree(leftover) {
+                            if let Some(preserved) =
+                                Self::preserve_unmatched_existing_subtree(leftover)
+                            {
                                 preserved.borrow_mut().parent = Some(Rc::downgrade(&target_dir));
                                 target_dir.borrow_mut().child_add(preserved);
                             }
                         }
-                    },
+                    }
                     Err(e) => {
                         println!("Error reading DAT {}: {}", dat_path, e);
                     }
@@ -435,14 +473,17 @@ impl DatUpdate {
                 fix = false;
             }
             new_rv.set_zip_dat_struct(desired, fix);
-            
+
             // Initially a DAT dir/game is completely "Missing"
-            new_rv.set_dat_got_status(dat_reader::enums::DatStatus::InDatCollect, new_rv.got_status());
+            new_rv.set_dat_got_status(
+                dat_reader::enums::DatStatus::InDatCollect,
+                new_rv.got_status(),
+            );
             if let Some(existing) = &existing_match {
                 Self::preserve_existing_physical_state(&mut new_rv, &existing.borrow());
             }
             new_rv.rep_status_reset();
-            
+
             if let Some(ref d_game) = d_dir.d_game {
                 new_rv.game = Some(Rc::new(RefCell::new(RvGame::from_dat_game(d_game))));
             }
@@ -457,7 +498,12 @@ impl DatUpdate {
                 Vec::new()
             };
             for child in &d_dir.children {
-                Self::map_dat_node_to_rv_file(Rc::clone(&new_rc), child, Rc::clone(&dat_rc), &mut old_children);
+                Self::map_dat_node_to_rv_file(
+                    Rc::clone(&new_rc),
+                    child,
+                    Rc::clone(&dat_rc),
+                    &mut old_children,
+                );
             }
             for leftover in old_children {
                 if let Some(preserved) = Self::preserve_unmatched_existing_subtree(leftover) {
@@ -487,7 +533,7 @@ impl DatUpdate {
             if new_rv.sha256.is_some() {
                 new_rv.file_status_set(FileStatus::SHA256_FROM_DAT);
             }
-            
+
             if let Some(ref m) = d_file.merge {
                 new_rv.merge = m.clone();
             }
@@ -505,7 +551,10 @@ impl DatUpdate {
             }
 
             // Initially a DAT file is completely "Missing" because we haven't scanned
-            new_rv.set_dat_got_status(dat_reader::enums::DatStatus::InDatCollect, new_rv.got_status());
+            new_rv.set_dat_got_status(
+                dat_reader::enums::DatStatus::InDatCollect,
+                new_rv.got_status(),
+            );
             new_rv.rep_status_reset();
 
             let new_rc = Rc::new(RefCell::new(new_rv));
@@ -517,17 +566,26 @@ impl DatUpdate {
     fn scan_dat_dir(path: &str, dats_found: &mut Vec<(String, String)>) {
         let scan_path = Path::new(path);
         let dat_root = crate::settings::get_settings().dat_root;
-        let dat_root_path = Path::new(if dat_root.is_empty() { "DatRoot" } else { &dat_root });
-        let base_path = if crate::settings::strip_physical_prefix(scan_path, dat_root_path).is_some() {
-            dat_root_path
+        let dat_root_path = Path::new(if dat_root.is_empty() {
+            "DatRoot"
         } else {
-            scan_path
-        };
+            &dat_root
+        });
+        let base_path =
+            if crate::settings::strip_physical_prefix(scan_path, dat_root_path).is_some() {
+                dat_root_path
+            } else {
+                scan_path
+            };
 
         Self::recursive_scan(base_path, scan_path, dats_found);
     }
 
-    fn recursive_scan(base_path: &Path, current_path: &Path, dats_found: &mut Vec<(String, String)>) {
+    fn recursive_scan(
+        base_path: &Path,
+        current_path: &Path,
+        dats_found: &mut Vec<(String, String)>,
+    ) {
         if let Ok(entries) = fs::read_dir(current_path) {
             for entry in entries.filter_map(Result::ok) {
                 let path = entry.path();
@@ -561,14 +619,20 @@ impl DatUpdate {
         }
 
         for dat in &db_dir.dir_dats {
-            let dat_full_name = dat.borrow().get_data(crate::rv_dat::DatData::DatRootFullName).unwrap_or_default();
+            let dat_full_name = dat
+                .borrow()
+                .get_data(crate::rv_dat::DatData::DatRootFullName)
+                .unwrap_or_default();
             if Self::dat_path_matches_filter(&dat_full_name, dat_path) {
                 dat.borrow_mut().time_stamp = i64::MAX;
             }
         }
 
         if let Some(dat) = &db_dir.dat {
-            let dat_full_name = dat.borrow().get_data(crate::rv_dat::DatData::DatRootFullName).unwrap_or_default();
+            let dat_full_name = dat
+                .borrow()
+                .get_data(crate::rv_dat::DatData::DatRootFullName)
+                .unwrap_or_default();
             if Self::dat_path_matches_filter(&dat_full_name, dat_path) {
                 dat.borrow_mut().time_stamp = i64::MAX;
             }

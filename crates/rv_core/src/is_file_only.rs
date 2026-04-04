@@ -44,8 +44,7 @@ pub fn is_file_only(in_file: Rc<RefCell<RvFile>>) -> bool {
             break;
         }
         for d in &b.dir_dats {
-            if d
-                .borrow()
+            if d.borrow()
                 .get_data(DatData::Compression)
                 .is_some_and(|v| v.eq_ignore_ascii_case("fileonly"))
             {
@@ -87,4 +86,3 @@ mod tests {
         assert!(!is_file_only(rc));
     }
 }
-

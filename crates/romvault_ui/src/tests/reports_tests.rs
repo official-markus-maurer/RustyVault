@@ -1,11 +1,11 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use dat_reader::enums::FileType;
 use rv_core::enums::RepStatus;
 use rv_core::rv_dat::{DatData, RvDat};
 use rv_core::rv_file::RvFile;
 use rv_core::rv_game::RvGame;
-use dat_reader::enums::FileType;
 
 use crate::reports::write_fix_report;
 use crate::reports::write_full_report;
@@ -15,7 +15,10 @@ fn test_write_fix_report_includes_dat_name_and_fix_rows() {
     let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
 
     let mut dat = RvDat::new();
-    dat.set_data(DatData::DatRootFullName, Some("DatRoot\\TestDat".to_string()));
+    dat.set_data(
+        DatData::DatRootFullName,
+        Some("DatRoot\\TestDat".to_string()),
+    );
     let dat_rc = Rc::new(RefCell::new(dat));
 
     let game_rc = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
@@ -56,7 +59,10 @@ fn test_write_full_report_emits_expected_sections() {
     let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
 
     let mut dat = RvDat::new();
-    dat.set_data(DatData::DatRootFullName, Some("DatRoot\\TestDat".to_string()));
+    dat.set_data(
+        DatData::DatRootFullName,
+        Some("DatRoot\\TestDat".to_string()),
+    );
     let dat_rc = Rc::new(RefCell::new(dat));
 
     let game_rc = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));

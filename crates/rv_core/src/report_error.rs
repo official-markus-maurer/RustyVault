@@ -15,4 +15,3 @@ pub fn open_update_log_file() -> Option<File> {
         .open(update_log_path())
         .ok()
 }
-

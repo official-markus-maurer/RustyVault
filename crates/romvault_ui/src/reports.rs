@@ -78,7 +78,9 @@ fn crc_hex(node: &RvFile) -> String {
     }
 }
 
-fn collect_fix_entries_by_dat(root: Rc<RefCell<RvFile>>) -> Vec<(Rc<RefCell<RvDat>>, Vec<FixEntry>)> {
+fn collect_fix_entries_by_dat(
+    root: Rc<RefCell<RvFile>>,
+) -> Vec<(Rc<RefCell<RvDat>>, Vec<FixEntry>)> {
     let mut seen_dats: HashMap<*const RefCell<RvDat>, Rc<RefCell<RvDat>>> = HashMap::new();
     let mut groups: HashMap<*const RefCell<RvDat>, Vec<FixEntry>> = HashMap::new();
 
@@ -99,7 +101,9 @@ fn collect_fix_entries_by_dat(root: Rc<RefCell<RvFile>>) -> Vec<(Rc<RefCell<RvDa
 
         if let Some(dat_rc) = dat_opt {
             let dat_ptr = Rc::as_ptr(&dat_rc);
-            seen_dats.entry(dat_ptr).or_insert_with(|| Rc::clone(&dat_rc));
+            seen_dats
+                .entry(dat_ptr)
+                .or_insert_with(|| Rc::clone(&dat_rc));
 
             if is_file && game.is_none() && is_fixing(rep_status) {
                 groups.entry(dat_ptr).or_default().push(FixEntry {
@@ -158,11 +162,7 @@ pub(crate) fn write_fix_report(path: &str, root: Rc<RefCell<RvFile>>) -> std::io
         let mut max_status = 0usize;
         for e in &entries {
             max_path = max_path.max(e.file_name.len());
-            max_size = max_size.max(
-                e.size
-                    .map(|v| v.to_string().len())
-                    .unwrap_or(0),
-            );
+            max_size = max_size.max(e.size.map(|v| v.to_string().len()).unwrap_or(0));
             max_status = max_status.max(format!("{:?}", e.rep_status).len());
         }
 
@@ -215,7 +215,10 @@ fn is_partial(rep_status: RepStatus) -> bool {
     )
 }
 
-fn classify_dat(root: Rc<RefCell<RvFile>>, dat_rc: Rc<RefCell<RvDat>>) -> (i32, i32, i32, Vec<FixEntry>) {
+fn classify_dat(
+    root: Rc<RefCell<RvFile>>,
+    dat_rc: Rc<RefCell<RvDat>>,
+) -> (i32, i32, i32, Vec<FixEntry>) {
     let dat_ptr = Rc::as_ptr(&dat_rc);
     let mut correct = 0i32;
     let mut missing = 0i32;
@@ -242,10 +245,13 @@ fn classify_dat(root: Rc<RefCell<RvFile>>, dat_rc: Rc<RefCell<RvDat>>) -> (i32, 
                 match rep_status {
                     RepStatus::Correct | RepStatus::DirCorrect => correct += 1,
                     RepStatus::CorrectMIA => correct += 1,
-                    RepStatus::Missing | RepStatus::MissingMIA | RepStatus::Corrupt | RepStatus::Incomplete => {
+                    RepStatus::Missing
+                    | RepStatus::MissingMIA
+                    | RepStatus::Corrupt
+                    | RepStatus::Incomplete => missing += 1,
+                    RepStatus::UnScanned | RepStatus::Unknown | RepStatus::DirUnknown => {
                         missing += 1
                     }
-                    RepStatus::UnScanned | RepStatus::Unknown | RepStatus::DirUnknown => missing += 1,
                     RepStatus::CanBeFixed
                     | RepStatus::CanBeFixedMIA
                     | RepStatus::CorruptCanBeFixed
@@ -298,7 +304,9 @@ pub(crate) fn write_full_report(path: &str, root: Rc<RefCell<RvFile>>) -> std::i
             (n.children.clone(), n.dat.clone())
         };
         if let Some(dat_rc) = dat_opt {
-            seen_dats.entry(Rc::as_ptr(&dat_rc)).or_insert_with(|| Rc::clone(&dat_rc));
+            seen_dats
+                .entry(Rc::as_ptr(&dat_rc))
+                .or_insert_with(|| Rc::clone(&dat_rc));
         }
         for child in children {
             stack.push(child);
@@ -313,7 +321,8 @@ pub(crate) fn write_full_report(path: &str, root: Rc<RefCell<RvFile>>) -> std::i
     let mut partial = Vec::new();
 
     for dat_rc in dats {
-        let (correct, missing, fixes_needed, partial_entries) = classify_dat(Rc::clone(&root), Rc::clone(&dat_rc));
+        let (correct, missing, fixes_needed, partial_entries) =
+            classify_dat(Rc::clone(&root), Rc::clone(&dat_rc));
         let dat_name = dat_display_name(&dat_rc.borrow());
         if correct > 0 && missing == 0 && fixes_needed == 0 {
             complete.push(dat_name);

@@ -38,7 +38,10 @@ fn detects_torrent7z_trailer() {
     const BUFFER_SIZE: usize = 256 + 8 + T7Z_FOOTER_SIZE;
 
     let mut original = Vec::new();
-    fs::File::open(&base_path).unwrap().read_to_end(&mut original).unwrap();
+    fs::File::open(&base_path)
+        .unwrap()
+        .read_to_end(&mut original)
+        .unwrap();
     let footer_offset = original.len() as u64;
 
     let sig_header: Vec<u8> =

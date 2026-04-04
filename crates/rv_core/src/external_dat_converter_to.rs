@@ -1,23 +1,23 @@
-use std::rc::Rc;
-use std::cell::RefCell;
-use crate::rv_file::RvFile;
-use crate::rv_dat::DatData;
-use crate::rv_game::GameData;
-use dat_reader::dat_store::{DatHeader, DatDir, DatNode, DatGame};
-use dat_reader::enums::{FileType, HeaderFileType, DatStatus};
 use crate::enums::RepStatus;
+use crate::rv_dat::DatData;
+use crate::rv_file::RvFile;
+use crate::rv_game::GameData;
+use dat_reader::dat_store::{DatDir, DatGame, DatHeader, DatNode};
+use dat_reader::enums::{DatStatus, FileType, HeaderFileType};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// Logic for translating the internal DB tree back into external standard DAT structures.
-/// 
+///
 /// `ExternalDatConverterTo` recursively walks a given `RvFile` tree branch and generates
-/// a `dat_reader::DatHeader` AST representation of it. This is used by the UI's "Export DAT" 
+/// a `dat_reader::DatHeader` AST representation of it. This is used by the UI's "Export DAT"
 /// functionality, as well as the underlying `FixDatReport` system.
-/// 
+///
 /// Differences from C#:
 /// - The C# implementation contains highly complex flattening rules (`DatClean.ArchiveDirectoryFlattern`)
 ///   to strip empty folders from the exported DAT.
-/// - The Rust version is a more literal 1:1 translation, directly mapping the internal `RvFile` 
-///   children to external `DatDir` and `DatGame` nodes based on the applied boolean filters 
+/// - The Rust version is a more literal 1:1 translation, directly mapping the internal `RvFile`
+///   children to external `DatDir` and `DatGame` nodes based on the applied boolean filters
 ///   (`filter_got`, `filter_missing`, etc).
 pub struct ExternalDatConverterTo {
     /// Include the XML header block.
@@ -137,22 +137,34 @@ impl ExternalDatConverterTo {
             }
 
             match rv_file.rep_status() {
-                RepStatus::Correct | RepStatus::CorrectMIA | 
-                RepStatus::Unknown | RepStatus::UnScanned => {
-                    if !self.filter_got { return; }
-                },
+                RepStatus::Correct
+                | RepStatus::CorrectMIA
+                | RepStatus::Unknown
+                | RepStatus::UnScanned => {
+                    if !self.filter_got {
+                        return;
+                    }
+                }
                 RepStatus::Missing | RepStatus::Corrupt | RepStatus::Incomplete => {
-                    if !self.filter_missing { return; }
-                },
+                    if !self.filter_missing {
+                        return;
+                    }
+                }
                 RepStatus::MissingMIA => {
-                    if !self.filter_mia { return; }
-                },
+                    if !self.filter_mia {
+                        return;
+                    }
+                }
                 RepStatus::NotCollected => {
-                    if !self.filter_merged { return; }
-                },
+                    if !self.filter_merged {
+                        return;
+                    }
+                }
                 RepStatus::UnNeeded => {
-                    if !self.filter_merged && !self.filter_fixable { return; }
-                },
+                    if !self.filter_merged && !self.filter_fixable {
+                        return;
+                    }
+                }
                 RepStatus::CanBeFixed
                 | RepStatus::CanBeFixedMIA
                 | RepStatus::CorruptCanBeFixed
@@ -164,8 +176,10 @@ impl ExternalDatConverterTo {
                 | RepStatus::Deleted
                 | RepStatus::NeededForFix
                 | RepStatus::Rename => {
-                    if !self.filter_fixable { return; }
-                },
+                    if !self.filter_fixable {
+                        return;
+                    }
+                }
                 _ => {}
             }
 
@@ -188,7 +202,7 @@ impl ExternalDatConverterTo {
                     // clean CHD name (strip .chd)
                     if let Some(ref m) = f.merge {
                         if m.to_lowercase().ends_with(".chd") {
-                            f.merge = Some(m[..m.len()-4].to_string());
+                            f.merge = Some(m[..m.len() - 4].to_string());
                         }
                     }
 
@@ -200,10 +214,10 @@ impl ExternalDatConverterTo {
                     }
                 }
             }
-            
+
             let is_disk = rv_file.header_file_type() == HeaderFileType::CHD;
             if is_disk && ext_file.name.to_lowercase().ends_with(".chd") {
-                ext_file.name = ext_file.name[..ext_file.name.len()-4].to_string();
+                ext_file.name = ext_file.name[..ext_file.name.len() - 4].to_string();
             }
 
             ext_dir.add_child(ext_file);
@@ -216,9 +230,11 @@ impl ExternalDatConverterTo {
 
         let mut game_name = rv_file.name.clone();
         if rv_file.file_type == FileType::Zip && game_name.to_lowercase().ends_with(".zip") {
-            game_name = game_name[..game_name.len()-4].to_string();
-        } else if rv_file.file_type == FileType::SevenZip && game_name.to_lowercase().ends_with(".7z") {
-            game_name = game_name[..game_name.len()-3].to_string();
+            game_name = game_name[..game_name.len() - 4].to_string();
+        } else if rv_file.file_type == FileType::SevenZip
+            && game_name.to_lowercase().ends_with(".7z")
+        {
+            game_name = game_name[..game_name.len() - 3].to_string();
         }
 
         let mut ext_dir_1 = DatNode::new_dir(game_name.clone(), FileType::UnSet);

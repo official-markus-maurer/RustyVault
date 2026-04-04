@@ -1,13 +1,15 @@
 use bitflags::bitflags;
 
 /// Core status enums for DAT parsing.
-/// 
+///
 /// `enums.rs` contains the core file types, zip structures, and data status states
 /// (like `InDatCollect`, `InToSort`) used when converting XML/CMP text into the `DatNode` AST.
-/// 
+///
 /// Differences from C#:
 /// - Maps 1:1 to the C# `DATReader.Enums` namespace.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum DatStatus {
     InDatCollect,
     InDatMerged,
@@ -17,7 +19,9 @@ pub enum DatStatus {
     InDatMIA,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum FileType {
     UnSet = 0,
     Dir = 1,
@@ -30,7 +34,9 @@ pub enum FileType {
     FileOnly = 100,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum GotStatus {
     NotGot,
     Got,
@@ -69,15 +75,17 @@ impl Default for HeaderFileType {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum ZipStructure {
-    None = 0,          // No structure
-    ZipTrrnt = 1,      // Original Trrntzip
-    ZipTDC = 2,        // Total DOS Collection, Date Time Deflate
-    SevenZipTrrnt = 4, // this is the original t7z format
-    ZipZSTD = 5,       // ZSTD Compression
-    SevenZipSLZMA = 8, // Solid-LZMA this is rv7zip today
-    SevenZipNLZMA = 9, // NonSolid-LZMA
+    None = 0,           // No structure
+    ZipTrrnt = 1,       // Original Trrntzip
+    ZipTDC = 2,         // Total DOS Collection, Date Time Deflate
+    SevenZipTrrnt = 4,  // this is the original t7z format
+    ZipZSTD = 5,        // ZSTD Compression
+    SevenZipSLZMA = 8,  // Solid-LZMA this is rv7zip today
+    SevenZipNLZMA = 9,  // NonSolid-LZMA
     SevenZipSZSTD = 10, // Solid-zSTD
     SevenZipNZSTD = 11, // NonSolid-zSTD
 }

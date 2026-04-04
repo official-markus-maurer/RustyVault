@@ -12,11 +12,15 @@ pub struct ArchiveExtract {
 
 impl ArchiveExtract {
     pub fn new() -> Self {
-        Self { message_callback: None }
+        Self {
+            message_callback: None,
+        }
     }
 
     pub fn with_callback(message_callback: MessageBack) -> Self {
-        Self { message_callback: Some(message_callback) }
+        Self {
+            message_callback: Some(message_callback),
+        }
     }
 
     fn msg(&mut self, message: &str) {

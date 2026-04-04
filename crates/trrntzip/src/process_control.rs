@@ -1,7 +1,7 @@
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::sync::Condvar;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StopMode {
@@ -29,13 +29,16 @@ impl ProcessControl {
     }
 
     pub fn request_soft_stop(&self) {
-        let _ = self.inner.mode.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
-            if current >= 2 {
-                None
-            } else {
-                Some(1)
-            }
-        });
+        let _ = self
+            .inner
+            .mode
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                if current >= 2 {
+                    None
+                } else {
+                    Some(1)
+                }
+            });
         self.unpause();
     }
 
@@ -74,9 +77,17 @@ impl ProcessControl {
     }
 
     pub fn wait_one(&self) {
-        let mut guard = self.inner.pause_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self
+            .inner
+            .pause_lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         while self.is_paused() && !self.is_soft_stop_requested() {
-            guard = self.inner.pause_cv.wait(guard).unwrap_or_else(|e| e.into_inner());
+            guard = self
+                .inner
+                .pause_cv
+                .wait(guard)
+                .unwrap_or_else(|e| e.into_inner());
         }
     }
 

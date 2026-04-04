@@ -1,7 +1,9 @@
 use dat_reader::dat_store::DatGame;
 
 /// Identifiers for standard DAT Game fields
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum GameData {
     /// Internal DB ID
     Id = 11,
@@ -65,11 +67,11 @@ pub struct GameMetaData {
 }
 
 /// Logical representation of a Game set within a DAT.
-/// 
-/// `RvGame` maps the parsed `<game>` or `<machine>` XML nodes from a DAT file into 
-/// the internal database. It holds metadata such as the game's Description, CloneOf 
+///
+/// `RvGame` maps the parsed `<game>` or `<machine>` XML nodes from a DAT file into
+/// the internal database. It holds metadata such as the game's Description, CloneOf
 /// relationships, Manufacturer, and Year.
-/// 
+///
 /// Differences from C#:
 /// - Similar to `RvDat`, the C# version utilizes an array-based string packing mechanism.
 /// - The Rust version dynamically pushes to a `Vec<GameMetaData>` to drastically reduce
@@ -100,14 +102,14 @@ impl RvGame {
         let mut game = Self::new();
         game.check_attribute(&d_game.id, GameData::Id);
         game.check_attribute(&d_game.description, GameData::Description);
-        
+
         let category = if d_game.category.is_empty() {
             None
         } else {
             Some(d_game.category.join(" | "))
         };
         game.check_attribute(&category, GameData::Category);
-        
+
         game.check_attribute(&d_game.rom_of, GameData::RomOf);
         game.check_attribute(&d_game.is_bios, GameData::IsBios);
         game.check_attribute(&d_game.source_file, GameData::Sourcefile);
@@ -132,7 +134,7 @@ impl RvGame {
             game.check_attribute(&d_game.related_to, GameData::RelatedTo);
             game.check_attribute(&d_game.source, GameData::Source);
         }
-        
+
         game
     }
 
@@ -158,7 +160,10 @@ impl RvGame {
 
     /// Retrieves a metadata string by its `GameData` key
     pub fn get_data(&self, id: GameData) -> Option<String> {
-        self.game_meta_data.iter().find(|m| m.id == id).map(|m| m.value.clone())
+        self.game_meta_data
+            .iter()
+            .find(|m| m.id == id)
+            .map(|m| m.value.clone())
     }
 }
 

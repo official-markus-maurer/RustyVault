@@ -1,10 +1,60 @@
-use std::rc::{Rc, Weak};
-use std::cell::RefCell;
-use dat_reader::enums::{DatStatus, FileType, GotStatus, HeaderFileType, ZipStructure};
 use crate::enums::{RepStatus, ReportStatus, ToSortDirType};
 use crate::repair_status::RepairStatus;
 use crate::rv_dat::RvDat;
 use crate::rv_game::RvGame;
+use dat_reader::enums::{DatStatus, FileType, GotStatus, HeaderFileType, ZipStructure};
+use std::cell::RefCell;
+use std::rc::{Rc, Weak};
+
+pub(crate) fn default_i32_minus_one() -> i32 {
+    -1
+}
+
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum I32CompatRepr {
+    I32(i32),
+    I64(i64),
+    U32(u32),
+    U64(u64),
+}
+
+pub(crate) fn de_i32_compat<'de, D>(deserializer: D) -> Result<i32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = <I32CompatRepr as serde::Deserialize>::deserialize(deserializer)?;
+    match raw {
+        I32CompatRepr::I32(v) => Ok(v),
+        I32CompatRepr::I64(v) => i32::try_from(v)
+            .map_err(|_| serde::de::Error::custom(format!("integer out of range for i32: {v}"))),
+        I32CompatRepr::U32(v) => i32::try_from(v)
+            .map_err(|_| serde::de::Error::custom(format!("integer out of range for i32: {v}"))),
+        I32CompatRepr::U64(v) => i32::try_from(v)
+            .map_err(|_| serde::de::Error::custom(format!("integer out of range for i32: {v}"))),
+    }
+}
+
+pub(crate) fn de_opt_i32_compat<'de, D>(deserializer: D) -> Result<Option<i32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw: Option<I32CompatRepr> =
+        <Option<I32CompatRepr> as serde::Deserialize>::deserialize(deserializer)?;
+    match raw {
+        None => Ok(None),
+        Some(I32CompatRepr::I32(v)) => Ok(Some(v)),
+        Some(I32CompatRepr::I64(v)) => i32::try_from(v)
+            .map(Some)
+            .map_err(|_| serde::de::Error::custom(format!("integer out of range for i32: {v}"))),
+        Some(I32CompatRepr::U32(v)) => i32::try_from(v)
+            .map(Some)
+            .map_err(|_| serde::de::Error::custom(format!("integer out of range for i32: {v}"))),
+        Some(I32CompatRepr::U64(v)) => i32::try_from(v)
+            .map(Some)
+            .map_err(|_| serde::de::Error::custom(format!("integer out of range for i32: {v}"))),
+    }
+}
 
 bitflags::bitflags! {
     /// Bitflags representing the operational states of an `RvFile` node.
@@ -12,7 +62,7 @@ bitflags::bitflags! {
     pub struct FileStatus: u32 {
         /// No flags set
         const NONE = 0;
-        
+
         /// Size metadata was sourced from an archive header
         const SIZE_FROM_HEADER = 1 << 0;
         /// CRC32 metadata was sourced from an archive header
@@ -21,7 +71,7 @@ bitflags::bitflags! {
         const SHA1_FROM_HEADER = 1 << 2;
         /// MD5 metadata was sourced from an archive header
         const MD5_FROM_HEADER = 1 << 3;
-        
+
         /// Alternate Size metadata was sourced from an archive header
         const ALT_SIZE_FROM_HEADER = 1 << 4;
         /// Alternate CRC32 metadata was sourced from an archive header
@@ -43,7 +93,7 @@ bitflags::bitflags! {
         const SHA256_FROM_DAT = 1 << 20;
         /// SHA256 metadata was sourced from an archive header
         const SHA256_FROM_HEADER = 1 << 22;
-        
+
         /// Alternate Size metadata was specified by the DAT
         const ALT_SIZE_FROM_DAT = 1 << 12;
         /// Alternate CRC32 metadata was specified by the DAT
@@ -70,13 +120,13 @@ bitflags::bitflags! {
 }
 
 /// Core data structure representing a node in the RomVault file tree.
-/// 
-/// This is the Rust equivalent of the C# `RvFile` class. It unifies properties for 
-/// both directories (`RvDir` in C# logic) and files into a single struct, using 
+///
+/// This is the Rust equivalent of the C# `RvFile` class. It unifies properties for
+/// both directories (`RvDir` in C# logic) and files into a single struct, using
 /// `FileType` to distinguish behavior.
-/// 
+///
 /// Differences from C#:
-/// - Tree pointers (`parent`, `children`) are modeled using `Rc<RefCell<RvFile>>` and 
+/// - Tree pointers (`parent`, `children`) are modeled using `Rc<RefCell<RvFile>>` and
 ///   `Weak<RefCell<RvFile>>` to ensure memory safety without leaking memory.
 /// - Serde logic replaces C#'s `BinaryReader`/`BinaryWriter` for cache saving.
 /// - UI state (e.g. `tree_expanded`, `tree_checked`) is embedded directly to support egui,
@@ -87,11 +137,14 @@ pub struct RvFile {
     pub name: String,
 
     /// Temporary index used during cache deserialization
+    #[serde(default, deserialize_with = "de_opt_i32_compat")]
     pub dat_index_for_serde: Option<i32>,
 
     /// Internal file ID
+    #[serde(default, deserialize_with = "de_opt_i32_compat")]
     pub db_id: Option<i32>,
     /// Index relative to parent directory
+    #[serde(default = "default_i32_minus_one", deserialize_with = "de_i32_compat")]
     pub parent_index: i32,
     /// Temporary search flag
     pub search_found: bool,
@@ -180,9 +233,10 @@ pub struct RvFile {
     /// Cached repair status stats
     #[serde(skip)]
     pub cached_stats: Option<RepairStatus>,
-    
+
     // Legacy cache fields
     /// Legacy tmp_dat_index
+    #[serde(default, deserialize_with = "de_opt_i32_compat")]
     pub tmp_dat_index: Option<i32>,
 }
 
@@ -266,7 +320,12 @@ impl RvFile {
         a.to_ascii_lowercase().cmp(&b.to_ascii_lowercase())
     }
 
-    fn compare_name_key(f1: FileType, name1: &str, f2: FileType, name2: &str) -> std::cmp::Ordering {
+    fn compare_name_key(
+        f1: FileType,
+        name1: &str,
+        f2: FileType,
+        name2: &str,
+    ) -> std::cmp::Ordering {
         if f1 == FileType::FileZip || f2 == FileType::FileZip {
             return Self::trrnt_zip_string_compare_case(name1, name2);
         }
@@ -336,7 +395,12 @@ impl RvFile {
             let mid = (bottom + top) / 2;
             let mid_key = {
                 let mid_ref = self.children[mid].borrow();
-                Self::compare_name_key(child.file_type, &child.name, mid_ref.file_type, &mid_ref.name)
+                Self::compare_name_key(
+                    child.file_type,
+                    &child.name,
+                    mid_ref.file_type,
+                    &mid_ref.name,
+                )
             };
             if mid_key == std::cmp::Ordering::Greater {
                 bottom = mid + 1;
@@ -365,7 +429,14 @@ impl RvFile {
             file_status: FileStatus::NONE,
             deep_scanned: false,
             children: Vec::new(),
-            dir_status: if file_type == FileType::Dir || file_type == FileType::Zip || file_type == FileType::SevenZip { Some(ReportStatus::Unknown) } else { None },
+            dir_status: if file_type == FileType::Dir
+                || file_type == FileType::Zip
+                || file_type == FileType::SevenZip
+            {
+                Some(ReportStatus::Unknown)
+            } else {
+                None
+            },
             zip_dat_struct: 0,
             zip_struct: ZipStructure::None,
             game: None,
@@ -398,12 +469,17 @@ impl RvFile {
 
     /// Determines if this file acts as a logical directory container.
     pub fn is_directory(&self) -> bool {
-        self.file_type == FileType::Dir || self.file_type == FileType::Zip || self.file_type == FileType::SevenZip
+        self.file_type == FileType::Dir
+            || self.file_type == FileType::Zip
+            || self.file_type == FileType::SevenZip
     }
 
     /// Determines if this file acts as a logical terminal file node.
     pub fn is_file(&self) -> bool {
-        self.file_type == FileType::File || self.file_type == FileType::FileZip || self.file_type == FileType::FileSevenZip || self.file_type == FileType::FileOnly
+        self.file_type == FileType::File
+            || self.file_type == FileType::FileZip
+            || self.file_type == FileType::FileSevenZip
+            || self.file_type == FileType::FileOnly
     }
 
     /// Appends a child `RvFile` to this node's internal children vector.
@@ -488,7 +564,7 @@ impl RvFile {
     pub fn rep_status_reset(&mut self) {
         // Rust port simplification of RomVaultCore/RvDB/rvFile.cs RepStatusReset
         self.search_found = false;
-        
+
         // When rep_status resets, the cached_stats need to be cleared
         self.invalidate_cached_stats_with_ancestors();
 
@@ -546,56 +622,151 @@ impl RvFile {
                 }
             }
         }
-        
+
         let new_status = match (self.file_type, self.dat_status, self.got_status) {
             (
-                FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly | FileType::Zip | FileType::SevenZip,
+                FileType::File
+                | FileType::FileZip
+                | FileType::FileSevenZip
+                | FileType::FileOnly
+                | FileType::Zip
+                | FileType::SevenZip,
                 dat_reader::enums::DatStatus::InDatCollect,
-                dat_reader::enums::GotStatus::Got
+                dat_reader::enums::GotStatus::Got,
             ) => RepStatus::Correct,
             (
-                FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly | FileType::Zip | FileType::SevenZip,
+                FileType::File
+                | FileType::FileZip
+                | FileType::FileSevenZip
+                | FileType::FileOnly
+                | FileType::Zip
+                | FileType::SevenZip,
                 dat_reader::enums::DatStatus::InDatCollect,
-                dat_reader::enums::GotStatus::NotGot
+                dat_reader::enums::GotStatus::NotGot,
             ) => RepStatus::Missing,
             (
-                FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly | FileType::Zip | FileType::SevenZip,
+                FileType::File
+                | FileType::FileZip
+                | FileType::FileSevenZip
+                | FileType::FileOnly
+                | FileType::Zip
+                | FileType::SevenZip,
                 dat_reader::enums::DatStatus::InDatCollect,
-                dat_reader::enums::GotStatus::Corrupt
+                dat_reader::enums::GotStatus::Corrupt,
             ) => RepStatus::Corrupt,
             (
-                FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly | FileType::Zip | FileType::SevenZip,
-                dat_reader::enums::DatStatus::InDatMerged | dat_reader::enums::DatStatus::InDatNoDump,
-                dat_reader::enums::GotStatus::NotGot
+                FileType::File
+                | FileType::FileZip
+                | FileType::FileSevenZip
+                | FileType::FileOnly
+                | FileType::Zip
+                | FileType::SevenZip,
+                dat_reader::enums::DatStatus::InDatMerged
+                | dat_reader::enums::DatStatus::InDatNoDump,
+                dat_reader::enums::GotStatus::NotGot,
             ) => RepStatus::NotCollected,
             (
-                FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly | FileType::Zip | FileType::SevenZip,
-                dat_reader::enums::DatStatus::InDatMerged | dat_reader::enums::DatStatus::InDatNoDump,
-                dat_reader::enums::GotStatus::Got | dat_reader::enums::GotStatus::Corrupt
+                FileType::File
+                | FileType::FileZip
+                | FileType::FileSevenZip
+                | FileType::FileOnly
+                | FileType::Zip
+                | FileType::SevenZip,
+                dat_reader::enums::DatStatus::InDatMerged
+                | dat_reader::enums::DatStatus::InDatNoDump,
+                dat_reader::enums::GotStatus::Got | dat_reader::enums::GotStatus::Corrupt,
             ) => RepStatus::UnNeeded,
-            (FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly | FileType::Zip | FileType::SevenZip, dat_reader::enums::DatStatus::InDatMIA, dat_reader::enums::GotStatus::NotGot) => RepStatus::MissingMIA,
-            (FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly | FileType::Zip | FileType::SevenZip, dat_reader::enums::DatStatus::InDatMIA, dat_reader::enums::GotStatus::Got) => RepStatus::CorrectMIA,
-            (FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly | FileType::Zip | FileType::SevenZip, dat_reader::enums::DatStatus::InToSort, dat_reader::enums::GotStatus::Got) => RepStatus::InToSort,
-            (FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly | FileType::Zip | FileType::SevenZip, dat_reader::enums::DatStatus::InToSort, dat_reader::enums::GotStatus::NotGot) => RepStatus::Deleted,
-            (FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly | FileType::Zip | FileType::SevenZip, dat_reader::enums::DatStatus::NotInDat, dat_reader::enums::GotStatus::Got) => RepStatus::Unknown,
-            (FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly | FileType::Zip | FileType::SevenZip, dat_reader::enums::DatStatus::NotInDat, dat_reader::enums::GotStatus::NotGot) => RepStatus::Deleted,
+            (
+                FileType::File
+                | FileType::FileZip
+                | FileType::FileSevenZip
+                | FileType::FileOnly
+                | FileType::Zip
+                | FileType::SevenZip,
+                dat_reader::enums::DatStatus::InDatMIA,
+                dat_reader::enums::GotStatus::NotGot,
+            ) => RepStatus::MissingMIA,
+            (
+                FileType::File
+                | FileType::FileZip
+                | FileType::FileSevenZip
+                | FileType::FileOnly
+                | FileType::Zip
+                | FileType::SevenZip,
+                dat_reader::enums::DatStatus::InDatMIA,
+                dat_reader::enums::GotStatus::Got,
+            ) => RepStatus::CorrectMIA,
+            (
+                FileType::File
+                | FileType::FileZip
+                | FileType::FileSevenZip
+                | FileType::FileOnly
+                | FileType::Zip
+                | FileType::SevenZip,
+                dat_reader::enums::DatStatus::InToSort,
+                dat_reader::enums::GotStatus::Got,
+            ) => RepStatus::InToSort,
+            (
+                FileType::File
+                | FileType::FileZip
+                | FileType::FileSevenZip
+                | FileType::FileOnly
+                | FileType::Zip
+                | FileType::SevenZip,
+                dat_reader::enums::DatStatus::InToSort,
+                dat_reader::enums::GotStatus::NotGot,
+            ) => RepStatus::Deleted,
+            (
+                FileType::File
+                | FileType::FileZip
+                | FileType::FileSevenZip
+                | FileType::FileOnly
+                | FileType::Zip
+                | FileType::SevenZip,
+                dat_reader::enums::DatStatus::NotInDat,
+                dat_reader::enums::GotStatus::Got,
+            ) => RepStatus::Unknown,
+            (
+                FileType::File
+                | FileType::FileZip
+                | FileType::FileSevenZip
+                | FileType::FileOnly
+                | FileType::Zip
+                | FileType::SevenZip,
+                dat_reader::enums::DatStatus::NotInDat,
+                dat_reader::enums::GotStatus::NotGot,
+            ) => RepStatus::Deleted,
             (
                 FileType::Dir,
-                dat_reader::enums::DatStatus::InDatCollect | dat_reader::enums::DatStatus::InDatMerged | dat_reader::enums::DatStatus::InDatNoDump,
-                dat_reader::enums::GotStatus::Got
+                dat_reader::enums::DatStatus::InDatCollect
+                | dat_reader::enums::DatStatus::InDatMerged
+                | dat_reader::enums::DatStatus::InDatNoDump,
+                dat_reader::enums::GotStatus::Got,
             ) => RepStatus::DirCorrect,
             (
                 FileType::Dir,
-                dat_reader::enums::DatStatus::InDatCollect | dat_reader::enums::DatStatus::InDatMerged | dat_reader::enums::DatStatus::InDatNoDump,
-                dat_reader::enums::GotStatus::NotGot
+                dat_reader::enums::DatStatus::InDatCollect
+                | dat_reader::enums::DatStatus::InDatMerged
+                | dat_reader::enums::DatStatus::InDatNoDump,
+                dat_reader::enums::GotStatus::NotGot,
             ) => RepStatus::DirMissing,
             (
                 FileType::Dir,
-                dat_reader::enums::DatStatus::InDatCollect | dat_reader::enums::DatStatus::InDatMerged | dat_reader::enums::DatStatus::InDatNoDump,
-                dat_reader::enums::GotStatus::Corrupt
+                dat_reader::enums::DatStatus::InDatCollect
+                | dat_reader::enums::DatStatus::InDatMerged
+                | dat_reader::enums::DatStatus::InDatNoDump,
+                dat_reader::enums::GotStatus::Corrupt,
             ) => RepStatus::DirCorrupt,
-            (FileType::Dir, dat_reader::enums::DatStatus::NotInDat, dat_reader::enums::GotStatus::Got) => RepStatus::DirUnknown,
-            (FileType::Dir, dat_reader::enums::DatStatus::InToSort, dat_reader::enums::GotStatus::Got) => RepStatus::DirInToSort,
+            (
+                FileType::Dir,
+                dat_reader::enums::DatStatus::NotInDat,
+                dat_reader::enums::GotStatus::Got,
+            ) => RepStatus::DirUnknown,
+            (
+                FileType::Dir,
+                dat_reader::enums::DatStatus::InToSort,
+                dat_reader::enums::GotStatus::Got,
+            ) => RepStatus::DirInToSort,
             _ => RepStatus::UnScanned,
         };
         self.rep_status = new_status;
@@ -687,7 +858,7 @@ impl RvFile {
         self.cached_stats = None;
         self.set_got_status(GotStatus::NotGot);
         self.deep_scanned = false;
-        
+
         let mut i = 0;
         while i < self.children.len() {
             let child_rc = Rc::clone(&self.children[i]);
@@ -696,8 +867,10 @@ impl RvFile {
                 child.cached_stats = None;
                 child.set_got_status(GotStatus::NotGot);
                 child.deep_scanned = false;
-                
-                if child.dat_status() == DatStatus::NotInDat || child.dat_status() == DatStatus::InToSort {
+
+                if child.dat_status() == DatStatus::NotInDat
+                    || child.dat_status() == DatStatus::InToSort
+                {
                     child.file_remove()
                 } else {
                     false
@@ -769,7 +942,7 @@ impl RvFile {
         path_parts.join("\\")
     }
 
-    /// Converts a node's filename to lowercase, ensuring exact structural matching against 
+    /// Converts a node's filename to lowercase, ensuring exact structural matching against
     /// the TorrentZip specification format.
     #[inline]
     pub fn name_case(&self) -> &str {
@@ -796,9 +969,8 @@ impl RvFile {
 
     /// Recursively sorts the children of this node alphabetically by their filenames.
     pub fn sort_children(&mut self) {
-        self.children.sort_by(|a, b| {
-            a.borrow().name_case().cmp(b.borrow().name_case())
-        });
+        self.children
+            .sort_by(|a, b| a.borrow().name_case().cmp(b.borrow().name_case()));
         for child in self.children.iter_mut() {
             child.borrow_mut().sort_children();
         }

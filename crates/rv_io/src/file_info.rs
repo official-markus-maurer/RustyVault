@@ -4,10 +4,10 @@ use std::path::Path as StdPath;
 use crate::name_fix::NameFix;
 
 /// Object-oriented wrapper representing a specific file on disk.
-/// 
-/// `FileInfo` mimics the C# `System.IO.FileInfo` class. It encapsulates 
+///
+/// `FileInfo` mimics the C# `System.IO.FileInfo` class. It encapsulates
 /// a file path and provides methods to query its metadata (size, last modified time).
-/// 
+///
 /// Differences from C#:
 /// - Internally delegates to `std::fs::metadata`.
 #[derive(Debug, Clone)]
@@ -25,7 +25,11 @@ impl FileInfo {
     pub fn new(path: &str) -> Self {
         let fixed = NameFix::add_long_path_prefix(path);
         let std_path = StdPath::new(&fixed);
-        let name = std_path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let name = std_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
         let full_name = path.to_string();
 
         if !std_path.is_file() {
@@ -41,20 +45,23 @@ impl FileInfo {
         }
 
         let metadata = fs::metadata(std_path).unwrap();
-        
-        let last_write_time = metadata.modified()
+
+        let last_write_time = metadata
+            .modified()
             .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| ticks_from_unix_duration(d.as_secs(), d.subsec_nanos()))
             .unwrap_or(0);
-            
-        let last_access_time = metadata.accessed()
+
+        let last_access_time = metadata
+            .accessed()
             .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| ticks_from_unix_duration(d.as_secs(), d.subsec_nanos()))
             .unwrap_or(0);
-            
-        let creation_time = metadata.created()
+
+        let creation_time = metadata
+            .created()
             .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| ticks_from_unix_duration(d.as_secs(), d.subsec_nanos()))

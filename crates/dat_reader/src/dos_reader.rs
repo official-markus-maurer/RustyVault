@@ -1,16 +1,16 @@
+use crate::cmp_reader::DatFileLoader;
 use crate::dat_store::{DatDir, DatGame, DatHeader, DatNode};
 use crate::enums::FileType;
-use crate::cmp_reader::DatFileLoader;
 use crate::var_fix;
 
 /// DOSCenter DAT parser.
-/// 
+///
 /// `dos_reader.rs` parses the legacy DOSCenter DAT format, which structurally resembles
 /// ClrMamePro (CMP) but uses parentheses `( )` instead of curly braces for blocks.
-/// 
+///
 /// Differences from C#:
-/// - Like `rom_center_reader`, this heavily leverages the zero-copy `DatFileLoader` 
-///   tokenizer from `cmp_reader.rs` for extreme speed and memory efficiency compared 
+/// - Like `rom_center_reader`, this heavily leverages the zero-copy `DatFileLoader`
+///   tokenizer from `cmp_reader.rs` for extreme speed and memory efficiency compared
 ///   to standard C# `StreamReader` loops.
 pub fn read_dos_dat(input: &str, filename: &str) -> Result<DatHeader, String> {
     let mut dfl = DatFileLoader::new(input);
@@ -54,21 +54,44 @@ fn load_header(dfl: &mut DatFileLoader, dat_header: &mut DatHeader) -> Result<()
 
     while dfl.next_token != ")" && !dfl.end_of_stream() {
         let nextstr = dfl.next_token.to_lowercase();
-        
+
         if let Some(stripped) = nextstr.strip_prefix("name:") {
             let rest = dfl.gn_rest();
             dat_header.name = Some(format!("{} {}", stripped, rest).trim().to_string());
             dfl.gn();
         } else {
             match nextstr.as_str() {
-                "name" | "name:" => { dat_header.name = Some(dfl.gn_rest()); dfl.gn(); }
-                "description" | "description:" => { dat_header.description = Some(dfl.gn_rest()); dfl.gn(); }
-                "version" | "version:" => { dat_header.version = Some(dfl.gn_rest()); dfl.gn(); }
-                "date" | "date:" => { dat_header.date = Some(dfl.gn_rest()); dfl.gn(); }
-                "author" | "author:" => { dat_header.author = Some(dfl.gn_rest()); dfl.gn(); }
-                "homepage" | "homepage:" => { dat_header.homepage = Some(dfl.gn_rest()); dfl.gn(); }
-                "comment" | "comment:" => { dat_header.comment = Some(dfl.gn_rest()); dfl.gn(); }
-                _ => { dfl.gn(); }
+                "name" | "name:" => {
+                    dat_header.name = Some(dfl.gn_rest());
+                    dfl.gn();
+                }
+                "description" | "description:" => {
+                    dat_header.description = Some(dfl.gn_rest());
+                    dfl.gn();
+                }
+                "version" | "version:" => {
+                    dat_header.version = Some(dfl.gn_rest());
+                    dfl.gn();
+                }
+                "date" | "date:" => {
+                    dat_header.date = Some(dfl.gn_rest());
+                    dfl.gn();
+                }
+                "author" | "author:" => {
+                    dat_header.author = Some(dfl.gn_rest());
+                    dfl.gn();
+                }
+                "homepage" | "homepage:" => {
+                    dat_header.homepage = Some(dfl.gn_rest());
+                    dfl.gn();
+                }
+                "comment" | "comment:" => {
+                    dat_header.comment = Some(dfl.gn_rest());
+                    dfl.gn();
+                }
+                _ => {
+                    dfl.gn();
+                }
             }
         }
     }
@@ -103,7 +126,9 @@ fn load_game(dfl: &mut DatFileLoader, parent_dir: &mut DatDir) -> Result<(), Str
                 load_file(dfl, d_dir.dir_mut().unwrap())?;
                 dfl.gn();
             }
-            _ => { dfl.gn(); }
+            _ => {
+                dfl.gn();
+            }
         }
     }
 
@@ -123,8 +148,8 @@ fn load_file(dfl: &mut DatFileLoader, parent_dir: &mut DatDir) -> Result<(), Str
 
     // GnNameToSize equivalent
     // In DOSCenter dat files, filenames can contain spaces. We read everything up to "size".
-    // For simplicity here, we assume standard tokenization works well enough if there are no spaces, 
-    // or we'd need to extend DatFileLoader to support `gn_name_to_size`. 
+    // For simplicity here, we assume standard tokenization works well enough if there are no spaces,
+    // or we'd need to extend DatFileLoader to support `gn_name_to_size`.
     // Implementing a basic fallback:
     let mut name = String::new();
     loop {
@@ -142,7 +167,7 @@ fn load_file(dfl: &mut DatFileLoader, parent_dir: &mut DatDir) -> Result<(), Str
     }
 
     let mut d_rom = DatNode::new_file(name.trim().to_string(), FileType::UnSet);
-    
+
     let size_value = dfl.gn();
     if let Some(f) = d_rom.file_mut() {
         f.size = var_fix::u64_opt(&size_value);
@@ -169,7 +194,9 @@ fn load_file(dfl: &mut DatFileLoader, parent_dir: &mut DatDir) -> Result<(), Str
                 // skip parsing date to ticks for now
                 dfl.gn();
             }
-            _ => { dfl.gn(); }
+            _ => {
+                dfl.gn();
+            }
         }
     }
 

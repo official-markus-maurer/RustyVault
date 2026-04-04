@@ -81,7 +81,9 @@ impl DatClean {
                 new_dir.push(new_node);
                 continue;
             }
-            let Some(child_dir) = node.dir() else { continue };
+            let Some(child_dir) = node.dir() else {
+                continue;
+            };
             let mut dir_marker = DatNode::new_file(format!("{}/", this_name), FileType::UnSet);
             if let Some(f) = dir_marker.file_mut() {
                 f.size = Some(0);
@@ -93,7 +95,9 @@ impl DatClean {
     }
 
     pub fn directory_sort(d_dir: &mut DatDir) {
-        d_dir.children.sort_by(|a, b| Self::alphanum_cmp(&a.name, &b.name).cmp(&0));
+        d_dir
+            .children
+            .sort_by(|a, b| Self::alphanum_cmp(&a.name, &b.name).cmp(&0));
         for node in &mut d_dir.children {
             if let Some(dat_dir) = node.dir_mut() {
                 Self::directory_sort(dat_dir);
@@ -120,11 +124,16 @@ impl DatClean {
                     let part1 = node.name[split + 1..].to_string();
                     node.name = part1;
 
-                    let dir_index = d_dir.children.iter().position(|c| c.is_dir() && c.name == part0);
+                    let dir_index = d_dir
+                        .children
+                        .iter()
+                        .position(|c| c.is_dir() && c.name == part0);
                     let dir_node = if let Some(i) = dir_index {
                         &mut d_dir.children[i]
                     } else {
-                        d_dir.children.push(DatNode::new_dir(part0.clone(), FileType::Dir));
+                        d_dir
+                            .children
+                            .push(DatNode::new_dir(part0.clone(), FileType::Dir));
                         d_dir.children.last_mut().unwrap()
                     };
                     if !node.name.is_empty() {
@@ -157,7 +166,11 @@ impl DatClean {
     pub fn check_deduped(d_dir: &mut DatDir) {
         for node in &mut d_dir.children {
             if let Some(file) = node.file_mut() {
-                if file.status.as_deref().is_some_and(|s| s.eq_ignore_ascii_case("deduped")) {
+                if file
+                    .status
+                    .as_deref()
+                    .is_some_and(|s| s.eq_ignore_ascii_case("deduped"))
+                {
                     node.dat_status = DatStatus::InDatMerged;
                 }
             }
@@ -169,7 +182,9 @@ impl DatClean {
 
     pub fn add_category(t_dat: &mut DatDir, cat_order: &[String]) {
         for node in &mut t_dat.children {
-            let Some(m_game) = node.dir_mut() else { continue };
+            let Some(m_game) = node.dir_mut() else {
+                continue;
+            };
             if m_game.d_game.is_none() {
                 Self::add_category(m_game, cat_order);
                 continue;
@@ -253,7 +268,12 @@ impl DatClean {
         }
     }
 
-    pub fn set_compression_type(in_dat: &mut DatNode, file_type: FileType, zs: ZipStructure, fix: bool) {
+    pub fn set_compression_type(
+        in_dat: &mut DatNode,
+        file_type: FileType,
+        zs: ZipStructure,
+        fix: bool,
+    ) {
         if in_dat.file().is_some() {
             in_dat.file_type = Self::file_type_from_dir(file_type);
             return;
@@ -290,11 +310,12 @@ impl DatClean {
 
         if let Some(d_dir) = in_dat.dir_mut() {
             if had_game && file_type != FileType::Dir && effective_file_type != FileType::Dir {
-                let checked = if Self::is_trrntzip_date_times(d_dir, effective_zs, effective_file_type) {
-                    ZipStructure::ZipTrrnt
-                } else {
-                    effective_zs
-                };
+                let checked =
+                    if Self::is_trrntzip_date_times(d_dir, effective_zs, effective_file_type) {
+                        ZipStructure::ZipTrrnt
+                    } else {
+                        effective_zs
+                    };
                 d_dir.set_dat_struct(checked, fix);
             }
 
@@ -361,7 +382,12 @@ impl DatClean {
             node.dat_status = DatStatus::InDatNoDump;
             return;
         }
-        if t_rom.mia.as_deref().is_some_and(|m| m.eq_ignore_ascii_case("yes")) && t_rom.size.unwrap_or(0) != 0 {
+        if t_rom
+            .mia
+            .as_deref()
+            .is_some_and(|m| m.eq_ignore_ascii_case("yes"))
+            && t_rom.size.unwrap_or(0) != 0
+        {
             node.dat_status = DatStatus::InDatMIA;
             return;
         }
@@ -419,10 +445,14 @@ impl DatClean {
         let mut lookup = HashMap::<String, String>::new();
         for node in &t_dat.children {
             let Some(m_game) = node.dir() else { continue };
-            let Some(game) = m_game.d_game.as_ref() else { continue };
+            let Some(game) = m_game.d_game.as_ref() else {
+                continue;
+            };
             if let Some(id) = game.id.as_ref() {
                 if !id.is_empty() {
-                    lookup.entry(id.clone()).or_insert_with(|| node.name.clone());
+                    lookup
+                        .entry(id.clone())
+                        .or_insert_with(|| node.name.clone());
                 }
             }
         }
@@ -430,9 +460,15 @@ impl DatClean {
             return;
         }
         for node in &mut t_dat.children {
-            let Some(m_game) = node.dir_mut() else { continue };
-            let Some(game) = m_game.d_game.as_mut() else { continue };
-            let Some(clone_id) = game.clone_of_id.as_ref() else { continue };
+            let Some(m_game) = node.dir_mut() else {
+                continue;
+            };
+            let Some(game) = m_game.d_game.as_mut() else {
+                continue;
+            };
+            let Some(clone_id) = game.clone_of_id.as_ref() else {
+                continue;
+            };
             if let Some(name) = lookup.get(clone_id) {
                 game.clone_of = Some(name.clone());
             }
@@ -523,7 +559,10 @@ impl DatClean {
             if let Some(game) = m_game.d_game.as_ref() {
                 if game.rom_of.as_ref().is_some_and(|s| !s.trim().is_empty())
                     || game.clone_of.as_ref().is_some_and(|s| !s.trim().is_empty())
-                    || game.clone_of_id.as_ref().is_some_and(|s| !s.trim().is_empty())
+                    || game
+                        .clone_of_id
+                        .as_ref()
+                        .is_some_and(|s| !s.trim().is_empty())
                 {
                     return true;
                 }
@@ -582,7 +621,10 @@ impl DatClean {
 
             out.push(i);
 
-            let next = parent_game.rom_of.clone().unwrap_or_else(|| parent_game.clone_of.clone().unwrap_or_default());
+            let next = parent_game
+                .rom_of
+                .clone()
+                .unwrap_or_else(|| parent_game.clone_of.clone().unwrap_or_default());
             if next.is_empty() || next == current {
                 break;
             }
@@ -621,9 +663,15 @@ impl DatClean {
         true
     }
 
-    fn find_rom_in_parent(dr0: &crate::dat_store::DatFile, lst_parent_game_indices: &[usize], parent_dir: &DatDir) -> bool {
+    fn find_rom_in_parent(
+        dr0: &crate::dat_store::DatFile,
+        lst_parent_game_indices: &[usize],
+        parent_dir: &DatDir,
+    ) -> bool {
         for idx in lst_parent_game_indices {
-            let Some(pdir) = parent_dir.children.get(*idx).and_then(|n| n.dir()) else { continue };
+            let Some(pdir) = parent_dir.children.get(*idx).and_then(|n| n.dir()) else {
+                continue;
+            };
             for node in &pdir.children {
                 let Some(dr1) = node.file() else { continue };
                 if Self::file_equivalent(dr0, dr1) {
@@ -640,14 +688,23 @@ impl DatClean {
             let game_name = node.name.clone();
             let game_file_type = node.file_type;
             let game_meta = node.dir().and_then(|d| d.d_game.as_deref()).cloned();
-            let Some(m_game) = node.dir_mut() else { continue };
+            let Some(m_game) = node.dir_mut() else {
+                continue;
+            };
             if m_game.d_game.is_none() {
                 Self::dat_set_make_split_set(m_game);
                 continue;
             }
-            let Some(game_meta) = game_meta.as_ref() else { continue };
-            let parent_indices =
-                Self::find_parent_sets_for_game(&game_name, game_file_type, game_meta, &snapshot, true);
+            let Some(game_meta) = game_meta.as_ref() else {
+                continue;
+            };
+            let parent_indices = Self::find_parent_sets_for_game(
+                &game_name,
+                game_file_type,
+                game_meta,
+                &snapshot,
+                true,
+            );
             if parent_indices.is_empty() {
                 continue;
             }
@@ -685,13 +742,22 @@ impl DatClean {
 
             let game_name = t_dat.children[i].name.clone();
             let game_file_type = t_dat.children[i].file_type;
-            let game_meta = match t_dat.children[i].dir().and_then(|d| d.d_game.as_deref()).cloned() {
+            let game_meta = match t_dat.children[i]
+                .dir()
+                .and_then(|d| d.d_game.as_deref())
+                .cloned()
+            {
                 Some(v) => v,
                 None => continue,
             };
 
-            let parent_indices =
-                Self::find_parent_sets_for_game(&game_name, game_file_type, &game_meta, t_dat, true);
+            let parent_indices = Self::find_parent_sets_for_game(
+                &game_name,
+                game_file_type,
+                &game_meta,
+                t_dat,
+                true,
+            );
             if parent_indices.is_empty() {
                 continue;
             }
@@ -699,13 +765,19 @@ impl DatClean {
             let mut p_games = Vec::new();
             let mut p_bios = Vec::new();
             for idx in &parent_indices {
-                let Some(p) = t_dat.children.get(*idx).and_then(|n| n.dir()) else { continue };
+                let Some(p) = t_dat.children.get(*idx).and_then(|n| n.dir()) else {
+                    continue;
+                };
                 let is_bios = p
                     .d_game
                     .as_ref()
                     .and_then(|g| g.is_bios.as_ref())
                     .is_some_and(|v| v.eq_ignore_ascii_case("yes"));
-                if is_bios { p_bios.push(*idx); } else { p_games.push(*idx); }
+                if is_bios {
+                    p_bios.push(*idx);
+                } else {
+                    p_games.push(*idx);
+                }
             }
 
             let children_snapshot = t_dat.children[i]
@@ -752,7 +824,8 @@ impl DatClean {
         }
 
         for (parent_idx, files) in moves {
-            if let Some(parent_game) = t_dat.children.get_mut(parent_idx).and_then(|n| n.dir_mut()) {
+            if let Some(parent_game) = t_dat.children.get_mut(parent_idx).and_then(|n| n.dir_mut())
+            {
                 for file in files {
                     parent_game.add_child(file);
                 }
@@ -799,13 +872,19 @@ impl DatClean {
 
             let mut additions = Vec::new();
             for dev_idx in devices {
-                let Some(dev_dir) = snapshot.children.get(dev_idx).and_then(|n| n.dir()) else { continue };
+                let Some(dev_dir) = snapshot.children.get(dev_idx).and_then(|n| n.dir()) else {
+                    continue;
+                };
                 for dev_file in &dev_dir.children {
                     let Some(df0) = dev_file.file() else { continue };
                     let mut found = false;
                     for mg_child in &existing_children {
                         let Some(df1) = mg_child.file() else { continue };
-                        if df0.sha1.is_some() && df1.sha1.is_some() && df0.sha1 == df1.sha1 && dev_file.name == mg_child.name {
+                        if df0.sha1.is_some()
+                            && df1.sha1.is_some()
+                            && df0.sha1 == df1.sha1
+                            && dev_file.name == mg_child.name
+                        {
                             found = true;
                             break;
                         }
@@ -824,7 +903,12 @@ impl DatClean {
         }
     }
 
-    fn add_device(device: &str, t_dat: &DatDir, devices: &mut Vec<usize>, seen: &mut std::collections::HashSet<usize>) {
+    fn add_device(
+        device: &str,
+        t_dat: &DatDir,
+        devices: &mut Vec<usize>,
+        seen: &mut std::collections::HashSet<usize>,
+    ) {
         let mut index = None;
         for (i, node) in t_dat.children.iter().enumerate() {
             if node.is_dir() && node.name == device {
@@ -837,8 +921,12 @@ impl DatClean {
             return;
         }
         devices.push(i);
-        let Some(dev_dir) = t_dat.children[i].dir() else { return };
-        let Some(game) = dev_dir.d_game.as_ref() else { return };
+        let Some(dev_dir) = t_dat.children[i].dir() else {
+            return;
+        };
+        let Some(game) = dev_dir.d_game.as_ref() else {
+            return;
+        };
         for child in &game.device_ref {
             Self::add_device(child, t_dat, devices, seen);
         }
@@ -853,7 +941,9 @@ impl DatClean {
                     t_dat.add_child(child);
                 } else {
                     if let Some(g) = m_game.d_game.as_ref() {
-                        if g.is_device.as_deref() == Some("yes") && g.runnable.as_deref() == Some("no") {
+                        if g.is_device.as_deref() == Some("yes")
+                            && g.runnable.as_deref() == Some("no")
+                        {
                             continue;
                         }
                     }
@@ -919,13 +1009,21 @@ impl DatClean {
 
     fn apply_chd_move(root: &mut DatDir, m: &ChdMove) {
         let (zip_name, zip_game, file_node) = {
-            let Some(zip_parent_path) = m.zip_dir_path.split_last().map(|(_, p)| p) else { return };
-            let Some(zip_parent) = Self::get_dir_mut(root, zip_parent_path) else { return };
+            let Some(zip_parent_path) = m.zip_dir_path.split_last().map(|(_, p)| p) else {
+                return;
+            };
+            let Some(zip_parent) = Self::get_dir_mut(root, zip_parent_path) else {
+                return;
+            };
             let zip_index = *m.zip_dir_path.last().unwrap_or(&usize::MAX);
-            let Some(zip_node) = zip_parent.children.get_mut(zip_index) else { return };
+            let Some(zip_node) = zip_parent.children.get_mut(zip_index) else {
+                return;
+            };
             let zip_name = zip_node.name.clone();
             let zip_game = zip_node.dir().and_then(|d| d.d_game.clone());
-            let Some(zip_dir) = zip_node.dir_mut() else { return };
+            let Some(zip_dir) = zip_node.dir_mut() else {
+                return;
+            };
             if m.file_index >= zip_dir.children.len() {
                 return;
             }
@@ -934,7 +1032,9 @@ impl DatClean {
             (zip_name, zip_game, file_node)
         };
 
-        let Some(target_dir) = Self::get_dir_mut(root, &m.target_dir_path) else { return };
+        let Some(target_dir) = Self::get_dir_mut(root, &m.target_dir_path) else {
+            return;
+        };
         let existing_idx = target_dir
             .children
             .iter()
@@ -999,7 +1099,9 @@ impl DatClean {
     }
 
     pub fn clean_file_names_full(in_dat: &mut DatNode) {
-        let Some(d_dir) = in_dat.dir_mut() else { return };
+        let Some(d_dir) = in_dat.dir_mut() else {
+            return;
+        };
         let mut children = Vec::new();
         children.append(&mut d_dir.children);
 
@@ -1149,7 +1251,14 @@ impl DatClean {
         dat_header.base_dir.add_child(out_node);
         let out_index = dat_header.base_dir.children.len() - 1;
         let out_dir = dat_header.base_dir.children[out_index].dir_mut().unwrap();
-        Self::make_single_level_into_dir(out_dir, original, sub_dir_type, add_category, cat_order, false);
+        Self::make_single_level_into_dir(
+            out_dir,
+            original,
+            sub_dir_type,
+            add_category,
+            cat_order,
+            false,
+        );
     }
 
     fn make_single_level_into_dir(
@@ -1169,7 +1278,9 @@ impl DatClean {
                 None
             };
 
-            let Some(dir_set) = set.dir_mut() else { continue };
+            let Some(dir_set) = set.dir_mut() else {
+                continue;
+            };
             let set_children = std::mem::take(&mut dir_set.children);
             let set_len = set_children.len();
 
@@ -1263,13 +1374,14 @@ impl DatClean {
                     while r < m_game.children.len() {
                         let mut t = r + 1;
                         while t < m_game.children.len() {
-                            let (df0, df1) = match (m_game.children[r].file(), m_game.children[t].file()) {
-                                (Some(a), Some(b)) => (a, b),
-                                _ => {
-                                    t += 1;
-                                    continue;
-                                }
-                            };
+                            let (df0, df1) =
+                                match (m_game.children[r].file(), m_game.children[t].file()) {
+                                    (Some(a), Some(b)) => (a, b),
+                                    _ => {
+                                        t += 1;
+                                        continue;
+                                    }
+                                };
                             if test_name && m_game.children[r].name != m_game.children[t].name {
                                 t += 1;
                                 continue;
@@ -1318,7 +1430,11 @@ impl DatClean {
                                     t
                                 } else {
                                     let res = Self::alphanum_cmp(&name0, &name1);
-                                    if res >= 0 { r } else { t }
+                                    if res >= 0 {
+                                        r
+                                    } else {
+                                        t
+                                    }
                                 }
                             } else {
                                 let merge1 = df1.merge.clone().unwrap_or_default();
@@ -1346,7 +1462,9 @@ impl DatClean {
         if in_dat.file().is_some() {
             return true;
         }
-        let Some(d_dir) = in_dat.dir_mut() else { return false };
+        let Some(d_dir) = in_dat.dir_mut() else {
+            return false;
+        };
         if d_dir.children.is_empty() {
             return false;
         }
@@ -1363,9 +1481,14 @@ impl DatClean {
 
     pub fn remove_not_collected(in_dat: &mut DatNode) -> bool {
         if in_dat.file().is_some() {
-            return matches!(in_dat.dat_status, DatStatus::InDatCollect | DatStatus::InDatNoDump);
+            return matches!(
+                in_dat.dat_status,
+                DatStatus::InDatCollect | DatStatus::InDatNoDump
+            );
         }
-        let Some(d_dir) = in_dat.dir_mut() else { return false };
+        let Some(d_dir) = in_dat.dir_mut() else {
+            return false;
+        };
         if d_dir.children.is_empty() {
             return false;
         }
@@ -1382,7 +1505,9 @@ impl DatClean {
 
     pub fn remove_no_dumps(t_dat: &mut DatDir) {
         for node in &mut t_dat.children {
-            let Some(m_game) = node.dir_mut() else { continue };
+            let Some(m_game) = node.dir_mut() else {
+                continue;
+            };
             if m_game.d_game.is_none() {
                 Self::remove_no_dumps(m_game);
                 continue;
@@ -1402,7 +1527,9 @@ impl DatClean {
 
     pub fn remove_chd(t_dat: &mut DatDir) {
         for node in &mut t_dat.children {
-            let Some(m_game) = node.dir_mut() else { continue };
+            let Some(m_game) = node.dir_mut() else {
+                continue;
+            };
             if m_game.d_game.is_none() {
                 Self::remove_chd(m_game);
                 continue;
@@ -1419,7 +1546,9 @@ impl DatClean {
 
     pub fn remove_non_chd(t_dat: &mut DatDir) {
         for node in &mut t_dat.children {
-            let Some(m_game) = node.dir_mut() else { continue };
+            let Some(m_game) = node.dir_mut() else {
+                continue;
+            };
             if m_game.d_game.is_none() {
                 Self::remove_non_chd(m_game);
                 continue;
@@ -1450,9 +1579,14 @@ impl DatClean {
         for node in &mut t_dat.children {
             let file_type = node.file_type;
             let is_container = node.dir().is_some_and(|d| d.d_game.is_none());
-            let dat_struct = node.dir().map(|d| d.dat_struct()).unwrap_or(ZipStructure::None);
+            let dat_struct = node
+                .dir()
+                .map(|d| d.dat_struct())
+                .unwrap_or(ZipStructure::None);
 
-            let Some(m_game) = node.dir_mut() else { continue };
+            let Some(m_game) = node.dir_mut() else {
+                continue;
+            };
             if file_type == FileType::Dir || (file_type == FileType::UnSet && is_container) {
                 Self::remove_unneeded_directories(m_game);
                 continue;

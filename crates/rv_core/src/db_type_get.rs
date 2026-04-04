@@ -41,4 +41,3 @@ mod tests {
         assert_eq!(from_extension(".bin"), FileType::File);
     }
 }
-

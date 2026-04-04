@@ -1,12 +1,12 @@
+use dat_reader::dat_store::{DatGame, DatHeader, DatNode};
+use dat_reader::enums::FileType;
+use dat_reader::xml_writer::DatXmlWriter;
+use rv_core::scanner::Scanner;
 use std::env;
 use std::fs::File;
-use rv_core::scanner::Scanner;
-use dat_reader::enums::FileType;
-use dat_reader::dat_store::{DatHeader, DatNode, DatGame};
-use dat_reader::xml_writer::DatXmlWriter;
 
 /// CLI tool to generate a standard XML DAT file from a physical directory.
-/// 
+///
 /// `dir2dat` mimics the functionality of the C# `RomVault` `Dir2Dat` context menu option.
 /// It scans a directory, dives into zip/7z archives, calculates their hashes, and exports
 /// a `.dat` XML describing the folder's structure perfectly.
@@ -41,7 +41,12 @@ fn main() {
         // If it's an archive, we deep scan it to get the files inside
         if file.file_type == FileType::Zip || file.file_type == FileType::SevenZip {
             println!("Deep scanning archive: {}", file.name);
-            match Scanner::scan_archive_file(file.file_type, &format!("{}/{}", target_dir, file.name), 0, true) {
+            match Scanner::scan_archive_file(
+                file.file_type,
+                &format!("{}/{}", target_dir, file.name),
+                0,
+                true,
+            ) {
                 Ok(arch) => {
                     let mut d_dir = DatNode::new_dir(file.name.clone(), file.file_type);
                     if let Some(d) = d_dir.dir_mut() {
@@ -81,7 +86,7 @@ fn main() {
                 println!("Deep scanning raw file: {}", file.name);
                 let full_path = format!("{}/{}", target_dir, file.name);
                 let mut f_node = DatNode::new_file(file.name.clone(), file.file_type);
-                
+
                 match Scanner::scan_raw_file(&full_path) {
                     Ok(scanned_raw) => {
                         if let Some(f) = f_node.file_mut() {
@@ -106,7 +111,7 @@ fn main() {
 
     let out_file = "output.dat";
     println!("Writing DAT file to {}", out_file);
-    
+
     if let Ok(mut file) = File::create(out_file) {
         if let Err(e) = DatXmlWriter::write_dat(&mut file, &dat_header) {
             println!("Failed to write DAT file: {}", e);

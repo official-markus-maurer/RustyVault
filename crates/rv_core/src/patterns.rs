@@ -73,4 +73,3 @@ fn wildcard_match(pattern: &str, text: &str) -> bool {
     }
     pi == p.len()
 }
-

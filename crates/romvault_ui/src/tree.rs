@@ -14,7 +14,6 @@ use rv_core::scanner::Scanner;
 pub struct TreeRow {
     pub node_rc: Rc<RefCell<RvFile>>,
     pub depth: usize,
-    pub has_children: bool,
 }
 
 fn merged_roms(stats: &rv_core::repair_status::RepairStatus) -> i32 {
@@ -43,20 +42,31 @@ fn missing_plain(stats: &rv_core::repair_status::RepairStatus) -> i32 {
 
 fn tree_color_from_rep_status(rep_status: RepStatus, dat_status: DatStatus) -> egui::Color32 {
     match rep_status {
-        RepStatus::Correct | RepStatus::CorrectMIA | RepStatus::DirCorrect => egui::Color32::from_rgb(0, 200, 0),
-        RepStatus::Missing | RepStatus::MissingMIA | RepStatus::DirMissing | RepStatus::Corrupt | RepStatus::DirCorrupt | RepStatus::Incomplete => {
-            egui::Color32::from_rgb(200, 0, 0)
+        RepStatus::Correct | RepStatus::CorrectMIA | RepStatus::DirCorrect => {
+            egui::Color32::from_rgb(0, 200, 0)
         }
+        RepStatus::Missing
+        | RepStatus::MissingMIA
+        | RepStatus::DirMissing
+        | RepStatus::Corrupt
+        | RepStatus::DirCorrupt
+        | RepStatus::Incomplete => egui::Color32::from_rgb(200, 0, 0),
         RepStatus::CanBeFixed | RepStatus::CanBeFixedMIA | RepStatus::CorruptCanBeFixed => {
             egui::Color32::from_rgb(200, 200, 0)
         }
-        RepStatus::MoveToSort | RepStatus::MoveToCorrupt | RepStatus::NeededForFix | RepStatus::Rename | RepStatus::InToSort | RepStatus::DirInToSort => {
-            egui::Color32::from_rgb(0, 200, 200)
-        }
+        RepStatus::MoveToSort
+        | RepStatus::MoveToCorrupt
+        | RepStatus::NeededForFix
+        | RepStatus::Rename
+        | RepStatus::InToSort
+        | RepStatus::DirInToSort => egui::Color32::from_rgb(0, 200, 200),
         RepStatus::Delete | RepStatus::Deleted => egui::Color32::from_rgb(200, 0, 0),
-        RepStatus::NotCollected | RepStatus::UnNeeded | RepStatus::Unknown | RepStatus::DirUnknown | RepStatus::UnScanned | RepStatus::Ignore => {
-            egui::Color32::from_rgb(150, 150, 150)
-        }
+        RepStatus::NotCollected
+        | RepStatus::UnNeeded
+        | RepStatus::Unknown
+        | RepStatus::DirUnknown
+        | RepStatus::UnScanned
+        | RepStatus::Ignore => egui::Color32::from_rgb(150, 150, 150),
         _ => {
             if dat_status == DatStatus::NotInDat {
                 egui::Color32::from_rgb(150, 150, 150)
@@ -89,7 +99,10 @@ fn tree_color_from_stats(stats: &rv_core::repair_status::RepairStatus) -> egui::
 fn tree_icon_idx_from_stats(stats: &rv_core::repair_status::RepairStatus) -> i32 {
     if stats.total_roms == 0 {
         2
-    } else if unknown_roms(stats) == stats.total_roms || merged_roms(stats) == stats.total_roms || stats.roms_fixes > 0 {
+    } else if unknown_roms(stats) == stats.total_roms
+        || merged_roms(stats) == stats.total_roms
+        || stats.roms_fixes > 0
+    {
         4
     } else if correct_plain(stats) == 0 && missing_plain(stats) > 0 {
         1
@@ -117,14 +130,14 @@ fn tree_icon_idx_from_report_status(report_status: rv_core::enums::ReportStatus)
 }
 
 /// Contains the logic for rendering the recursive left-hand directory tree.
-/// 
+///
 /// `tree.rs` implements `RomVaultApp::draw_tree_node`, which is called every frame to
 /// visually construct the hierarchical representation of the `dir_root` DB tree.
-/// 
+///
 /// Differences from C#:
 /// - C# uses `WinForms.TreeView` and dynamically loads children via `OnBeforeExpand` events.
 /// - The Rust version uses `egui::CollapsingHeader` and traverses the actual `RvFile` pointers
-///   in memory every frame. It relies entirely on `node.cached_stats` (computed by `RepairStatus`) 
+///   in memory every frame. It relies entirely on `node.cached_stats` (computed by `RepairStatus`)
 ///   to instantaneously color-code folders without deep recursion on the UI thread.
 impl RomVaultApp {
     fn ui_working(&self) -> bool {
@@ -235,18 +248,12 @@ impl RomVaultApp {
                 }
 
                 while let Some((node_rc, depth)) = stack.pop() {
-                    let (is_file, is_game, tree_expanded, has_multiple_dats, has_child_dirs, dir_children) = {
+                    let (is_file, is_game, tree_expanded, dir_children) = {
                         let node = node_rc.borrow();
-                        let has_child_dirs = node.children.iter().any(|c| {
-                            let cb = c.borrow();
-                            cb.is_directory() && cb.game.is_none()
-                        });
                         (
                             node.is_file(),
                             node.game.is_some(),
                             node.tree_expanded,
-                            node.is_directory() && node.dat.is_none() && node.dir_dats.len() > 1,
-                            has_child_dirs,
                             if node.tree_expanded {
                                 node.children
                                     .iter()
@@ -266,11 +273,9 @@ impl RomVaultApp {
                         continue;
                     }
 
-                    let has_children = has_child_dirs || has_multiple_dats;
                     rows.push(TreeRow {
                         node_rc: Rc::clone(&node_rc),
                         depth,
-                        has_children,
                     });
 
                     if tree_expanded {
@@ -364,9 +369,17 @@ impl RomVaultApp {
     pub fn draw_tree_row(&mut self, ui: &mut egui::Ui, row: &TreeRow) {
         let node_rc = Rc::clone(&row.node_rc);
         let depth = row.depth;
-        let has_expandable_children = row.has_children;
 
-        let (is_file, is_directory, is_game, tree_checked, tree_expanded, has_multiple_dats, is_in_to_sort) = {
+        let (
+            is_file,
+            is_directory,
+            is_game,
+            tree_checked,
+            tree_expanded,
+            has_multiple_dats,
+            has_child_dirs,
+            is_in_to_sort,
+        ) = {
             let node = node_rc.borrow();
             (
                 node.is_file(),
@@ -375,16 +388,23 @@ impl RomVaultApp {
                 node.tree_checked,
                 node.tree_expanded,
                 node.is_directory() && node.dat.is_none() && node.dir_dats.len() > 1,
+                node.children.iter().any(|c| {
+                    let cb = c.borrow();
+                    !cb.is_file() && cb.game.is_none()
+                }),
                 node.dat_status() == DatStatus::InToSort,
             )
         };
         if is_file || is_game {
             return;
         }
+        let has_expandable_children = has_child_dirs || has_multiple_dats;
 
         let row_height = 18.0;
-        let row_rect =
-            ui.allocate_exact_size(egui::vec2(ui.available_width(), row_height), egui::Sense::click());
+        let row_rect = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), row_height),
+            egui::Sense::click(),
+        );
 
         let is_selected_for_scroll = self
             .selected_node
@@ -460,7 +480,8 @@ impl RomVaultApp {
                 if is_in_to_sort {
                     let to_sort_is_primary =
                         node.to_sort_status_is(rv_core::enums::ToSortDirType::TO_SORT_PRIMARY);
-                    let to_sort_is_cache = node.to_sort_status_is(rv_core::enums::ToSortDirType::TO_SORT_CACHE);
+                    let to_sort_is_cache =
+                        node.to_sort_status_is(rv_core::enums::ToSortDirType::TO_SORT_CACHE);
 
                     if to_sort_is_primary && to_sort_is_cache {
                         name = format!("{} (Primary, Cache)", name);
@@ -468,12 +489,18 @@ impl RomVaultApp {
                         name = format!("{} (Primary)", name);
                     } else if to_sort_is_cache {
                         name = format!("{} (Cache)", name);
-                    } else if node.to_sort_status_is(rv_core::enums::ToSortDirType::TO_SORT_FILE_ONLY) {
+                    } else if node
+                        .to_sort_status_is(rv_core::enums::ToSortDirType::TO_SORT_FILE_ONLY)
+                    {
                         name = format!("{} (File Only)", name);
                     }
 
                     if let Some(stats) = cached_stats {
-                        name = format!("{} (Files: {})", name, crate::format_number(stats.total_roms));
+                        name = format!(
+                            "{} (Files: {})",
+                            name,
+                            crate::format_number(stats.total_roms)
+                        );
                     } else {
                         name = format!("{} (Files: 0)", name);
                     }
@@ -499,19 +526,31 @@ impl RomVaultApp {
 
                         let mut parts = Vec::new();
                         if stats.total_roms > 0 {
-                            parts.push(format!("Have: {}", crate::format_number(correct_plain(&stats))));
+                            parts.push(format!(
+                                "Have: {}",
+                                crate::format_number(correct_plain(&stats))
+                            ));
                             if stats.roms_correct_mia > 0 {
                                 parts.push(format!(
                                     "Found MIA: {}",
                                     crate::format_number(stats.roms_correct_mia)
                                 ));
                             }
-                            parts.push(format!("Missing: {}", crate::format_number(missing_plain(&stats))));
+                            parts.push(format!(
+                                "Missing: {}",
+                                crate::format_number(missing_plain(&stats))
+                            ));
                             if stats.roms_missing_mia > 0 {
-                                parts.push(format!("MIA: {}", crate::format_number(stats.roms_missing_mia)));
+                                parts.push(format!(
+                                    "MIA: {}",
+                                    crate::format_number(stats.roms_missing_mia)
+                                ));
                             }
                             if stats.roms_fixes > 0 {
-                                parts.push(format!("Fixes: {}", crate::format_number(stats.roms_fixes)));
+                                parts.push(format!(
+                                    "Fixes: {}",
+                                    crate::format_number(stats.roms_fixes)
+                                ));
                             }
                             if stats.roms_not_collected > 0 {
                                 parts.push(format!(
@@ -520,10 +559,16 @@ impl RomVaultApp {
                                 ));
                             }
                             if stats.roms_unknown > 0 {
-                                parts.push(format!("Unknown: {}", crate::format_number(stats.roms_unknown)));
+                                parts.push(format!(
+                                    "Unknown: {}",
+                                    crate::format_number(stats.roms_unknown)
+                                ));
                             }
                             if stats.roms_unneeded > 0 {
-                                parts.push(format!("UnNeeded: {}", crate::format_number(stats.roms_unneeded)));
+                                parts.push(format!(
+                                    "UnNeeded: {}",
+                                    crate::format_number(stats.roms_unneeded)
+                                ));
                             }
                         }
 
@@ -559,13 +604,19 @@ impl RomVaultApp {
             ui.add_space(18.0 * depth as f32);
 
             if has_expandable_children {
-                let expand_icon = if tree_expanded {
-                    include_asset!("ExpandBoxMinus.png")
+                let expand_resp = if let Some(img) =
+                    crate::assets::themed_image_source_optional(if tree_expanded {
+                        "ExpandBoxMinus.png"
+                    } else {
+                        "ExpandBoxPlus.png"
+                    }) {
+                    ui.add_sized([9.0, 9.0], egui::ImageButton::new(img).frame(false))
                 } else {
-                    include_asset!("ExpandBoxPlus.png")
+                    ui.add_sized(
+                        [9.0, 9.0],
+                        egui::Button::new(if tree_expanded { "▾" } else { "▸" }).frame(false),
+                    )
                 };
-                let expand_resp =
-                    ui.add_sized([9.0, 9.0], egui::ImageButton::new(expand_icon).frame(false));
                 if expand_resp.clicked() {
                     toggle_expanded = true;
                 } else if expand_resp.secondary_clicked() {
@@ -582,7 +633,10 @@ impl RomVaultApp {
             };
             let checkbox_resp = ui
                 .add_enabled_ui(!self.ui_working(), |ui| {
-                    ui.add_sized([13.0, 13.0], egui::ImageButton::new(checkbox_img).frame(false))
+                    ui.add_sized(
+                        [13.0, 13.0],
+                        egui::ImageButton::new(checkbox_img).frame(false),
+                    )
                 })
                 .inner;
             if checkbox_resp.clicked() {
@@ -615,7 +669,10 @@ impl RomVaultApp {
                 }
             }
 
-            ui.add_sized([16.0, row_height], egui::Image::new(img_src).max_width(16.0));
+            ui.add_sized(
+                [16.0, row_height],
+                egui::Image::new(img_src).max_width(16.0),
+            );
 
             let clean_name = ui_display_name
                 .trim_start_matches(|c: char| !c.is_alphanumeric() && c != '(' && c != '[')
@@ -662,14 +719,15 @@ impl RomVaultApp {
 
                 if is_in_to_sort {
                     let np_clone = node_rc.borrow().get_logical_name();
-                    let open_tosort =
-                        rv_core::settings::find_dir_mapping(&np_clone).unwrap_or_else(|| np_clone.clone());
+                    let open_tosort = rv_core::settings::find_dir_mapping(&np_clone)
+                        .unwrap_or_else(|| np_clone.clone());
                     let can_open_tosort = std::path::Path::new(&open_tosort).is_dir();
                     if ui
                         .add_enabled(can_open_tosort, egui::Button::new("Open ToSort Directory"))
                         .clicked()
                     {
-                        self.task_logs.push(format!("Opening ToSort Directory: {}", open_tosort));
+                        self.task_logs
+                            .push(format!("Opening ToSort Directory: {}", open_tosort));
                         let _ = std::process::Command::new("cmd")
                             .args(["/C", "start", "", &open_tosort])
                             .spawn();
@@ -699,17 +757,24 @@ impl RomVaultApp {
                     });
                     let (show_set_file_only, show_clear_file_only) = {
                         let n = node_rc.borrow();
-                        let is_primary = n.to_sort_status_is(rv_core::enums::ToSortDirType::TO_SORT_PRIMARY);
-                        let is_cache = n.to_sort_status_is(rv_core::enums::ToSortDirType::TO_SORT_CACHE);
-                        let is_file_only = n.to_sort_status_is(rv_core::enums::ToSortDirType::TO_SORT_FILE_ONLY);
+                        let is_primary =
+                            n.to_sort_status_is(rv_core::enums::ToSortDirType::TO_SORT_PRIMARY);
+                        let is_cache =
+                            n.to_sort_status_is(rv_core::enums::ToSortDirType::TO_SORT_CACHE);
+                        let is_file_only =
+                            n.to_sort_status_is(rv_core::enums::ToSortDirType::TO_SORT_FILE_ONLY);
                         (!(is_file_only || is_primary || is_cache), is_file_only)
                     };
 
                     if ui
-                        .add_enabled(!self.ui_working() && can_move_up, egui::Button::new("Move Up"))
+                        .add_enabled(
+                            !self.ui_working() && can_move_up,
+                            egui::Button::new("Move Up"),
+                        )
                         .clicked()
                     {
-                        self.task_logs.push(format!("Move ToSort Up: {}", node_rc.borrow().name));
+                        self.task_logs
+                            .push(format!("Move ToSort Up: {}", node_rc.borrow().name));
                         GLOBAL_DB.with(|db_ref| {
                             if let Some(db) = db_ref.borrow().as_ref() {
                                 let mut dir_root = db.dir_root.borrow_mut();
@@ -734,10 +799,14 @@ impl RomVaultApp {
                         ui.close_menu();
                     }
                     if ui
-                        .add_enabled(!self.ui_working() && can_move_down, egui::Button::new("Move Down"))
+                        .add_enabled(
+                            !self.ui_working() && can_move_down,
+                            egui::Button::new("Move Down"),
+                        )
                         .clicked()
                     {
-                        self.task_logs.push(format!("Move ToSort Down: {}", node_rc.borrow().name));
+                        self.task_logs
+                            .push(format!("Move ToSort Down: {}", node_rc.borrow().name));
                         GLOBAL_DB.with(|db_ref| {
                             if let Some(db) = db_ref.borrow().as_ref() {
                                 let mut dir_root = db.dir_root.borrow_mut();
@@ -762,7 +831,10 @@ impl RomVaultApp {
                         ui.close_menu();
                     }
                     if ui
-                        .add_enabled(!self.ui_working(), egui::Button::new("Set To Primary ToSort"))
+                        .add_enabled(
+                            !self.ui_working(),
+                            egui::Button::new("Set To Primary ToSort"),
+                        )
                         .clicked()
                     {
                         self.task_logs
@@ -791,7 +863,9 @@ impl RomVaultApp {
                                 let was_cache = old_primary
                                     .as_ref()
                                     .map(|n| {
-                                        n.borrow().to_sort_status_is(rv_core::enums::ToSortDirType::TO_SORT_CACHE)
+                                        n.borrow().to_sort_status_is(
+                                            rv_core::enums::ToSortDirType::TO_SORT_CACHE,
+                                        )
                                     })
                                     .unwrap_or(false);
                                 if let Some(op) = old_primary {
@@ -804,9 +878,13 @@ impl RomVaultApp {
                                 }
 
                                 let mut clicked = node_rc.borrow_mut();
-                                clicked.to_sort_status_set(rv_core::enums::ToSortDirType::TO_SORT_PRIMARY);
+                                clicked.to_sort_status_set(
+                                    rv_core::enums::ToSortDirType::TO_SORT_PRIMARY,
+                                );
                                 if was_cache {
-                                    clicked.to_sort_status_set(rv_core::enums::ToSortDirType::TO_SORT_CACHE);
+                                    clicked.to_sort_status_set(
+                                        rv_core::enums::ToSortDirType::TO_SORT_CACHE,
+                                    );
                                 }
                             }
                         });
@@ -820,7 +898,8 @@ impl RomVaultApp {
                         .add_enabled(!self.ui_working(), egui::Button::new("Set To Cache ToSort"))
                         .clicked()
                     {
-                        self.task_logs.push(format!("Set To Cache ToSort: {}", node_rc.borrow().name));
+                        self.task_logs
+                            .push(format!("Set To Cache ToSort: {}", node_rc.borrow().name));
                         GLOBAL_DB.with(|db_ref| {
                             if let Some(db) = db_ref.borrow().as_ref() {
                                 let mut clicked = node_rc.borrow_mut();
@@ -833,10 +912,9 @@ impl RomVaultApp {
                                 let root = db.dir_root.borrow();
                                 let mut old_cache: Option<Rc<RefCell<RvFile>>> = None;
                                 for child in root.children.iter().skip(1) {
-                                    if child
-                                        .borrow()
-                                        .to_sort_status_is(rv_core::enums::ToSortDirType::TO_SORT_CACHE)
-                                    {
+                                    if child.borrow().to_sort_status_is(
+                                        rv_core::enums::ToSortDirType::TO_SORT_CACHE,
+                                    ) {
                                         old_cache = Some(Rc::clone(child));
                                         break;
                                     }
@@ -845,12 +923,14 @@ impl RomVaultApp {
 
                                 if let Some(oc) = old_cache {
                                     let mut ocm = oc.borrow_mut();
-                                    ocm.to_sort_status_clear(rv_core::enums::ToSortDirType::TO_SORT_CACHE);
+                                    ocm.to_sort_status_clear(
+                                        rv_core::enums::ToSortDirType::TO_SORT_CACHE,
+                                    );
                                     ocm.ui_display_name.clear();
                                 }
-                                node_rc
-                                    .borrow_mut()
-                                    .to_sort_status_set(rv_core::enums::ToSortDirType::TO_SORT_CACHE);
+                                node_rc.borrow_mut().to_sort_status_set(
+                                    rv_core::enums::ToSortDirType::TO_SORT_CACHE,
+                                );
                             }
                         });
                         if !self.ui_working() {
@@ -861,11 +941,16 @@ impl RomVaultApp {
                     }
                     if show_set_file_only
                         && ui
-                            .add_enabled(!self.ui_working(), egui::Button::new("Set To File Only ToSort"))
+                            .add_enabled(
+                                !self.ui_working(),
+                                egui::Button::new("Set To File Only ToSort"),
+                            )
                             .clicked()
                     {
-                        self.task_logs
-                            .push(format!("Set To File Only ToSort: {}", node_rc.borrow().name));
+                        self.task_logs.push(format!(
+                            "Set To File Only ToSort: {}",
+                            node_rc.borrow().name
+                        ));
                         if node_rc.borrow().tree_checked == TreeSelect::Locked {
                             node_rc.borrow_mut().tree_checked = TreeSelect::Selected;
                         }
@@ -881,7 +966,10 @@ impl RomVaultApp {
                     }
                     if show_clear_file_only
                         && ui
-                            .add_enabled(!self.ui_working(), egui::Button::new("Clear File Only ToSort"))
+                            .add_enabled(
+                                !self.ui_working(),
+                                egui::Button::new("Clear File Only ToSort"),
+                            )
                             .clicked()
                     {
                         self.task_logs
@@ -901,7 +989,10 @@ impl RomVaultApp {
                         .add_enabled(!self.ui_working(), egui::Button::new("Remove"))
                         .clicked()
                     {
-                        self.task_logs.push(format!("Remove ToSort Directory: {}", node_rc.borrow().name));
+                        self.task_logs.push(format!(
+                            "Remove ToSort Directory: {}",
+                            node_rc.borrow().name
+                        ));
                         let mut select_after_remove: Option<Rc<RefCell<RvFile>>> = None;
                         GLOBAL_DB.with(|db_ref| {
                             if let Some(db) = db_ref.borrow().as_ref() {
@@ -915,13 +1006,16 @@ impl RomVaultApp {
                                 }
                                 if let Some(idx) = idx_to_remove {
                                     if idx > 0 && idx - 1 < dir_root.children.len() {
-                                        select_after_remove = Some(Rc::clone(&dir_root.children[idx - 1]));
+                                        select_after_remove =
+                                            Some(Rc::clone(&dir_root.children[idx - 1]));
                                     }
                                     dir_root.child_remove(idx);
                                 }
                                 drop(dir_root);
 
-                                rv_core::repair_status::RepairStatus::report_status_reset(Rc::clone(&db.dir_root));
+                                rv_core::repair_status::RepairStatus::report_status_reset(
+                                    Rc::clone(&db.dir_root),
+                                );
                             }
                         });
                         if let Some(selected) = &self.selected_node {
@@ -955,14 +1049,15 @@ impl RomVaultApp {
                 }
                 ui.separator();
                 let node_path = node_rc.borrow().get_logical_name();
-                let open_path =
-                    rv_core::settings::find_dir_mapping(&node_path).unwrap_or_else(|| node_path.clone());
+                let open_path = rv_core::settings::find_dir_mapping(&node_path)
+                    .unwrap_or_else(|| node_path.clone());
                 let can_open_dir = std::path::Path::new(&open_path).exists();
                 if ui
                     .add_enabled(can_open_dir, egui::Button::new("Open Directory"))
                     .clicked()
                 {
-                    self.task_logs.push(format!("Opening Directory: {}", open_path));
+                    self.task_logs
+                        .push(format!("Opening Directory: {}", open_path));
                     let _ = std::process::Command::new("cmd")
                         .args(["/C", "start", "", &open_path])
                         .spawn();
@@ -986,11 +1081,12 @@ impl RomVaultApp {
             });
 
             if let Some(action) = pending_action {
-                let logical = pending_action_logical.unwrap_or_else(|| node_rc.borrow().get_logical_name());
+                let logical =
+                    pending_action_logical.unwrap_or_else(|| node_rc.borrow().get_logical_name());
                 match action {
                     TreeAction::Quick => {
-                        let np =
-                            rv_core::settings::find_dir_mapping(&logical).unwrap_or(logical.clone());
+                        let np = rv_core::settings::find_dir_mapping(&logical)
+                            .unwrap_or(logical.clone());
                         let rule = rv_core::settings::find_rule(&logical);
                         let target_rc = Rc::clone(&node_rc);
                         self.launch_task("Scan ROMs (Quick)", move |tx| {
@@ -1000,7 +1096,8 @@ impl RomVaultApp {
                                 rv_core::settings::EScanLevel::Level1,
                                 &rule.ignore_files.items,
                             );
-                            let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
+                            let mut root_scan =
+                                rv_core::scanned_file::ScannedFile::new(FileType::Dir);
                             root_scan.children = files;
                             let _ = tx.send("Integrating files into DB...".to_string());
                             FileScanning::scan_dir_with_level(
@@ -1011,8 +1108,8 @@ impl RomVaultApp {
                         });
                     }
                     TreeAction::Normal => {
-                        let np =
-                            rv_core::settings::find_dir_mapping(&logical).unwrap_or(logical.clone());
+                        let np = rv_core::settings::find_dir_mapping(&logical)
+                            .unwrap_or(logical.clone());
                         let rule = rv_core::settings::find_rule(&logical);
                         let target_rc = Rc::clone(&node_rc);
                         self.launch_task("Scan ROMs", move |tx| {
@@ -1022,7 +1119,8 @@ impl RomVaultApp {
                                 rv_core::settings::EScanLevel::Level2,
                                 &rule.ignore_files.items,
                             );
-                            let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
+                            let mut root_scan =
+                                rv_core::scanned_file::ScannedFile::new(FileType::Dir);
                             root_scan.children = files;
                             let _ = tx.send("Integrating files into DB...".to_string());
                             FileScanning::scan_dir_with_level(
@@ -1033,8 +1131,8 @@ impl RomVaultApp {
                         });
                     }
                     TreeAction::Full => {
-                        let np =
-                            rv_core::settings::find_dir_mapping(&logical).unwrap_or(logical.clone());
+                        let np = rv_core::settings::find_dir_mapping(&logical)
+                            .unwrap_or(logical.clone());
                         let rule = rv_core::settings::find_rule(&logical);
                         let target_rc = Rc::clone(&node_rc);
                         self.launch_task("Scan ROMs (Full)", move |tx| {
@@ -1044,7 +1142,8 @@ impl RomVaultApp {
                                 rv_core::settings::EScanLevel::Level3,
                                 &rule.ignore_files.items,
                             );
-                            let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
+                            let mut root_scan =
+                                rv_core::scanned_file::ScannedFile::new(FileType::Dir);
                             root_scan.children = files;
                             let _ = tx.send("Integrating files into DB...".to_string());
                             FileScanning::scan_dir_with_level(
@@ -1087,7 +1186,6 @@ impl RomVaultApp {
             let _ = has_multiple_dats;
         }
     }
-
 }
 
 #[cfg(test)]

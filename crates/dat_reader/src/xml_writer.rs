@@ -2,15 +2,15 @@ use crate::dat_store::DatHeader;
 use std::io::{self, Write};
 
 /// Logic for serializing a DAT AST back into an XML file.
-/// 
-/// `DatXmlWriter` takes the `DatHeader` and its underlying `DatNode` tree and 
+///
+/// `DatXmlWriter` takes the `DatHeader` and its underlying `DatNode` tree and
 /// formats it into a standard Logiqx XML DAT format. This is heavily utilized
 /// by the `dir2dat` tool and the `fix_dat_report` exporter.
-/// 
+///
 /// Differences from C#:
 /// - The C# `DatClean` logic and `FixDat` writers contain highly specialized XML writers
 ///   with deep formatting rules for different DAT engines (e.g. MAME vs ClrMamePro).
-/// - The Rust version is currently a simplified generic XML emitter that covers the 
+/// - The Rust version is currently a simplified generic XML emitter that covers the
 ///   standard Logiqx fields but does not yet support arbitrary DOCTYPE emulation.
 pub struct DatXmlWriter;
 
@@ -20,7 +20,7 @@ impl DatXmlWriter {
             return Self::write_mame_xml(writer, dat_header);
         }
         writeln!(writer, "<?xml version=\"1.0\"?>")?;
-        
+
         let is_mame_style = dat_header.mame_xml
             || dat_header
                 .name
@@ -30,7 +30,9 @@ impl DatXmlWriter {
                 .contains("mame");
 
         if is_mame_style {
-            writeln!(writer, r#"<!DOCTYPE mame [
+            writeln!(
+                writer,
+                r#"<!DOCTYPE mame [
 <!ELEMENT mame (machine+)>
 	<!ATTLIST mame build CDATA #IMPLIED>
 	<!ATTLIST mame debug (yes|no) "no">
@@ -67,15 +69,20 @@ impl DatXmlWriter {
 		<!ELEMENT device_ref EMPTY>
 			<!ATTLIST device_ref name CDATA #REQUIRED>
 ]>
-"#)?;
-            writeln!(writer, "<mame build=\"{}\">", dat_header.name.as_deref().unwrap_or("MAME"))?;
+"#
+            )?;
+            writeln!(
+                writer,
+                "<mame build=\"{}\">",
+                dat_header.name.as_deref().unwrap_or("MAME")
+            )?;
         } else {
             writeln!(writer, "<datafile>")?;
             Self::write_header(writer, dat_header)?;
         }
-        
+
         Self::write_base(writer, &dat_header.base_dir, 1, is_mame_style)?;
-        
+
         if is_mame_style {
             writeln!(writer, "</mame>")?;
         } else {
@@ -95,7 +102,9 @@ impl DatXmlWriter {
 
     fn write_mame_xml<W: Write>(writer: &mut W, dat_header: &DatHeader) -> io::Result<()> {
         writeln!(writer, "<?xml version=\"1.0\"?>")?;
-        writeln!(writer, r#"<!DOCTYPE mame [
+        writeln!(
+            writer,
+            r#"<!DOCTYPE mame [
 <!ELEMENT mame (machine+)>
 	<!ATTLIST mame build CDATA #IMPLIED>
 	<!ATTLIST mame debug (yes|no) "no">
@@ -133,8 +142,13 @@ impl DatXmlWriter {
 			<!ATTLIST device_ref name CDATA #REQUIRED>
 ]>
 
-"#)?;
-        writeln!(writer, "<mame build=\"{}\">", Self::etxt(dat_header.name.as_deref().unwrap_or("")))?;
+"#
+        )?;
+        writeln!(
+            writer,
+            "<mame build=\"{}\">",
+            Self::etxt(dat_header.name.as_deref().unwrap_or(""))
+        )?;
         Self::write_base(writer, &dat_header.base_dir, 1, true)?;
         writeln!(writer, "</mame>")?;
         Ok(())
@@ -142,7 +156,7 @@ impl DatXmlWriter {
 
     fn write_header<W: Write>(writer: &mut W, dat_header: &DatHeader) -> io::Result<()> {
         writeln!(writer, "  <header>")?;
-        
+
         if let Some(ref id) = dat_header.id {
             writeln!(writer, "    <id>{}</id>", id)?;
         }
@@ -182,7 +196,7 @@ impl DatXmlWriter {
         if let Some(ref comment) = dat_header.comment {
             writeln!(writer, "    <comment>{}</comment>", comment)?;
         }
-        
+
         if dat_header.header.is_some() || dat_header.compression.is_some() {
             write!(writer, "    <romvault")?;
             if let Some(ref h) = dat_header.header {
@@ -193,21 +207,32 @@ impl DatXmlWriter {
             }
             writeln!(writer, "/>")?;
         }
-        
+
         writeln!(writer, "  </header>")?;
         Ok(())
     }
 
-    fn write_base<W: Write>(writer: &mut W, dir: &crate::dat_store::DatDir, indent: usize, is_mame: bool) -> io::Result<()> {
+    fn write_base<W: Write>(
+        writer: &mut W,
+        dir: &crate::dat_store::DatDir,
+        indent: usize,
+        is_mame: bool,
+    ) -> io::Result<()> {
         let pad = "  ".repeat(indent);
-        
+
         for child in &dir.children {
             if child.is_dir() {
                 let d = child.dir().unwrap();
                 if let Some(g) = d.d_game.as_ref() {
                     let tag_name = if is_mame { "machine" } else { "game" };
-                    write!(writer, "{}<{} name=\"{}\"", pad, tag_name, Self::etxt(&child.name))?;
-                    
+                    write!(
+                        writer,
+                        "{}<{} name=\"{}\"",
+                        pad,
+                        tag_name,
+                        Self::etxt(&child.name)
+                    )?;
+
                     if let Some(ref cloneof) = g.clone_of {
                         write!(writer, " cloneof=\"{}\"", Self::etxt(cloneof))?;
                     }
@@ -222,15 +247,25 @@ impl DatXmlWriter {
                     writeln!(writer, ">")?;
 
                     if let Some(ref desc) = g.description {
-                        writeln!(writer, "{}  <description>{}</description>", pad, Self::etxt(desc))?;
+                        writeln!(
+                            writer,
+                            "{}  <description>{}</description>",
+                            pad,
+                            Self::etxt(desc)
+                        )?;
                     }
                     if let Some(ref year) = g.year {
                         writeln!(writer, "{}  <year>{}</year>", pad, Self::etxt(year))?;
                     }
                     if let Some(ref man) = g.manufacturer {
-                        writeln!(writer, "{}  <manufacturer>{}</manufacturer>", pad, Self::etxt(man))?;
+                        writeln!(
+                            writer,
+                            "{}  <manufacturer>{}</manufacturer>",
+                            pad,
+                            Self::etxt(man)
+                        )?;
                     }
-                    
+
                     Self::write_base(writer, d, indent + 1, is_mame)?;
                     writeln!(writer, "{}</{}>", pad, tag_name)?;
                 } else {
@@ -241,7 +276,12 @@ impl DatXmlWriter {
             } else {
                 let f = child.file().unwrap();
                 if f.is_disk {
-                    write!(writer, "{}<disk name=\"{}\"", pad, Self::etxt(child.name.trim_end_matches(".chd")))?;
+                    write!(
+                        writer,
+                        "{}<disk name=\"{}\"",
+                        pad,
+                        Self::etxt(child.name.trim_end_matches(".chd"))
+                    )?;
                 } else {
                     write!(writer, "{}<rom name=\"{}\"", pad, Self::etxt(&child.name))?;
                     if let Some(s) = f.size {
@@ -251,7 +291,7 @@ impl DatXmlWriter {
                         write!(writer, " crc=\"{}\"", hex::encode(c))?;
                     }
                 }
-                
+
                 if let Some(ref md5) = f.md5 {
                     write!(writer, " md5=\"{}\"", hex::encode(md5))?;
                 }
@@ -271,15 +311,19 @@ impl DatXmlWriter {
                         write!(writer, " mia=\"yes\"")?;
                     }
                 }
-                
+
                 writeln!(writer, "/>")?;
             }
         }
-        
+
         Ok(())
     }
 
-    fn write_base_newstyle<W: Write>(writer: &mut W, dir: &crate::dat_store::DatDir, indent: usize) -> io::Result<()> {
+    fn write_base_newstyle<W: Write>(
+        writer: &mut W,
+        dir: &crate::dat_store::DatDir,
+        indent: usize,
+    ) -> io::Result<()> {
         use crate::enums::FileType;
         let pad = "  ".repeat(indent);
 
@@ -312,10 +356,20 @@ impl DatXmlWriter {
                                 writeln!(writer, "{}  <id>{}</id>", pad, Self::etxt(id))?;
                             }
                             if let Some(ref cloneof) = g.clone_of {
-                                writeln!(writer, "{}  <cloneof>{}</cloneof>", pad, Self::etxt(cloneof))?;
+                                writeln!(
+                                    writer,
+                                    "{}  <cloneof>{}</cloneof>",
+                                    pad,
+                                    Self::etxt(cloneof)
+                                )?;
                             }
                             if let Some(ref cloneid) = g.clone_of_id {
-                                writeln!(writer, "{}  <cloneofid>{}</cloneofid>", pad, Self::etxt(cloneid))?;
+                                writeln!(
+                                    writer,
+                                    "{}  <cloneofid>{}</cloneofid>",
+                                    pad,
+                                    Self::etxt(cloneid)
+                                )?;
                             }
                             if let Some(ref romof) = g.rom_of {
                                 writeln!(writer, "{}  <romof>{}</romof>", pad, Self::etxt(romof))?;
@@ -328,12 +382,22 @@ impl DatXmlWriter {
                         }
                         if let Some(ref val) = g.is_device {
                             if val != "no" {
-                                writeln!(writer, "{}  <isdevice>{}</isdevice>", pad, Self::etxt(val))?;
+                                writeln!(
+                                    writer,
+                                    "{}  <isdevice>{}</isdevice>",
+                                    pad,
+                                    Self::etxt(val)
+                                )?;
                             }
                         }
                         if let Some(ref val) = g.runnable {
                             if val != "yes" {
-                                writeln!(writer, "{}  <runnable>{}</runnable>", pad, Self::etxt(val))?;
+                                writeln!(
+                                    writer,
+                                    "{}  <runnable>{}</runnable>",
+                                    pad,
+                                    Self::etxt(val)
+                                )?;
                             }
                         }
 
@@ -341,14 +405,24 @@ impl DatXmlWriter {
                             writeln!(writer, "{}  <category>{}</category>", pad, Self::etxt(cat))?;
                         }
                         if let Some(ref desc) = g.description {
-                            writeln!(writer, "{}  <description>{}</description>", pad, Self::etxt(desc))?;
+                            writeln!(
+                                writer,
+                                "{}  <description>{}</description>",
+                                pad,
+                                Self::etxt(desc)
+                            )?;
                         }
                         if !g.is_emu_arc {
                             if let Some(ref year) = g.year {
                                 writeln!(writer, "{}  <year>{}</year>", pad, Self::etxt(year))?;
                             }
                             if let Some(ref man) = g.manufacturer {
-                                writeln!(writer, "{}  <manufacturer>{}</manufacturer>", pad, Self::etxt(man))?;
+                                writeln!(
+                                    writer,
+                                    "{}  <manufacturer>{}</manufacturer>",
+                                    pad,
+                                    Self::etxt(man)
+                                )?;
                             }
                         }
                     }
@@ -357,7 +431,12 @@ impl DatXmlWriter {
 
                     if let Some(g) = d.d_game.as_ref() {
                         for dev in &g.device_ref {
-                            writeln!(writer, "{}  <device_ref name=\"{}\"/>", pad, Self::etxt(dev))?;
+                            writeln!(
+                                writer,
+                                "{}  <device_ref name=\"{}\"/>",
+                                pad,
+                                Self::etxt(dev)
+                            )?;
                         }
                     }
                     writeln!(writer, "</set>")?;
@@ -365,10 +444,21 @@ impl DatXmlWriter {
             } else {
                 let f = child.file().unwrap();
                 if child.name.ends_with('/') {
-                    writeln!(writer, "{}<dir name=\"{}\"/>", pad, Self::etxt(child.name.trim_end_matches('/')))?;
+                    writeln!(
+                        writer,
+                        "{}<dir name=\"{}\"/>",
+                        pad,
+                        Self::etxt(child.name.trim_end_matches('/'))
+                    )?;
                 } else {
                     let tag = if f.is_disk { "disk" } else { "file" };
-                    write!(writer, "{}<{} name=\"{}\"", pad, tag, Self::etxt(&child.name))?;
+                    write!(
+                        writer,
+                        "{}<{} name=\"{}\"",
+                        pad,
+                        tag,
+                        Self::etxt(&child.name)
+                    )?;
                     if let Some(s) = f.size {
                         write!(writer, " size=\"{}\"", s)?;
                     }

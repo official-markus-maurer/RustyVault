@@ -1,5 +1,7 @@
 pub fn to_array_string_u64(arr: Option<&[u64]>) -> String {
-    let Some(arr) = arr else { return "NULL".to_string(); };
+    let Some(arr) = arr else {
+        return "NULL".to_string();
+    };
     if arr.is_empty() {
         return "(0)".to_string();
     }
@@ -12,7 +14,9 @@ pub fn to_array_string_u64(arr: Option<&[u64]>) -> String {
 }
 
 pub fn to_array_string_bytes(arr: Option<&[u8]>) -> String {
-    let Some(arr) = arr else { return "NULL".to_string(); };
+    let Some(arr) = arr else {
+        return "NULL".to_string();
+    };
     if arr.is_empty() {
         return "(0)".to_string();
     }
@@ -25,7 +29,9 @@ pub fn to_array_string_bytes(arr: Option<&[u8]>) -> String {
 }
 
 pub fn to_hex(arr: Option<&[u8]>) -> String {
-    let Some(arr) = arr else { return "NULL".to_string(); };
+    let Some(arr) = arr else {
+        return "NULL".to_string();
+    };
     let mut out = String::with_capacity(arr.len() * 2);
     for b in arr {
         out.push_str(&format!("{:02X}", b));
@@ -63,4 +69,3 @@ mod tests {
         assert_eq!(to_hex_u32(Some(0x1234)), "00001234");
     }
 }
-

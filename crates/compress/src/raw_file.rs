@@ -8,18 +8,18 @@ use crate::structured_archive::ZipStructure;
 use crate::zip_enums::{ZipOpenType, ZipReturn};
 
 /// `ICompress` implementation for standard uncompressed files.
-/// 
-/// `RawFile` tricks the scanner into treating a standard file on disk as an "archive" 
-/// containing exactly 1 file (itself). This allows the engine to use identical 
+///
+/// `RawFile` tricks the scanner into treating a standard file on disk as an "archive"
+/// containing exactly 1 file (itself). This allows the engine to use identical
 /// streaming and hashing logic regardless of whether a file is compressed or loose.
-/// 
+///
 /// Differences from C#:
 /// - Functionally identical to the C# `Compress.RawFile` implementation.
 pub struct RawFile {
     filename: String,
     zip_open_type: ZipOpenType,
     time_stamp: i64,
-    
+
     file: Option<File>,
     header: Option<FileHeader>,
 }
@@ -59,7 +59,12 @@ impl ICompress for RawFile {
         self.zip_open_type
     }
 
-    fn zip_file_open(&mut self, new_filename: &str, timestamp: i64, _read_headers: bool) -> ZipReturn {
+    fn zip_file_open(
+        &mut self,
+        new_filename: &str,
+        timestamp: i64,
+        _read_headers: bool,
+    ) -> ZipReturn {
         self.zip_file_close();
 
         let path = Path::new(new_filename);
@@ -83,10 +88,14 @@ impl ICompress for RawFile {
         self.zip_open_type = ZipOpenType::OpenRead;
 
         let mut fh = FileHeader::new();
-        fh.filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        fh.filename = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         fh.uncompressed_size = metadata.len();
         fh.is_directory = metadata.is_dir();
-        
+
         if let Ok(mod_time) = metadata.modified() {
             if let Ok(dur) = mod_time.duration_since(std::time::UNIX_EPOCH) {
                 fh.header_last_modified = dur.as_secs() as i64;
@@ -105,7 +114,10 @@ impl ICompress for RawFile {
         self.header = None;
     }
 
-    fn zip_file_open_read_stream(&mut self, index: usize) -> Result<(Box<dyn Read>, u64), ZipReturn> {
+    fn zip_file_open_read_stream(
+        &mut self,
+        index: usize,
+    ) -> Result<(Box<dyn Read>, u64), ZipReturn> {
         if self.zip_open_type != ZipOpenType::OpenRead {
             return Err(ZipReturn::ZipReadingFromOutputFile);
         }
@@ -114,9 +126,14 @@ impl ICompress for RawFile {
             return Err(ZipReturn::ZipErrorGettingDataStream);
         }
 
-        let file = self.file.as_ref().unwrap().try_clone().map_err(|_| ZipReturn::ZipErrorGettingDataStream)?;
+        let file = self
+            .file
+            .as_ref()
+            .unwrap()
+            .try_clone()
+            .map_err(|_| ZipReturn::ZipErrorGettingDataStream)?;
         let size = self.header.as_ref().unwrap().uncompressed_size;
-        
+
         Ok((Box::new(file), size))
     }
 
@@ -142,7 +159,7 @@ impl ICompress for RawFile {
 
     fn zip_file_create(&mut self, new_filename: &str) -> ZipReturn {
         self.zip_file_close();
-        
+
         let path = Path::new(new_filename);
         let file = match File::create(path) {
             Ok(f) => f,
@@ -168,7 +185,12 @@ impl ICompress for RawFile {
             return Err(ZipReturn::ZipWritingToInputFile);
         }
 
-        let file = self.file.as_ref().unwrap().try_clone().map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+        let file = self
+            .file
+            .as_ref()
+            .unwrap()
+            .try_clone()
+            .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
         Ok(Box::new(file))
     }
 

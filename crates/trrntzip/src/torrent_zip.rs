@@ -1,21 +1,21 @@
 use std::path::Path;
 
-use compress::i_compress::ICompress;
-use compress::zip_enums::ZipReturn;
-use crate::trrntzip_status::TrrntZipStatus;
-use compress::structured_archive::ZipStructure;
-use compress::zip_file::ZipFile;
-use compress::seven_zip::SevenZipFile;
 use crate::process_control::ProcessControl;
-use crate::zipped_file::ZippedFile;
 use crate::torrent_zip_check::TorrentZipCheck;
 use crate::torrent_zip_rebuild::TorrentZipRebuild;
+use crate::trrntzip_status::TrrntZipStatus;
+use crate::zipped_file::ZippedFile;
+use compress::i_compress::ICompress;
+use compress::seven_zip::SevenZipFile;
+use compress::structured_archive::ZipStructure;
+use compress::zip_enums::ZipReturn;
+use compress::zip_file::ZipFile;
 
 /// High-level orchestration for the TorrentZip utility.
-/// 
+///
 /// `TorrentZip` acts as the entry point for the CLI and UI tools to submit files
 /// for verification and repacking.
-/// 
+///
 /// Differences from C#:
 /// - Maps 1:1 to the C# `TrrntZip.TorrentZip` entry class.
 #[derive(Clone, Copy)]
@@ -38,7 +38,11 @@ impl TorrentZip {
         self.process_with_control(filename, None)
     }
 
-    pub fn process_with_control(&self, filename: &str, control: Option<&ProcessControl>) -> TrrntZipStatus {
+    pub fn process_with_control(
+        &self,
+        filename: &str,
+        control: Option<&ProcessControl>,
+    ) -> TrrntZipStatus {
         let ext = Path::new(filename)
             .extension()
             .and_then(|ext| ext.to_str())
@@ -49,7 +53,7 @@ impl TorrentZip {
             "7z" => Box::new(SevenZipFile::new()),
             _ => Box::new(ZipFile::new()),
         };
-        
+
         let open_status = zip_file.zip_file_open(filename, 0, true);
         if open_status != ZipReturn::ZipGood {
             return TrrntZipStatus::CORRUPT_ZIP;
@@ -73,17 +77,17 @@ impl TorrentZip {
             "7z" => TorrentZipCheck::check_seven_zip_files(&mut zipped_files),
             _ => TorrentZipCheck::check_zip_files(&mut zipped_files),
         };
-        
+
         let compression_changed = zip_file.zip_struct() != self.out_zip_type;
         if compression_changed {
             is_valid |= TrrntZipStatus::BAD_EXTRA_DATA;
         }
-        
+
         if is_valid == TrrntZipStatus::VALID_TRRNTZIP && !self.force_rezip {
             zip_file.zip_file_close();
             return TrrntZipStatus::VALID_TRRNTZIP;
         }
-        
+
         if self.check_only {
             zip_file.zip_file_close();
             return is_valid;
@@ -107,9 +111,13 @@ impl TorrentZip {
         }
 
         println!("Rebuilding archive: {}", filename);
-        let rebuild_status =
-            TorrentZipRebuild::rezip_files_with_control(&zipped_files, zip_file.as_mut(), self.out_zip_type, control);
-        
+        let rebuild_status = TorrentZipRebuild::rezip_files_with_control(
+            &zipped_files,
+            zip_file.as_mut(),
+            self.out_zip_type,
+            control,
+        );
+
         rebuild_status
     }
 }

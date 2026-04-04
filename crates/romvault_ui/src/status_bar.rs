@@ -1,11 +1,15 @@
+use crate::{format_number, ui_missing_count, RomVaultApp, GLOBAL_DB};
 use eframe::egui;
-use crate::{GLOBAL_DB, format_number, ui_missing_count, RomVaultApp};
 
 pub fn draw_status_bar(app: &mut RomVaultApp, ctx: &egui::Context, fill: egui::Color32) {
     egui::TopBottomPanel::bottom("status_bar")
         .resizable(false)
         .min_height(24.0)
-        .frame(egui::Frame::none().fill(fill).inner_margin(egui::Margin::symmetric(8.0, 4.0)))
+        .frame(
+            egui::Frame::none()
+                .fill(fill)
+                .inner_margin(egui::Margin::symmetric(8.0, 4.0)),
+        )
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label("RustyVault 3.6.1 (Rust Port)");
@@ -37,4 +41,3 @@ pub fn draw_status_bar(app: &mut RomVaultApp, ctx: &egui::Context, fill: egui::C
             });
         });
 }
-

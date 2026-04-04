@@ -1,21 +1,21 @@
-use std::rc::Rc;
-use std::cell::RefCell;
-use crate::rv_file::RvFile;
-use crate::rv_dat::{RvDat, DatData, DatFlags};
-use crate::rv_game::RvGame;
 use crate::enums::RepStatus;
-use dat_reader::enums::{DatStatus, GotStatus, FileType};
-use dat_reader::xml_writer::DatXmlWriter;
 use crate::external_dat_converter_to::ExternalDatConverterTo;
-use std::path::Path;
+use crate::rv_dat::{DatData, DatFlags, RvDat};
+use crate::rv_file::RvFile;
+use crate::rv_game::RvGame;
+use dat_reader::enums::{DatStatus, FileType, GotStatus};
+use dat_reader::xml_writer::DatXmlWriter;
+use std::cell::RefCell;
 use std::fs::File;
+use std::path::Path;
+use std::rc::Rc;
 
 /// Engine for exporting "Fix DATs" (lists of missing files).
-/// 
+///
 /// `FixDatReport` traverses the database to find files marked as `Missing` or `CanBeFixed`
 /// and exports a standard XML DAT file containing only those missing files. This allows users
 /// to take the Fix DAT to other tools or sites to acquire the missing files.
-/// 
+///
 /// Differences from C#:
 /// - The C# reference calls out to `DatClean.ArchiveDirectoryFlattern` and `DatClean.RemoveUnNeededDirectories`
 ///   to optimize the output structure of the Fix DATs.
@@ -37,7 +37,11 @@ impl FixDatReport {
 
     fn dat_relative_parent_for_output(dat_root_full_name: &str) -> String {
         let dat_root = crate::settings::get_settings().dat_root;
-        let dat_root_path = Path::new(if dat_root.is_empty() { "DatRoot" } else { &dat_root });
+        let dat_root_path = Path::new(if dat_root.is_empty() {
+            "DatRoot"
+        } else {
+            &dat_root
+        });
         let dat_full_path = Path::new(dat_root_full_name);
 
         crate::settings::strip_physical_prefix(dat_full_path, dat_root_path)
@@ -68,8 +72,17 @@ impl FixDatReport {
         if !dir_dats.is_empty() {
             println!("Dats found in {}", t_dir.name);
             for (i, rv_dat) in dir_dats.iter().enumerate() {
-                println!("  {} {:?}", i, rv_dat.borrow().get_data(crate::rv_dat::DatData::DatName));
-                Self::extract_dat(out_directory, Rc::clone(rv_dat), Rc::clone(&t_dir_rc), red_only);
+                println!(
+                    "  {} {:?}",
+                    i,
+                    rv_dat.borrow().get_data(crate::rv_dat::DatData::DatName)
+                );
+                Self::extract_dat(
+                    out_directory,
+                    Rc::clone(rv_dat),
+                    Rc::clone(&t_dir_rc),
+                    red_only,
+                );
             }
         }
 
@@ -85,12 +98,22 @@ impl FixDatReport {
     }
 
     /// Extracts the missing components of a single DAT node into an XML file at the target output directory.
-    pub fn extract_dat(out_directory: &str, rv_dat_rc: Rc<RefCell<RvDat>>, t_dir_rc: Rc<RefCell<RvFile>>, red_only: bool) {
+    pub fn extract_dat(
+        out_directory: &str,
+        rv_dat_rc: Rc<RefCell<RvDat>>,
+        t_dir_rc: Rc<RefCell<RvFile>>,
+        red_only: bool,
+    ) {
         let mut out_dir = RvFile::new(FileType::Dir);
         out_dir.dir_dats.push(Rc::clone(&rv_dat_rc));
         let mut out_dir_rc = Rc::new(RefCell::new(out_dir));
 
-        Self::recursive_dat_tree_finding_dat(Rc::clone(&rv_dat_rc), Rc::clone(&t_dir_rc), Rc::clone(&out_dir_rc), red_only);
+        Self::recursive_dat_tree_finding_dat(
+            Rc::clone(&rv_dat_rc),
+            Rc::clone(&t_dir_rc),
+            Rc::clone(&out_dir_rc),
+            red_only,
+        );
 
         let auto_added;
         {
@@ -136,7 +159,7 @@ impl FixDatReport {
 
         let old_name = dh.name.clone().unwrap_or_default();
         let old_desc = dh.description.clone().unwrap_or_default();
-        
+
         dh.name = Some(format!("FixDat_{}", old_name));
         dh.description = Some(format!("FixDat_{}", old_desc));
         dh.author = Some("RustyRoms".to_string());
@@ -144,18 +167,26 @@ impl FixDatReport {
 
         let dat_root_full_name = {
             let d = rv_dat_rc.borrow();
-            d.get_data(DatData::DatRootFullName).unwrap_or_else(|| "Unknown".to_string())
+            d.get_data(DatData::DatRootFullName)
+                .unwrap_or_else(|| "Unknown".to_string())
         };
 
         let dat_dir = Self::dat_relative_parent_for_output(&dat_root_full_name);
         let p2 = Path::new(&dat_root_full_name);
-        let dat_name = p2.file_stem().unwrap_or_default().to_string_lossy().to_string();
+        let dat_name = p2
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
 
         let mut test = 0;
         let mut dat_filename = format!("{}/fixDat_{}_{}.dat", out_directory, dat_dir, dat_name);
         while Path::new(&dat_filename).exists() {
             test += 1;
-            dat_filename = format!("{}/fixDat_{}_{}({}).dat", out_directory, dat_dir, dat_name, test);
+            dat_filename = format!(
+                "{}/fixDat_{}_{}({}).dat",
+                out_directory, dat_dir, dat_name, test
+            );
         }
 
         if let Ok(mut file) = File::create(&dat_filename) {
@@ -167,7 +198,12 @@ impl FixDatReport {
         }
     }
 
-    fn recursive_dat_tree_finding_dat(rv_dat_rc: Rc<RefCell<RvDat>>, t_dir_rc: Rc<RefCell<RvFile>>, out_dir_rc: Rc<RefCell<RvFile>>, red_only: bool) -> i32 {
+    fn recursive_dat_tree_finding_dat(
+        rv_dat_rc: Rc<RefCell<RvDat>>,
+        t_dir_rc: Rc<RefCell<RvFile>>,
+        out_dir_rc: Rc<RefCell<RvFile>>,
+        red_only: bool,
+    ) -> i32 {
         let mut found = 0;
         let t_dir = t_dir_rc.borrow();
         let children = t_dir.children.clone();
@@ -179,7 +215,7 @@ impl FixDatReport {
                 Some(d) => Rc::ptr_eq(d, &rv_dat_rc),
                 None => false,
             };
-            
+
             if !matches_dat {
                 continue;
             }
@@ -189,10 +225,15 @@ impl FixDatReport {
                 t_copy.name = child.name.clone();
                 t_copy.game = child.game.clone();
                 let t_copy_rc = Rc::new(RefCell::new(t_copy));
-                
+
                 drop(child);
-                
-                let ret = Self::recursive_dat_tree_finding_dat(Rc::clone(&rv_dat_rc), Rc::clone(&child_rc), Rc::clone(&t_copy_rc), red_only);
+
+                let ret = Self::recursive_dat_tree_finding_dat(
+                    Rc::clone(&rv_dat_rc),
+                    Rc::clone(&child_rc),
+                    Rc::clone(&t_copy_rc),
+                    red_only,
+                );
                 found += ret;
                 if ret > 0 {
                     out_dir_rc.borrow_mut().child_add(t_copy_rc);
@@ -202,10 +243,12 @@ impl FixDatReport {
 
             let include = matches!(
                 child.dat_status(),
-                DatStatus::InDatCollect | DatStatus::InDatMerged | DatStatus::InDatNoDump | DatStatus::InDatMIA
-            ) &&
-                child.got_status() != GotStatus::Got &&
-                (!red_only
+                DatStatus::InDatCollect
+                    | DatStatus::InDatMerged
+                    | DatStatus::InDatNoDump
+                    | DatStatus::InDatMIA
+            ) && child.got_status() != GotStatus::Got
+                && (!red_only
                     || !matches!(
                         child.rep_status(),
                         RepStatus::CanBeFixed
@@ -233,8 +276,10 @@ impl FixDatReport {
                 t_copy.set_header_file_type(child.header_file_type());
                 t_copy.set_dat_status(child.dat_status());
                 t_copy.set_rep_status(child.rep_status());
-                
-                out_dir_rc.borrow_mut().child_add(Rc::new(RefCell::new(t_copy)));
+
+                out_dir_rc
+                    .borrow_mut()
+                    .child_add(Rc::new(RefCell::new(t_copy)));
                 found += 1;
             }
         }
@@ -243,14 +288,14 @@ impl FixDatReport {
 
     fn fix_single_level_dat(t_dir_rc: Rc<RefCell<RvFile>>) {
         let mut files_to_fix = Vec::new();
-        
+
         {
             let mut t_dir = t_dir_rc.borrow_mut();
             let mut i = 0;
             while i < t_dir.children.len() {
                 let child_rc = Rc::clone(&t_dir.children[i]);
                 let child = child_rc.borrow();
-                
+
                 if child.game.is_some() {
                     i += 1;
                     continue;
@@ -261,7 +306,7 @@ impl FixDatReport {
                     i += 1;
                     continue;
                 }
-                
+
                 let mut t_copy = RvFile::new(child.file_type);
                 t_copy.name = child.name.clone();
                 // Copy other necessary properties...
@@ -269,23 +314,23 @@ impl FixDatReport {
                 t_copy.crc = child.crc.clone();
                 t_copy.sha1 = child.sha1.clone();
                 t_copy.md5 = child.md5.clone();
-                
+
                 files_to_fix.push(Rc::new(RefCell::new(t_copy)));
                 t_dir.children.remove(i);
                 // do not increment i since we removed
             }
         }
-        
+
         if files_to_fix.is_empty() {
             return;
         }
-        
+
         for file_rc in files_to_fix {
             let mut new_parent_name = file_rc.borrow().name.clone();
             if let Some(pos) = new_parent_name.rfind('.') {
                 new_parent_name = new_parent_name[..pos].to_string();
             }
-            
+
             let mut t_dir = t_dir_rc.borrow_mut();
             let mut found_index = None;
             for (idx, c) in t_dir.children.iter().enumerate() {
@@ -294,19 +339,21 @@ impl FixDatReport {
                     break;
                 }
             }
-            
+
             let parent_rc = match found_index {
                 Some(idx) => Rc::clone(&t_dir.children[idx]),
                 None => {
                     let mut new_parent = RvFile::new(FileType::Dir);
                     new_parent.name = new_parent_name.clone();
-                    new_parent.game = Some(Rc::new(RefCell::new(RvGame::from_description(&new_parent_name))));
+                    new_parent.game = Some(Rc::new(RefCell::new(RvGame::from_description(
+                        &new_parent_name,
+                    ))));
                     let np_rc = Rc::new(RefCell::new(new_parent));
                     t_dir.child_add(Rc::clone(&np_rc));
                     np_rc
                 }
             };
-            
+
             parent_rc.borrow_mut().child_add(file_rc);
         }
     }
@@ -318,7 +365,7 @@ impl FixDatReport {
         if d_dir.d_game.is_some() {
             let mut list = Vec::new();
             Self::archive_flat(d_dir, &mut list, "");
-            
+
             // Clear children and add the flattened list back
             d_dir.children.clear();
             d_dir.children.extend(list);
@@ -334,7 +381,11 @@ impl FixDatReport {
     }
 
     /// Helper for `archive_directory_flatten`
-    fn archive_flat(d_dir: &dat_reader::dat_store::DatDir, new_dir: &mut Vec<dat_reader::dat_store::DatNode>, sub_dir: &str) {
+    fn archive_flat(
+        d_dir: &dat_reader::dat_store::DatDir,
+        new_dir: &mut Vec<dat_reader::dat_store::DatNode>,
+        sub_dir: &str,
+    ) {
         for node in &d_dir.children {
             let this_name = if sub_dir.is_empty() {
                 node.name.to_string()
@@ -347,10 +398,13 @@ impl FixDatReport {
                 new_node.name = this_name;
                 new_dir.push(new_node);
             } else if let Some(d) = node.dir() {
-                let mut new_node = dat_reader::dat_store::DatNode::new_file(format!("{}/", this_name), dat_reader::enums::FileType::UnSet);
+                let mut new_node = dat_reader::dat_store::DatNode::new_file(
+                    format!("{}/", this_name),
+                    dat_reader::enums::FileType::UnSet,
+                );
                 if let Some(f_mut) = new_node.file_mut() {
                     f_mut.size = Some(0);
-                    f_mut.crc = Some(vec![0,0,0,0]);
+                    f_mut.crc = Some(vec![0, 0, 0, 0]);
                 }
                 new_dir.push(new_node);
 

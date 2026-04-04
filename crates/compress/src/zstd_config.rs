@@ -9,4 +9,3 @@ pub fn set_zstd_threads(threads: usize) {
 pub fn zstd_threads() -> usize {
     ZSTD_THREADS.load(Ordering::Relaxed)
 }
-

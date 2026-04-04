@@ -99,42 +99,150 @@ const GAME_LIST_FIXING: &[ColorKeyEntry] = &[
 ];
 
 const GAME_LIST_PROBLEM: &[ColorKeyEntry] = &[
-    ColorKeyEntry { icon: "G_Unknown.png", title: "Unknown", description: "The file could not be scanned." },
-    ColorKeyEntry { icon: "G_Corrupt.png", title: "Corrupt", description: "The file is corrupt." },
-    ColorKeyEntry { icon: "G_DirCorrupt.png", title: "DirCorrupt", description: "The archive containing the file is corrupt." },
-    ColorKeyEntry { icon: "G_Incomplete.png", title: "Incomplete", description: "The ROM is needed here, but fixing would result in an incomplete set." },
+    ColorKeyEntry {
+        icon: "G_Unknown.png",
+        title: "Unknown",
+        description: "The file could not be scanned.",
+    },
+    ColorKeyEntry {
+        icon: "G_Corrupt.png",
+        title: "Corrupt",
+        description: "The file is corrupt.",
+    },
+    ColorKeyEntry {
+        icon: "G_DirCorrupt.png",
+        title: "DirCorrupt",
+        description: "The archive containing the file is corrupt.",
+    },
+    ColorKeyEntry {
+        icon: "G_Incomplete.png",
+        title: "Incomplete",
+        description: "The ROM is needed here, but fixing would result in an incomplete set.",
+    },
 ];
 
 const SET_TYPES_HAVE: &[ColorKeyEntry] = &[
-    ColorKeyEntry { icon: "Dir.png", title: "Uncompressed Set", description: "The set is uncompressed." },
-    ColorKeyEntry { icon: "Zip.png", title: "Zip", description: "The set is a regular ZIP archive." },
-    ColorKeyEntry { icon: "ZipTrrnt.png", title: "TorrentZip", description: "The set is torrentzipped." },
-    ColorKeyEntry { icon: "ZipTDC.png", title: "TDC Zip", description: "The set is zipped with deflate compression and matches a TDC DAT." },
-    ColorKeyEntry { icon: "ZipZstd.png", title: "Zstd Zip", description: "The set is zipped with zstd compression." },
-    ColorKeyEntry { icon: "SevenZip.png", title: "7z", description: "The set is a regular 7zip archive." },
-    ColorKeyEntry { icon: "SevenZipTrrnt.png", title: "Torrent7z", description: "The set is torrent7zipped." },
-    ColorKeyEntry { icon: "SevenZipNLZMA.png", title: "7z LZMA Non-Solid", description: "The set is a non-solid 7zip archive with LZMA compression." },
-    ColorKeyEntry { icon: "SevenZipSLZMA.png", title: "7z LZMA Solid", description: "The set is a solid 7zip archive with LZMA compression." },
-    ColorKeyEntry { icon: "SevenZipNZSTD.png", title: "7z Zstd Non-Solid", description: "The set is a non-solid 7zip archive with zstd compression." },
-    ColorKeyEntry { icon: "SevenZipSZSTD.png", title: "7z Zstd Solid", description: "The set is a solid 7zip archive with zstd compression." },
+    ColorKeyEntry {
+        icon: "Dir.png",
+        title: "Uncompressed Set",
+        description: "The set is uncompressed.",
+    },
+    ColorKeyEntry {
+        icon: "Zip.png",
+        title: "Zip",
+        description: "The set is a regular ZIP archive.",
+    },
+    ColorKeyEntry {
+        icon: "ZipTrrnt.png",
+        title: "TorrentZip",
+        description: "The set is torrentzipped.",
+    },
+    ColorKeyEntry {
+        icon: "ZipTDC.png",
+        title: "TDC Zip",
+        description: "The set is zipped with deflate compression and matches a TDC DAT.",
+    },
+    ColorKeyEntry {
+        icon: "ZipZstd.png",
+        title: "Zstd Zip",
+        description: "The set is zipped with zstd compression.",
+    },
+    ColorKeyEntry {
+        icon: "SevenZip.png",
+        title: "7z",
+        description: "The set is a regular 7zip archive.",
+    },
+    ColorKeyEntry {
+        icon: "SevenZipTrrnt.png",
+        title: "Torrent7z",
+        description: "The set is torrent7zipped.",
+    },
+    ColorKeyEntry {
+        icon: "SevenZipNLZMA.png",
+        title: "7z LZMA Non-Solid",
+        description: "The set is a non-solid 7zip archive with LZMA compression.",
+    },
+    ColorKeyEntry {
+        icon: "SevenZipSLZMA.png",
+        title: "7z LZMA Solid",
+        description: "The set is a solid 7zip archive with LZMA compression.",
+    },
+    ColorKeyEntry {
+        icon: "SevenZipNZSTD.png",
+        title: "7z Zstd Non-Solid",
+        description: "The set is a non-solid 7zip archive with zstd compression.",
+    },
+    ColorKeyEntry {
+        icon: "SevenZipSZSTD.png",
+        title: "7z Zstd Solid",
+        description: "The set is a solid 7zip archive with zstd compression.",
+    },
 ];
 
 const SET_TYPES_MISSING: &[ColorKeyEntry] = &[
-    ColorKeyEntry { icon: "ZipMissing.png", title: "Zip Missing", description: "The ZIP set is missing." },
-    ColorKeyEntry { icon: "ZipTrrntMissing.png", title: "TorrentZip Missing", description: "The torrentzipped set is missing." },
-    ColorKeyEntry { icon: "ZipTDCMissing.png", title: "TDC Zip Missing", description: "The TDC zipped set is missing." },
-    ColorKeyEntry { icon: "ZipZstdMissing.png", title: "Zstd Zip Missing", description: "The zstd zipped set is missing." },
-    ColorKeyEntry { icon: "SevenZipMissing.png", title: "7z Missing", description: "The regular 7z set is missing." },
-    ColorKeyEntry { icon: "SevenZipSLZMAMissing.png", title: "7z Solid LZMA Missing", description: "The solid LZMA 7z set is missing." },
-    ColorKeyEntry { icon: "SevenZipSZSTDMissing.png", title: "7z Solid Zstd Missing", description: "The solid zstd 7z set is missing." },
+    ColorKeyEntry {
+        icon: "ZipMissing.png",
+        title: "Zip Missing",
+        description: "The ZIP set is missing.",
+    },
+    ColorKeyEntry {
+        icon: "ZipTrrntMissing.png",
+        title: "TorrentZip Missing",
+        description: "The torrentzipped set is missing.",
+    },
+    ColorKeyEntry {
+        icon: "ZipTDCMissing.png",
+        title: "TDC Zip Missing",
+        description: "The TDC zipped set is missing.",
+    },
+    ColorKeyEntry {
+        icon: "ZipZstdMissing.png",
+        title: "Zstd Zip Missing",
+        description: "The zstd zipped set is missing.",
+    },
+    ColorKeyEntry {
+        icon: "SevenZipMissing.png",
+        title: "7z Missing",
+        description: "The regular 7z set is missing.",
+    },
+    ColorKeyEntry {
+        icon: "SevenZipSLZMAMissing.png",
+        title: "7z Solid LZMA Missing",
+        description: "The solid LZMA 7z set is missing.",
+    },
+    ColorKeyEntry {
+        icon: "SevenZipSZSTDMissing.png",
+        title: "7z Solid Zstd Missing",
+        description: "The solid zstd 7z set is missing.",
+    },
 ];
 
 const SET_TYPES_CORRUPT: &[ColorKeyEntry] = &[
-    ColorKeyEntry { icon: "ZipCorrupt.png", title: "Zip Corrupt", description: "The ZIP set is corrupt." },
-    ColorKeyEntry { icon: "ZipTrrntCorrupt.png", title: "TorrentZip Corrupt", description: "The torrentzipped set is corrupt." },
-    ColorKeyEntry { icon: "SevenZipCorrupt.png", title: "7z Corrupt", description: "The 7z set is corrupt." },
-    ColorKeyEntry { icon: "SevenZipSLZMACorrupt.png", title: "7z Solid LZMA Corrupt", description: "The solid LZMA 7z set is corrupt." },
-    ColorKeyEntry { icon: "SevenZipSZSTDCorrupt.png", title: "7z Solid Zstd Corrupt", description: "The solid zstd 7z set is corrupt." },
+    ColorKeyEntry {
+        icon: "ZipCorrupt.png",
+        title: "Zip Corrupt",
+        description: "The ZIP set is corrupt.",
+    },
+    ColorKeyEntry {
+        icon: "ZipTrrntCorrupt.png",
+        title: "TorrentZip Corrupt",
+        description: "The torrentzipped set is corrupt.",
+    },
+    ColorKeyEntry {
+        icon: "SevenZipCorrupt.png",
+        title: "7z Corrupt",
+        description: "The 7z set is corrupt.",
+    },
+    ColorKeyEntry {
+        icon: "SevenZipSLZMACorrupt.png",
+        title: "7z Solid LZMA Corrupt",
+        description: "The solid LZMA 7z set is corrupt.",
+    },
+    ColorKeyEntry {
+        icon: "SevenZipSZSTDCorrupt.png",
+        title: "7z Solid Zstd Corrupt",
+        description: "The solid zstd 7z set is corrupt.",
+    },
 ];
 
 const ROM_DETAILS_RESTING: &[ColorKeyEntry] = &[
@@ -173,39 +281,115 @@ const DAT_TREE_BRANCHES: &[ColorKeyEntry] = &[
 ];
 
 const DAT_TREE_FOLDERS: &[ColorKeyEntry] = &[
-    ColorKeyEntry { icon: "DirectoryTree3.png", title: "Folder Correct", description: "No ROMs are missing from any DATs in the branch." },
-    ColorKeyEntry { icon: "DirectoryTree2.png", title: "Folder Partial", description: "Some ROMs are missing from DATs in the branch." },
-    ColorKeyEntry { icon: "DirectoryTree1.png", title: "Folder Missing", description: "All ROMs are missing from DATs in the branch." },
-    ColorKeyEntry { icon: "DirectoryTree4.png", title: "Folder Merged/Unknown", description: "The branch is merged, ignored, or unknown." },
-    ColorKeyEntry { icon: "DirectoryTree5.png", title: "Folder ToSort", description: "The ToSort directory contains files present for fixes." },
+    ColorKeyEntry {
+        icon: "DirectoryTree3.png",
+        title: "Folder Correct",
+        description: "No ROMs are missing from any DATs in the branch.",
+    },
+    ColorKeyEntry {
+        icon: "DirectoryTree2.png",
+        title: "Folder Partial",
+        description: "Some ROMs are missing from DATs in the branch.",
+    },
+    ColorKeyEntry {
+        icon: "DirectoryTree1.png",
+        title: "Folder Missing",
+        description: "All ROMs are missing from DATs in the branch.",
+    },
+    ColorKeyEntry {
+        icon: "DirectoryTree4.png",
+        title: "Folder Merged/Unknown",
+        description: "The branch is merged, ignored, or unknown.",
+    },
+    ColorKeyEntry {
+        icon: "DirectoryTree5.png",
+        title: "Folder ToSort",
+        description: "The ToSort directory contains files present for fixes.",
+    },
 ];
 
 const DAT_TREE_DATS: &[ColorKeyEntry] = &[
-    ColorKeyEntry { icon: "Tree3.png", title: "DAT Correct", description: "No ROMs are missing." },
-    ColorKeyEntry { icon: "Tree2.png", title: "DAT Partial", description: "Some ROMs are missing." },
-    ColorKeyEntry { icon: "Tree1.png", title: "DAT Missing", description: "All ROMs are missing." },
-    ColorKeyEntry { icon: "Tree4.png", title: "DAT Merged/Unknown", description: "The DAT is merged, ignored, or unknown." },
-    ColorKeyEntry { icon: "Tree5.png", title: "DAT ToSort", description: "The DAT branch contains only fixable ToSort work." },
+    ColorKeyEntry {
+        icon: "Tree3.png",
+        title: "DAT Correct",
+        description: "No ROMs are missing.",
+    },
+    ColorKeyEntry {
+        icon: "Tree2.png",
+        title: "DAT Partial",
+        description: "Some ROMs are missing.",
+    },
+    ColorKeyEntry {
+        icon: "Tree1.png",
+        title: "DAT Missing",
+        description: "All ROMs are missing.",
+    },
+    ColorKeyEntry {
+        icon: "Tree4.png",
+        title: "DAT Merged/Unknown",
+        description: "The DAT is merged, ignored, or unknown.",
+    },
+    ColorKeyEntry {
+        icon: "Tree5.png",
+        title: "DAT ToSort",
+        description: "The DAT branch contains only fixable ToSort work.",
+    },
 ];
 
 fn color_key_sections() -> &'static [ColorKeySection] {
     &[
-        ColorKeySection { title: "Game List Grid - Resting", entries: GAME_LIST_RESTING },
-        ColorKeySection { title: "Game List Grid - Fixing", entries: GAME_LIST_FIXING },
-        ColorKeySection { title: "Game List Grid - Problem", entries: GAME_LIST_PROBLEM },
-        ColorKeySection { title: "Set Types - Have", entries: SET_TYPES_HAVE },
-        ColorKeySection { title: "Set Types - Missing", entries: SET_TYPES_MISSING },
-        ColorKeySection { title: "Set Types - Corrupt", entries: SET_TYPES_CORRUPT },
-        ColorKeySection { title: "ROM Details Grid - Resting Statuses", entries: ROM_DETAILS_RESTING },
-        ColorKeySection { title: "ROM Details Grid - Fix Actions", entries: ROM_DETAILS_FIXING },
-        ColorKeySection { title: "DAT Tree - Branches and Checkboxes", entries: DAT_TREE_BRANCHES },
-        ColorKeySection { title: "DAT Tree - Folders", entries: DAT_TREE_FOLDERS },
-        ColorKeySection { title: "DAT Tree - DATs", entries: DAT_TREE_DATS },
+        ColorKeySection {
+            title: "Game List Grid - Resting",
+            entries: GAME_LIST_RESTING,
+        },
+        ColorKeySection {
+            title: "Game List Grid - Fixing",
+            entries: GAME_LIST_FIXING,
+        },
+        ColorKeySection {
+            title: "Game List Grid - Problem",
+            entries: GAME_LIST_PROBLEM,
+        },
+        ColorKeySection {
+            title: "Set Types - Have",
+            entries: SET_TYPES_HAVE,
+        },
+        ColorKeySection {
+            title: "Set Types - Missing",
+            entries: SET_TYPES_MISSING,
+        },
+        ColorKeySection {
+            title: "Set Types - Corrupt",
+            entries: SET_TYPES_CORRUPT,
+        },
+        ColorKeySection {
+            title: "ROM Details Grid - Resting Statuses",
+            entries: ROM_DETAILS_RESTING,
+        },
+        ColorKeySection {
+            title: "ROM Details Grid - Fix Actions",
+            entries: ROM_DETAILS_FIXING,
+        },
+        ColorKeySection {
+            title: "DAT Tree - Branches and Checkboxes",
+            entries: DAT_TREE_BRANCHES,
+        },
+        ColorKeySection {
+            title: "DAT Tree - Folders",
+            entries: DAT_TREE_FOLDERS,
+        },
+        ColorKeySection {
+            title: "DAT Tree - DATs",
+            entries: DAT_TREE_DATS,
+        },
     ]
 }
 
 fn color_key_entry_count() -> usize {
-    color_key_sections().iter().map(|section| section.entries.len()).sum()
+    color_key_sections()
+        .iter()
+        .map(|section| section.entries.len())
+        .sum()
 }
 
 fn color_key_icon_source(icon: &'static str) -> egui::ImageSource<'static> {
@@ -264,7 +448,9 @@ fn color_key_icon_source(icon: &'static str) -> egui::ImageSource<'static> {
         "R_InDatCollect_Corrupt.png" => include_asset!("R_InDatCollect_Corrupt.png"),
         "R_InDatCollect_CanBeFixed.png" => include_asset!("R_InDatCollect_CanBeFixed.png"),
         "R_InDatMIA_CanBeFixedMIA.png" => include_asset!("R_InDatMIA_CanBeFixedMIA.png"),
-        "R_InDatCollect_CorruptCanBeFixed.png" => include_asset!("R_InDatCollect_CorruptCanBeFixed.png"),
+        "R_InDatCollect_CorruptCanBeFixed.png" => {
+            include_asset!("R_InDatCollect_CorruptCanBeFixed.png")
+        }
         "R_NotInDat_Rename.png" => include_asset!("R_NotInDat_Rename.png"),
         "R_InDatCollect_NeededForFix.png" => include_asset!("R_InDatCollect_NeededForFix.png"),
         "R_NotInDat_MoveToSort.png" => include_asset!("R_NotInDat_MoveToSort.png"),
@@ -310,12 +496,12 @@ fn render_color_key_entry(ui: &mut egui::Ui, entry: ColorKeyEntry) {
 mod tests;
 
 /// Logic for drawing all popup dialog windows in the application.
-/// 
+///
 /// `dialogs.rs` handles rendering the Global Settings, Directory Settings, Directory Mappings,
 /// Add ToSort, and About popups.
-/// 
+///
 /// Differences from C#:
-/// - The C# version utilizes individual `.Designer.cs` WinForms definitions for every single popup 
+/// - The C# version utilizes individual `.Designer.cs` WinForms definitions for every single popup
 ///   dialog (e.g. `FrmSettings`, `FrmDirectorySettings`, `FrmRegistration`).
 /// - The Rust version groups all of these popups into a single `draw_dialogs` function, toggling
 ///   their visibility via boolean state flags stored in the main `RomVaultApp` struct.
@@ -541,7 +727,12 @@ pub fn draw_dialogs(app: &mut RomVaultApp, ctx: &egui::Context) {
                 let startup_path = std::env::current_exe()
                     .ok()
                     .and_then(|p| p.parent().map(|p| p.to_string_lossy().to_string()))
-                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default().to_string_lossy().to_string());
+                    .unwrap_or_else(|| {
+                        std::env::current_dir()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string()
+                    });
 
                 ui.vertical_centered(|ui| {
                     ui.heading("RustyVault");

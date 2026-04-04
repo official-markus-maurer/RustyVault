@@ -1,11 +1,11 @@
-use eframe::egui;
 use crate::RomVaultApp;
+use eframe::egui;
 
 /// Logic for rendering the layout splitters and status panes.
-/// 
+///
 /// `panels.rs` manages the structural layout of the main window, separating the left tree
 /// from the right grids, and drawing the bottom status logs and progress bars.
-/// 
+///
 /// Differences from C#:
 /// - C# uses `SplitContainer` components configured via the Visual Studio designer.
 /// - The Rust version dynamically calculates `egui::SidePanel` and `egui::CentralPanel`
@@ -29,12 +29,8 @@ pub fn draw_info_and_filters(app: &mut RomVaultApp, ui: &mut egui::Ui) {
         } else {
             egui::Stroke::new(1.0, egui::Color32::from_rgb(214, 214, 220))
         };
-        ui.painter().rect(
-            rect,
-            egui::Rounding::same(6.0),
-            fill,
-            stroke,
-        );
+        ui.painter()
+            .rect(rect, egui::Rounding::same(6.0), fill, stroke);
 
         let inner_rect = rect.shrink(8.0);
         ui.allocate_ui_at_rect(inner_rect, |ui| {

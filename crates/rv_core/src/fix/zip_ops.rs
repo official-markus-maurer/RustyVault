@@ -1,9 +1,9 @@
+use crate::enums::RepStatus;
+use crate::rv_file::RvFile;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
-use crate::rv_file::RvFile;
-use crate::enums::RepStatus;
 
 impl super::Fix {
     pub(super) fn try_zip_move(
@@ -28,10 +28,13 @@ impl super::Fix {
                 continue;
             }
 
-            let Some(source_file) = Self::find_source_file(&child_ref, crc_map, sha1_map, md5_map) else {
+            let Some(source_file) = Self::find_source_file(&child_ref, crc_map, sha1_map, md5_map)
+            else {
                 return false;
             };
-            let Some((source_archive, _, _)) = Self::find_containing_archive(Rc::clone(&source_file)) else {
+            let Some((source_archive, _, _)) =
+                Self::find_containing_archive(Rc::clone(&source_file))
+            else {
                 return false;
             };
 
@@ -93,7 +96,10 @@ impl super::Fix {
 
         let source_archive_path = Self::get_existing_physical_path(Rc::clone(&source_archive));
         let target_archive_path = Self::get_physical_path(Rc::clone(&zip_file));
-        if Self::physical_path_eq_for_rename(Path::new(&source_archive_path), Path::new(&target_archive_path)) {
+        if Self::physical_path_eq_for_rename(
+            Path::new(&source_archive_path),
+            Path::new(&target_archive_path),
+        ) {
             return false;
         }
 
@@ -124,14 +130,15 @@ impl super::Fix {
 
         Self::report_action(format!(
             "Move archive: {} -> {}",
-            source_archive_path,
-            target_archive_path
+            source_archive_path, target_archive_path
         ));
         Self::mark_tree_as_got(Rc::clone(&zip_file));
         *total_fixed += 1;
 
         if !source_is_read_only {
-            source_archive.borrow_mut().set_rep_status(RepStatus::Delete);
+            source_archive
+                .borrow_mut()
+                .set_rep_status(RepStatus::Delete);
             queue.push(source_archive);
         }
 

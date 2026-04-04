@@ -1,16 +1,16 @@
+use crate::name_fix::NameFix;
 use std::fs;
 use std::io;
 use std::path::Path as StdPath;
-use crate::name_fix::NameFix;
 
 /// Cross-platform wrapper for directory operations.
-/// 
+///
 /// `Directory` mimics the static methods of the C# `System.IO.Directory` class,
 /// providing standard wrappers for checking existence, creating directories, and
 /// enumerating files/folders.
-/// 
+///
 /// Differences from C#:
-/// - Internally delegates to `std::fs` rather than requiring P/Invoke `kernel32.dll` 
+/// - Internally delegates to `std::fs` rather than requiring P/Invoke `kernel32.dll`
 ///   long-path hacks, since Rust supports modern Windows `\\?\` natively.
 pub struct Directory;
 
@@ -20,7 +20,10 @@ impl Directory {
     }
 
     pub fn move_dir(source: &str, dest: &str) -> io::Result<()> {
-        fs::rename(NameFix::add_long_path_prefix(source), NameFix::add_long_path_prefix(dest))
+        fs::rename(
+            NameFix::add_long_path_prefix(source),
+            NameFix::add_long_path_prefix(dest),
+        )
     }
 
     pub fn delete(path: &str) -> io::Result<()> {

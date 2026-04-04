@@ -273,7 +273,12 @@ impl ICompress for GZipFile {
         self.zip_open_type
     }
 
-    fn zip_file_open(&mut self, new_filename: &str, timestamp: i64, read_headers: bool) -> ZipReturn {
+    fn zip_file_open(
+        &mut self,
+        new_filename: &str,
+        timestamp: i64,
+        read_headers: bool,
+    ) -> ZipReturn {
         self.zip_file_close();
 
         let path = Path::new(new_filename);
@@ -321,7 +326,11 @@ impl ICompress for GZipFile {
         }
 
         let mut fh = FileHeader::new();
-        fh.filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        fh.filename = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         fh.uncompressed_size = self.uncompressed_size;
         fh.is_directory = false;
         fh.crc = self.crc_be.map(|c| c.to_vec());
@@ -353,7 +362,10 @@ impl ICompress for GZipFile {
         self.data_start_pos = 0;
     }
 
-    fn zip_file_open_read_stream(&mut self, index: usize) -> Result<(Box<dyn Read>, u64), ZipReturn> {
+    fn zip_file_open_read_stream(
+        &mut self,
+        index: usize,
+    ) -> Result<(Box<dyn Read>, u64), ZipReturn> {
         if self.zip_open_type != ZipOpenType::OpenRead {
             return Err(ZipReturn::ZipReadingFromOutputFile);
         }
@@ -479,18 +491,24 @@ impl ICompress for GZipFile {
             }
             file.write_all(&(extra.len() as u16).to_le_bytes())
                 .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
-            self.header_start_pos = file.stream_position().map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+            self.header_start_pos = file
+                .stream_position()
+                .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
             file.write_all(extra)
                 .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
         } else {
             file.write_all(&(12u16).to_le_bytes())
                 .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
-            self.header_start_pos = file.stream_position().map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+            self.header_start_pos = file
+                .stream_position()
+                .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
             file.write_all(&[0u8; 12])
                 .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
         }
 
-        self.data_start_pos = file.stream_position().map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
+        self.data_start_pos = file
+            .stream_position()
+            .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
 
         let cloned = file
             .try_clone()
@@ -522,9 +540,7 @@ impl ICompress for GZipFile {
             return ZipReturn::ZipGood;
         };
 
-        let inner = Rc::try_unwrap(rc)
-            .ok()
-            .map(|c| c.into_inner());
+        let inner = Rc::try_unwrap(rc).ok().map(|c| c.into_inner());
         let Some(inner) = inner else {
             return ZipReturn::ZipErrorWritingToOutputStream;
         };
@@ -588,7 +604,10 @@ impl ICompress for GZipFile {
             if file.write_all(&crc_be).is_err() {
                 return ZipReturn::ZipErrorWritingToOutputStream;
             }
-            if file.write_all(&self.uncompressed_size.to_le_bytes()).is_err() {
+            if file
+                .write_all(&self.uncompressed_size.to_le_bytes())
+                .is_err()
+            {
                 return ZipReturn::ZipErrorWritingToOutputStream;
             }
         } else if let Some(extra) = self.extra_data.as_ref() {

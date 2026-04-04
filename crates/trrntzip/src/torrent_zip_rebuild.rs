@@ -1,31 +1,33 @@
-use std::io::{Read, Write};
-use std::fs;
-use std::path::Path;
-use compress::codepage_437;
-use compress::i_compress::ICompress;
-use compress::zip_enums::ZipReturn;
-use compress::zip_extra_field;
-use compress::structured_archive::{ZipDateType, ZipStructure, get_compression_type, get_zip_comment_id, get_zip_date_time_type};
-use compress::deflate_raw_best;
 use crate::process_control::ProcessControl;
 use crate::trrntzip_status::TrrntZipStatus;
 use crate::zipped_file::ZippedFile;
+use compress::codepage_437;
+use compress::deflate_raw_best;
+use compress::i_compress::ICompress;
+use compress::structured_archive::{
+    get_compression_type, get_zip_comment_id, get_zip_date_time_type, ZipDateType, ZipStructure,
+};
+use compress::zip_enums::ZipReturn;
+use compress::zip_extra_field;
 use crc32fast::Hasher as Crc32Hasher;
-use sevenz_rust::{ArchiveEntry, ArchiveWriter, EncoderConfiguration, EncoderMethod, SourceReader};
 use sevenz_rust::encoder_options::{EncoderOptions, LzmaOptions, ZstandardOptions};
+use sevenz_rust::{ArchiveEntry, ArchiveWriter, EncoderConfiguration, EncoderMethod, SourceReader};
+use std::fs;
+use std::io::{Read, Write};
+use std::path::Path;
 
 /// Core logic for rebuilding an archive into TorrentZip format.
-/// 
+///
 /// `TorrentZipRebuild` is responsible for generating a deterministic `.zip` file.
 /// It creates a temporary zip, copies the raw streams of the files from the source
 /// zip in strict alphabetical order, forces the Deflate compression parameters,
 /// sets timestamps to the TorrentZip epoch, and recomputes the structural hashes.
-/// 
+///
 /// Differences from C#:
 /// - The C# `TorrentZipRebuild` relies on a highly specialized `Compress.ZipFile` writer that handles
 ///   raw DEFLATE streams and deterministic TorrentZip local header offsets.
 /// - The Rust version currently implements the structure and sorting pipeline, but relies on standard
-///   file I/O writing streams that simulate the `ICompress` interface. Full TorrentZip deterministic 
+///   file I/O writing streams that simulate the `ICompress` interface. Full TorrentZip deterministic
 ///   byte alignment is still pending a robust Rust Zip-streaming replacement crate.
 pub struct TorrentZipRebuild;
 
@@ -55,11 +57,20 @@ impl TorrentZipRebuild {
     }
 
     fn torrentzip_flags(name: &str) -> u16 {
-        0x0002 | if codepage_437::is_code_page_437(name) { 0 } else { 0x0800 }
+        0x0002
+            | if codepage_437::is_code_page_437(name) {
+                0
+            } else {
+                0x0800
+            }
     }
 
     fn ascii_lower(byte: u8) -> u8 {
-        if byte.is_ascii_uppercase() { byte + 0x20 } else { byte }
+        if byte.is_ascii_uppercase() {
+            byte + 0x20
+        } else {
+            byte
+        }
     }
 
     fn compare_trrntzip_names_case(left: &str, right: &str) -> std::cmp::Ordering {
@@ -101,12 +112,17 @@ impl TorrentZipRebuild {
                 return true;
             }
             let dir_name = f.name.as_str();
-            !names.iter().any(|other| other.len() > dir_name.len() && other.starts_with(dir_name))
+            !names
+                .iter()
+                .any(|other| other.len() > dir_name.len() && other.starts_with(dir_name))
         });
         files
     }
 
-    fn prepare_zip_file_list(zipped_files: &[ZippedFile], prune_dirs: bool) -> Result<Vec<ZippedFile>, TrrntZipStatus> {
+    fn prepare_zip_file_list(
+        zipped_files: &[ZippedFile],
+        prune_dirs: bool,
+    ) -> Result<Vec<ZippedFile>, TrrntZipStatus> {
         let mut out = Vec::with_capacity(zipped_files.len());
         for f in zipped_files {
             let mut z = f.clone();
@@ -185,7 +201,9 @@ impl TorrentZipRebuild {
         files
     }
 
-    fn prepare_seven_zip_file_list(zipped_files: &[ZippedFile]) -> Result<Vec<ZippedFile>, TrrntZipStatus> {
+    fn prepare_seven_zip_file_list(
+        zipped_files: &[ZippedFile],
+    ) -> Result<Vec<ZippedFile>, TrrntZipStatus> {
         let mut out = Vec::with_capacity(zipped_files.len());
         for f in zipped_files {
             let mut z = f.clone();
@@ -223,7 +241,10 @@ impl TorrentZipRebuild {
         let date_type = get_zip_date_time_type(zip_struct);
 
         let (time_patch, date_patch) = match date_type {
-            ZipDateType::TrrntZip => (Some(Self::TORRENTZIP_DOS_TIME), Some(Self::TORRENTZIP_DOS_DATE)),
+            ZipDateType::TrrntZip => (
+                Some(Self::TORRENTZIP_DOS_TIME),
+                Some(Self::TORRENTZIP_DOS_DATE),
+            ),
             ZipDateType::None => (Some(0u16), Some(0u16)),
             ZipDateType::DateTime => (None, None),
             ZipDateType::Undefined => return false,
@@ -233,11 +254,16 @@ impl TorrentZipRebuild {
         while local_offset + 30 <= zip_bytes.len()
             && zip_bytes[local_offset..local_offset + 4] == local_header_signature
         {
-            let flags = u16::from_le_bytes([zip_bytes[local_offset + 6], zip_bytes[local_offset + 7]]);
+            let flags =
+                u16::from_le_bytes([zip_bytes[local_offset + 6], zip_bytes[local_offset + 7]]);
             let normalized_flags = 0x0002 | (flags & utf8_flag);
 
-            let name_len = u16::from_le_bytes([zip_bytes[local_offset + 26], zip_bytes[local_offset + 27]]) as usize;
-            let extra_len = u16::from_le_bytes([zip_bytes[local_offset + 28], zip_bytes[local_offset + 29]]) as usize;
+            let name_len =
+                u16::from_le_bytes([zip_bytes[local_offset + 26], zip_bytes[local_offset + 27]])
+                    as usize;
+            let extra_len =
+                u16::from_le_bytes([zip_bytes[local_offset + 28], zip_bytes[local_offset + 29]])
+                    as usize;
 
             let header_comp_size = u32::from_le_bytes([
                 zip_bytes[local_offset + 18],
@@ -258,16 +284,24 @@ impl TorrentZipRebuild {
                 return false;
             }
             let extra_bytes = &zip_bytes[extra_start..extra_end];
-            let extra_info =
-                zip_extra_field::parse_extra_fields(extra_bytes, false, header_uncomp_size, header_comp_size, 0);
+            let extra_info = zip_extra_field::parse_extra_fields(
+                extra_bytes,
+                false,
+                header_uncomp_size,
+                header_comp_size,
+                0,
+            );
             let is_zip64 = extra_info.is_zip64
                 || header_comp_size == 0xFFFF_FFFF
                 || header_uncomp_size == 0xFFFF_FFFF;
             let version_needed = Self::structured_version_needed(expected_method, is_zip64);
 
-            zip_bytes[local_offset + 4..local_offset + 6].copy_from_slice(&version_needed.to_le_bytes());
-            zip_bytes[local_offset + 6..local_offset + 8].copy_from_slice(&normalized_flags.to_le_bytes());
-            zip_bytes[local_offset + 8..local_offset + 10].copy_from_slice(&expected_method.to_le_bytes());
+            zip_bytes[local_offset + 4..local_offset + 6]
+                .copy_from_slice(&version_needed.to_le_bytes());
+            zip_bytes[local_offset + 6..local_offset + 8]
+                .copy_from_slice(&normalized_flags.to_le_bytes());
+            zip_bytes[local_offset + 8..local_offset + 10]
+                .copy_from_slice(&expected_method.to_le_bytes());
             if let (Some(t), Some(d)) = (time_patch, date_patch) {
                 zip_bytes[local_offset + 10..local_offset + 12].copy_from_slice(&t.to_le_bytes());
                 zip_bytes[local_offset + 12..local_offset + 14].copy_from_slice(&d.to_le_bytes());
@@ -299,7 +333,8 @@ impl TorrentZipRebuild {
             return false;
         }
 
-        let total_entries = u16::from_le_bytes([zip_bytes[eocd_offset + 10], zip_bytes[eocd_offset + 11]]);
+        let total_entries =
+            u16::from_le_bytes([zip_bytes[eocd_offset + 10], zip_bytes[eocd_offset + 11]]);
         let central_directory_size_u32 = u32::from_le_bytes([
             zip_bytes[eocd_offset + 12],
             zip_bytes[eocd_offset + 13],
@@ -323,14 +358,24 @@ impl TorrentZipRebuild {
                 && zip_bytes[locator_offset..locator_offset + 4] == [0x50, 0x4B, 0x06, 0x07]
             {
                 (|| {
-                    let disk = u32::from_le_bytes(zip_bytes[locator_offset + 4..locator_offset + 8].try_into().ok()?);
+                    let disk = u32::from_le_bytes(
+                        zip_bytes[locator_offset + 4..locator_offset + 8]
+                            .try_into()
+                            .ok()?,
+                    );
                     if disk != 0 {
                         return None;
                     }
-                    let zip64_eocd_offset =
-                        u64::from_le_bytes(zip_bytes[locator_offset + 8..locator_offset + 16].try_into().ok()?);
-                    let total_disks =
-                        u32::from_le_bytes(zip_bytes[locator_offset + 16..locator_offset + 20].try_into().ok()?);
+                    let zip64_eocd_offset = u64::from_le_bytes(
+                        zip_bytes[locator_offset + 8..locator_offset + 16]
+                            .try_into()
+                            .ok()?,
+                    );
+                    let total_disks = u32::from_le_bytes(
+                        zip_bytes[locator_offset + 16..locator_offset + 20]
+                            .try_into()
+                            .ok()?,
+                    );
                     if total_disks > 1 {
                         return None;
                     }
@@ -408,17 +453,21 @@ impl TorrentZipRebuild {
             return false;
         }
 
-        let (central_directory_offset, central_directory_size) = if let Some((_, cd_size, cd_offset)) = zip64_info {
-            let Ok(cd_offset) = usize::try_from(cd_offset) else {
-                return false;
+        let (central_directory_offset, central_directory_size) =
+            if let Some((_, cd_size, cd_offset)) = zip64_info {
+                let Ok(cd_offset) = usize::try_from(cd_offset) else {
+                    return false;
+                };
+                let Ok(cd_size) = usize::try_from(cd_size) else {
+                    return false;
+                };
+                (cd_offset, cd_size)
+            } else {
+                (
+                    central_directory_offset_u32 as usize,
+                    central_directory_size_u32 as usize,
+                )
             };
-            let Ok(cd_size) = usize::try_from(cd_size) else {
-                return false;
-            };
-            (cd_offset, cd_size)
-        } else {
-            (central_directory_offset_u32 as usize, central_directory_size_u32 as usize)
-        };
 
         if central_directory_offset + central_directory_size > zip_bytes.len() {
             return false;
@@ -442,7 +491,8 @@ impl TorrentZipRebuild {
                 zip_bytes[central_offset + 33],
             ]) as usize;
 
-            let flags = u16::from_le_bytes([zip_bytes[central_offset + 8], zip_bytes[central_offset + 9]]);
+            let flags =
+                u16::from_le_bytes([zip_bytes[central_offset + 8], zip_bytes[central_offset + 9]]);
             let normalized_flags = 0x0002 | (flags & utf8_flag);
 
             let header_comp_size = u32::from_le_bytes([
@@ -484,23 +534,34 @@ impl TorrentZipRebuild {
             let version_needed = Self::structured_version_needed(expected_method, is_zip64);
 
             zip_bytes[central_offset + 4..central_offset + 6].copy_from_slice(&0u16.to_le_bytes());
-            zip_bytes[central_offset + 6..central_offset + 8].copy_from_slice(&version_needed.to_le_bytes());
-            zip_bytes[central_offset + 8..central_offset + 10].copy_from_slice(&normalized_flags.to_le_bytes());
-            zip_bytes[central_offset + 10..central_offset + 12].copy_from_slice(&expected_method.to_le_bytes());
+            zip_bytes[central_offset + 6..central_offset + 8]
+                .copy_from_slice(&version_needed.to_le_bytes());
+            zip_bytes[central_offset + 8..central_offset + 10]
+                .copy_from_slice(&normalized_flags.to_le_bytes());
+            zip_bytes[central_offset + 10..central_offset + 12]
+                .copy_from_slice(&expected_method.to_le_bytes());
             if let (Some(t), Some(d)) = (time_patch, date_patch) {
-                zip_bytes[central_offset + 12..central_offset + 14].copy_from_slice(&t.to_le_bytes());
-                zip_bytes[central_offset + 14..central_offset + 16].copy_from_slice(&d.to_le_bytes());
+                zip_bytes[central_offset + 12..central_offset + 14]
+                    .copy_from_slice(&t.to_le_bytes());
+                zip_bytes[central_offset + 14..central_offset + 16]
+                    .copy_from_slice(&d.to_le_bytes());
             }
-            zip_bytes[central_offset + 32..central_offset + 34].copy_from_slice(&0u16.to_le_bytes());
-            zip_bytes[central_offset + 34..central_offset + 36].copy_from_slice(&0u16.to_le_bytes());
-            zip_bytes[central_offset + 36..central_offset + 38].copy_from_slice(&0u16.to_le_bytes());
-            zip_bytes[central_offset + 38..central_offset + 42].copy_from_slice(&0u32.to_le_bytes());
+            zip_bytes[central_offset + 32..central_offset + 34]
+                .copy_from_slice(&0u16.to_le_bytes());
+            zip_bytes[central_offset + 34..central_offset + 36]
+                .copy_from_slice(&0u16.to_le_bytes());
+            zip_bytes[central_offset + 36..central_offset + 38]
+                .copy_from_slice(&0u16.to_le_bytes());
+            zip_bytes[central_offset + 38..central_offset + 42]
+                .copy_from_slice(&0u32.to_le_bytes());
 
             central_offset += 46 + file_name_length + extra_length + comment_length;
         }
 
         let mut crc = Crc32Hasher::new();
-        crc.update(&zip_bytes[central_directory_offset..central_directory_offset + central_directory_size]);
+        crc.update(
+            &zip_bytes[central_directory_offset..central_directory_offset + central_directory_size],
+        );
         let comment = format!("{}{:08X}", get_zip_comment_id(zip_struct), crc.finalize());
 
         let mut rebuilt = Vec::with_capacity(eocd_offset + 22 + comment.len());
@@ -613,10 +674,8 @@ impl TorrentZipRebuild {
                 return None;
             }
 
-            let flags = u16::from_le_bytes([
-                zip_bytes[central_offset + 8],
-                zip_bytes[central_offset + 9],
-            ]);
+            let flags =
+                u16::from_le_bytes([zip_bytes[central_offset + 8], zip_bytes[central_offset + 9]]);
             let compression_method = u16::from_le_bytes([
                 zip_bytes[central_offset + 10],
                 zip_bytes[central_offset + 11],
@@ -709,7 +768,8 @@ impl TorrentZipRebuild {
 
                 let relative_offset_usize = usize::try_from(relative_offset_u64).ok()?;
                 if relative_offset_usize + 30 > zip_bytes.len()
-                    || zip_bytes[relative_offset_usize..relative_offset_usize + 4] != [0x50, 0x4B, 0x03, 0x04]
+                    || zip_bytes[relative_offset_usize..relative_offset_usize + 4]
+                        != [0x50, 0x4B, 0x03, 0x04]
                 {
                     return None;
                 }
@@ -722,7 +782,8 @@ impl TorrentZipRebuild {
                     zip_bytes[relative_offset_usize + 28],
                     zip_bytes[relative_offset_usize + 29],
                 ]) as usize;
-                let data_offset = relative_offset_usize + 30 + local_name_length + local_extra_length;
+                let data_offset =
+                    relative_offset_usize + 30 + local_name_length + local_extra_length;
                 let data_end = data_offset + usize::try_from(compressed_size_u64).ok()?;
 
                 if data_end > zip_bytes.len() {
@@ -765,8 +826,16 @@ impl TorrentZipRebuild {
             let is_zip64 = needs_zip64_offset || needs_zip64_comp || needs_zip64_uncomp;
 
             let local_version_needed: u16 = if is_zip64 { 45 } else { 20 };
-            let local_comp_u32 = if needs_zip64_comp { 0xFFFF_FFFF } else { entry.compressed_size as u32 };
-            let local_uncomp_u32 = if needs_zip64_uncomp { 0xFFFF_FFFF } else { entry.uncompressed_size as u32 };
+            let local_comp_u32 = if needs_zip64_comp {
+                0xFFFF_FFFF
+            } else {
+                entry.compressed_size as u32
+            };
+            let local_uncomp_u32 = if needs_zip64_uncomp {
+                0xFFFF_FFFF
+            } else {
+                entry.uncompressed_size as u32
+            };
 
             let local_extra = if needs_zip64_comp || needs_zip64_uncomp {
                 let mut payload = Vec::new();
@@ -803,7 +872,11 @@ impl TorrentZipRebuild {
             let central_version_needed: u16 = if is_zip64 { 45 } else { 20 };
             let central_comp_u32 = local_comp_u32;
             let central_uncomp_u32 = local_uncomp_u32;
-            let central_offset_u32 = if needs_zip64_offset { 0xFFFF_FFFF } else { local_offset as u32 };
+            let central_offset_u32 = if needs_zip64_offset {
+                0xFFFF_FFFF
+            } else {
+                local_offset as u32
+            };
             let central_extra = if is_zip64 {
                 let mut payload = Vec::new();
                 if needs_zip64_uncomp {
@@ -876,10 +949,21 @@ impl TorrentZipRebuild {
             archive_bytes.extend_from_slice(&1u32.to_le_bytes());
         }
 
-        let entries_u16 = if entries.len() >= 0xFFFF { 0xFFFF } else { entries.len() as u16 };
-        let cd_size_u32 = if central_directory_size >= 0xFFFF_FFFF { 0xFFFF_FFFF } else { central_directory_size as u32 };
-        let cd_offset_u32 =
-            if central_directory_offset >= 0xFFFF_FFFF { 0xFFFF_FFFF } else { central_directory_offset as u32 };
+        let entries_u16 = if entries.len() >= 0xFFFF {
+            0xFFFF
+        } else {
+            entries.len() as u16
+        };
+        let cd_size_u32 = if central_directory_size >= 0xFFFF_FFFF {
+            0xFFFF_FFFF
+        } else {
+            central_directory_size as u32
+        };
+        let cd_offset_u32 = if central_directory_offset >= 0xFFFF_FFFF {
+            0xFFFF_FFFF
+        } else {
+            central_directory_offset as u32
+        };
 
         archive_bytes.extend_from_slice(&0x06054B50u32.to_le_bytes());
         archive_bytes.extend_from_slice(&0u16.to_le_bytes());
@@ -937,7 +1021,9 @@ impl TorrentZipRebuild {
                         if read_stream.read_to_end(&mut compressed_data).is_ok() {
                             let _ = original_zip_file.zip_file_close_read_stream();
 
-                            if let Some(header) = original_zip_file.get_file_header(file.index as usize) {
+                            if let Some(header) =
+                                original_zip_file.get_file_header(file.index as usize)
+                            {
                                 let compressed_size = compressed_data.len() as u64;
                                 let uncompressed_size = header.uncompressed_size;
                                 let crc = header
@@ -1025,13 +1111,16 @@ impl TorrentZipRebuild {
         let path = Path::new(&filename);
         let parent = path.parent().unwrap_or(Path::new(""));
         let stem = path.file_stem().unwrap_or_default().to_string_lossy();
-        
+
         let out_ext = match output_type {
             ZipStructure::ZipTrrnt | ZipStructure::ZipTDC | ZipStructure::ZipZSTD => ".zip",
             _ => ".7z",
         };
 
-        let tmp_filename = parent.join(format!("__{}.samtmp", path.file_name().unwrap().to_string_lossy()));
+        let tmp_filename = parent.join(format!(
+            "__{}.samtmp",
+            path.file_name().unwrap().to_string_lossy()
+        ));
         let out_filename = parent.join(format!("{}{}", stem, out_ext));
 
         if path.extension().unwrap_or_default() != out_ext.trim_start_matches('.')
@@ -1075,7 +1164,10 @@ impl TorrentZipRebuild {
                 }
             };
 
-            let staging_dir = parent.join(format!("__{}.samtmp.dir", path.file_name().unwrap().to_string_lossy()));
+            let staging_dir = parent.join(format!(
+                "__{}.samtmp.dir",
+                path.file_name().unwrap().to_string_lossy()
+            ));
             let _ = fs::remove_dir_all(&staging_dir);
             if fs::create_dir_all(&staging_dir).is_err() {
                 original_zip_file.zip_file_close();
@@ -1151,12 +1243,17 @@ impl TorrentZipRebuild {
                 }
             };
             writer.set_encrypt_header(false);
-            let solid = matches!(output_type, ZipStructure::SevenZipSLZMA | ZipStructure::SevenZipSZSTD);
+            let solid = matches!(
+                output_type,
+                ZipStructure::SevenZipSLZMA | ZipStructure::SevenZipSZSTD
+            );
 
             if solid {
                 let config = match output_type {
-                    ZipStructure::SevenZipSZSTD | ZipStructure::SevenZipNZSTD => EncoderConfiguration::new(EncoderMethod::ZSTD)
-                        .with_options(EncoderOptions::Zstd(ZstandardOptions::from_level(19))),
+                    ZipStructure::SevenZipSZSTD | ZipStructure::SevenZipNZSTD => {
+                        EncoderConfiguration::new(EncoderMethod::ZSTD)
+                            .with_options(EncoderOptions::Zstd(ZstandardOptions::from_level(19)))
+                    }
                     _ => {
                         let mut lz = LzmaOptions::from_level(9);
                         lz.set_dictionary_size(1 << 24);
@@ -1166,12 +1263,16 @@ impl TorrentZipRebuild {
                         lz.set_pb(2);
                         lz.set_mode_normal();
                         lz.set_match_finder_bt4();
-                        EncoderConfiguration::new(EncoderMethod::LZMA).with_options(EncoderOptions::Lzma(lz))
+                        EncoderConfiguration::new(EncoderMethod::LZMA)
+                            .with_options(EncoderOptions::Lzma(lz))
                     }
                 };
                 writer.set_content_methods(vec![config]);
 
-                for t in prepared.iter().filter(|t| t.is_dir || t.name.ends_with('/')) {
+                for t in prepared
+                    .iter()
+                    .filter(|t| t.is_dir || t.name.ends_with('/'))
+                {
                     let rel = t.name.replace('/', &sep);
                     let staged_path = staging_dir.join(rel);
                     let entry = ArchiveEntry::from_path(&staged_path, t.name.clone());
@@ -1185,7 +1286,10 @@ impl TorrentZipRebuild {
 
                 let mut file_entries = Vec::new();
                 let mut readers: Vec<SourceReader<fs::File>> = Vec::new();
-                for t in prepared.iter().filter(|t| !(t.is_dir || t.name.ends_with('/'))) {
+                for t in prepared
+                    .iter()
+                    .filter(|t| !(t.is_dir || t.name.ends_with('/')))
+                {
                     let rel = t.name.replace('/', &sep);
                     let staged_path = staging_dir.join(rel);
                     let entry = ArchiveEntry::from_path(&staged_path, t.name.clone());
@@ -1198,7 +1302,9 @@ impl TorrentZipRebuild {
                     file_entries.push(entry);
                     readers.push(SourceReader::new(src));
                 }
-                if !file_entries.is_empty() && writer.push_archive_entries(file_entries, readers).is_err() {
+                if !file_entries.is_empty()
+                    && writer.push_archive_entries(file_entries, readers).is_err()
+                {
                     let _ = fs::remove_dir_all(&staging_dir);
                     original_zip_file.zip_file_close();
                     Self::remove_tmp_if_present(&tmp_filename);
@@ -1225,8 +1331,11 @@ impl TorrentZipRebuild {
                         return TrrntZipStatus::CATCH_ERROR;
                     };
                     let config = match output_type {
-                        ZipStructure::SevenZipSZSTD | ZipStructure::SevenZipNZSTD => EncoderConfiguration::new(EncoderMethod::ZSTD)
-                            .with_options(EncoderOptions::Zstd(ZstandardOptions::from_level(19))),
+                        ZipStructure::SevenZipSZSTD | ZipStructure::SevenZipNZSTD => {
+                            EncoderConfiguration::new(EncoderMethod::ZSTD).with_options(
+                                EncoderOptions::Zstd(ZstandardOptions::from_level(19)),
+                            )
+                        }
                         _ => {
                             let mut lz = LzmaOptions::from_level(9);
                             lz.set_dictionary_size(compress::seven_zip::seven_zip_dictionary_size_from_uncompressed_size(t.size));
@@ -1236,7 +1345,8 @@ impl TorrentZipRebuild {
                             lz.set_pb(2);
                             lz.set_mode_normal();
                             lz.set_match_finder_bt4();
-                            EncoderConfiguration::new(EncoderMethod::LZMA).with_options(EncoderOptions::Lzma(lz))
+                            EncoderConfiguration::new(EncoderMethod::LZMA)
+                                .with_options(EncoderOptions::Lzma(lz))
                         }
                     };
                     writer.set_content_methods(vec![config]);
@@ -1267,15 +1377,16 @@ impl TorrentZipRebuild {
         }
 
         // Creating output archive
-        // Note: For a fully faithful port, we would instantiate a ZipFile here. 
+        // Note: For a fully faithful port, we would instantiate a ZipFile here.
         // For simplicity we will assume `original_zip_file` creates a new instance or we create a new standard zip writer.
         let mut zip_file_out = compress::zip_file::ZipFile::new();
         let zr = if matches!(output_type, ZipStructure::ZipZSTD | ZipStructure::ZipTDC) {
-            zip_file_out.zip_file_create_with_structure(&tmp_filename.to_string_lossy(), output_type)
+            zip_file_out
+                .zip_file_create_with_structure(&tmp_filename.to_string_lossy(), output_type)
         } else {
             zip_file_out.zip_file_create(&tmp_filename.to_string_lossy())
         };
-        
+
         if zr != ZipReturn::ZipGood {
             Self::remove_tmp_if_present(&tmp_filename);
             return TrrntZipStatus::CATCH_ERROR;
@@ -1326,7 +1437,9 @@ impl TorrentZipRebuild {
                 }
             }
 
-            if source_is_structured && matches!(output_type, ZipStructure::ZipZSTD | ZipStructure::ZipTDC) {
+            if source_is_structured
+                && matches!(output_type, ZipStructure::ZipZSTD | ZipStructure::ZipTDC)
+            {
                 let mut uncompressed_size = 0u64;
                 let mut crc_be: Option<Vec<u8>> = None;
                 if let Some(header) = original_zip_file.get_file_header(t.index as usize) {
@@ -1336,7 +1449,13 @@ impl TorrentZipRebuild {
                         .as_ref()
                         .filter(|b| b.len() == 4)
                         .cloned()
-                        .or_else(|| if uncompressed_size == 0 { Some(vec![0, 0, 0, 0]) } else { None });
+                        .or_else(|| {
+                            if uncompressed_size == 0 {
+                                Some(vec![0, 0, 0, 0])
+                            } else {
+                                None
+                            }
+                        });
                 }
 
                 if let Some(crc_be) = crc_be.as_deref() {
@@ -1347,13 +1466,15 @@ impl TorrentZipRebuild {
                             let mut compressed = Vec::new();
                             if raw_stream.read_to_end(&mut compressed).is_ok() {
                                 let _ = original_zip_file.zip_file_close_read_stream();
-                                if let Ok(mut write_stream) = zip_file_out.zip_file_open_write_stream(
-                                    true,
-                                    &t.name,
-                                    uncompressed_size,
-                                    output_compression_type,
-                                    mod_time,
-                                ) {
+                                if let Ok(mut write_stream) = zip_file_out
+                                    .zip_file_open_write_stream(
+                                        true,
+                                        &t.name,
+                                        uncompressed_size,
+                                        output_compression_type,
+                                        mod_time,
+                                    )
+                                {
                                     let _ = write_stream.write_all(&compressed);
                                     let _ = write_stream.flush();
                                     let _ = zip_file_out.zip_file_close_write_stream(crc_be);
@@ -1385,7 +1506,13 @@ impl TorrentZipRebuild {
                 }
             }
 
-            match zip_file_out.zip_file_open_write_stream(false, &t.name, stream_size, output_compression_type, mod_time) {
+            match zip_file_out.zip_file_open_write_stream(
+                false,
+                &t.name,
+                stream_size,
+                output_compression_type,
+                mod_time,
+            ) {
                 Ok(mut write_stream) => {
                     let mut crc_hasher = Crc32Hasher::new();
                     let mut size_to_go = stream_size;
@@ -1400,7 +1527,9 @@ impl TorrentZipRebuild {
                         }
                         let size_now = std::cmp::min(size_to_go as usize, buffer.len());
                         if let Ok(n) = read_stream.read(&mut buffer[..size_now]) {
-                            if n == 0 { break; }
+                            if n == 0 {
+                                break;
+                            }
                             crc_hasher.update(&buffer[..n]);
                             let _ = write_stream.write_all(&buffer[..n]);
                             size_to_go -= n as u64;
@@ -1435,7 +1564,7 @@ impl TorrentZipRebuild {
         if path.exists() {
             let _ = fs::remove_file(path);
         }
-        
+
         let _ = fs::rename(&tmp_filename, &out_filename);
 
         TrrntZipStatus::VALID_TRRNTZIP

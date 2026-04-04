@@ -2,11 +2,11 @@ use crate::trrntzip_status::TrrntZipStatus;
 use crate::zipped_file::ZippedFile;
 
 /// Core logic for validating if an archive matches the TorrentZip specification.
-/// 
-/// `TorrentZipCheck` scans the central directory of an archive without extracting 
+///
+/// `TorrentZipCheck` scans the central directory of an archive without extracting
 /// its contents. It verifies file ordering, directory separators, compression methods,
 /// timestamps, and file name casings to determine if a repack is required.
-/// 
+///
 /// Differences from C#:
 /// - Functionally maps 1:1 to the C# `TrrntZip.TorrentZipCheck` logic.
 /// - The `TrrntZipStatus` bitflag accumulation has been strictly typed.
@@ -143,7 +143,7 @@ impl TorrentZipCheck {
         // RULE 3: Extra directories
         let mut dir_sort_test = zipped_files.clone();
         dir_sort_test.sort_by(|a, b| a.name.cmp(&b.name));
-        
+
         let mut error3 = false;
         let mut i = 0;
         while i < dir_sort_test.len().saturating_sub(1) {
@@ -211,19 +211,27 @@ impl TorrentZipCheck {
         // Trrntzip compares character by character
         let bytes_a = name_a.as_bytes();
         let bytes_b = name_b.as_bytes();
-        
+
         let len = std::cmp::min(bytes_a.len(), bytes_b.len());
 
         for i in 0..len {
             let ca = Self::ascii_lower(bytes_a[i]);
             let cb = Self::ascii_lower(bytes_b[i]);
 
-            if ca < cb { return -1; }
-            if ca > cb { return 1; }
+            if ca < cb {
+                return -1;
+            }
+            if ca > cb {
+                return 1;
+            }
         }
 
-        if bytes_a.len() < bytes_b.len() { return -1; }
-        if bytes_a.len() > bytes_b.len() { return 1; }
+        if bytes_a.len() < bytes_b.len() {
+            return -1;
+        }
+        if bytes_a.len() > bytes_b.len() {
+            return 1;
+        }
 
         0
     }

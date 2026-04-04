@@ -31,7 +31,11 @@ pub fn draw_right_panel(app: &mut RomVaultApp, ctx: &egui::Context) {
     egui::SidePanel::right("tab_emu_arc_panel")
         .resizable(true)
         .default_width(220.0)
-        .frame(egui::Frame::none().inner_margin(8.0).fill(ctx.style().visuals.panel_fill))
+        .frame(
+            egui::Frame::none()
+                .inner_margin(8.0)
+                .fill(ctx.style().visuals.panel_fill),
+        )
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
                 if has_info {
@@ -57,7 +61,9 @@ pub fn draw_right_panel(app: &mut RomVaultApp, ctx: &egui::Context) {
             if app.active_game_info_tab == 0 && has_info {
                 egui::ScrollArea::both().show(ui, |ui| {
                     if let Some(info_text) = &app.loaded_info {
-                        ui.label(egui::RichText::new(info_text).font(egui::FontId::monospace(12.0)));
+                        ui.label(
+                            egui::RichText::new(info_text).font(egui::FontId::monospace(12.0)),
+                        );
                     }
                 });
             } else if app.active_game_info_tab == 1 && has_artwork {
@@ -86,8 +92,11 @@ pub fn draw_right_panel(app: &mut RomVaultApp, ctx: &egui::Context) {
                                 ui.centered_and_justified(|ui| {
                                     if let Some(bytes) = &app.loaded_artwork {
                                         ui.add(
-                                            egui::Image::from_bytes("bytes://artwork", bytes.clone())
-                                                .max_width(ui.available_width()),
+                                            egui::Image::from_bytes(
+                                                "bytes://artwork",
+                                                bytes.clone(),
+                                            )
+                                            .max_width(ui.available_width()),
                                         );
                                     }
                                 });
@@ -121,8 +130,11 @@ pub fn draw_right_panel(app: &mut RomVaultApp, ctx: &egui::Context) {
                                 ui.centered_and_justified(|ui| {
                                     if let Some(bytes) = &app.loaded_screen {
                                         ui.add(
-                                            egui::Image::from_bytes("bytes://screen", bytes.clone())
-                                                .max_width(ui.available_width()),
+                                            egui::Image::from_bytes(
+                                                "bytes://screen",
+                                                bytes.clone(),
+                                            )
+                                            .max_width(ui.available_width()),
                                         );
                                     }
                                 });

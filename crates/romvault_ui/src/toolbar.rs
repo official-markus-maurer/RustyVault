@@ -6,10 +6,10 @@ use rv_core::db::GLOBAL_DB;
 use rv_core::find_fixes::FindFixes;
 
 /// Logic for rendering the top main menu and toolbar.
-/// 
+///
 /// `toolbar.rs` contains the top-level `egui::TopBottomPanel` rendering for the main
 /// application, drawing buttons like `Update DATs`, `Scan ROMs`, and `Fix ROMs`.
-/// 
+///
 /// Differences from C#:
 /// - C# uses `ToolStrip` and `MenuStrip` objects bound to internal event handlers.
 /// - Rust utilizes `egui::menu::bar` and directly triggers state transitions (or worker threads)
@@ -313,4 +313,3 @@ pub fn draw_left_toolbar(app: &mut RomVaultApp, ctx: &egui::Context) {
                 });
         });
 }
-

@@ -1,15 +1,15 @@
+use rv_core::rv_file::RvFile;
+use std::cell::RefCell;
+use std::io::Read as _;
 /// Utility functions for the UI layer.
-/// 
+///
 /// `utils.rs` contains shared helper logic, specifically the status bar coloring mappings,
-/// which translate internal `RepStatus` enums into the actual RGBA color codes used by 
+/// which translate internal `RepStatus` enums into the actual RGBA color codes used by
 /// the `egui` rendering engine.
-/// 
+///
 /// Differences from C#:
 /// - Functionally mirrors the hardcoded WinForms `Color` assignments in the original `RvTreeRow.cs`.
 use std::rc::Rc;
-use std::cell::RefCell;
-use std::io::Read as _;
-use rv_core::rv_file::RvFile;
 
 pub fn get_full_node_path(node: Rc<RefCell<RvFile>>) -> String {
     let mut path_parts = Vec::new();

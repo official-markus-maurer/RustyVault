@@ -181,10 +181,11 @@ pub fn draw_dir_mappings(app: &mut RomVaultApp, ctx: &egui::Context) {
 
             ui.horizontal(|ui| {
                 if ui.button("Add").clicked() {
-                    app.working_dir_mappings.push(rv_core::settings::DirMapping {
-                        dir_key: "NewDirectory".to_string(),
-                        dir_path: "NewMapping".to_string(),
-                    });
+                    app.working_dir_mappings
+                        .push(rv_core::settings::DirMapping {
+                            dir_key: "NewDirectory".to_string(),
+                            dir_path: "NewMapping".to_string(),
+                        });
                     app.selected_dir_mapping_idx = Some(app.working_dir_mappings.len() - 1);
                 }
                 let can_remove = app.selected_dir_mapping_idx.is_some_and(|idx| {
@@ -192,7 +193,10 @@ pub fn draw_dir_mappings(app: &mut RomVaultApp, ctx: &egui::Context) {
                         .get(idx)
                         .is_some_and(|m| !is_base_mapping_key(&m.dir_key))
                 });
-                if ui.add_enabled(can_remove, egui::Button::new("Remove")).clicked() {
+                if ui
+                    .add_enabled(can_remove, egui::Button::new("Remove"))
+                    .clicked()
+                {
                     if let Some(idx) = app.selected_dir_mapping_idx {
                         if idx < app.working_dir_mappings.len() {
                             app.working_dir_mappings.remove(idx);
@@ -209,8 +213,10 @@ pub fn draw_dir_mappings(app: &mut RomVaultApp, ctx: &egui::Context) {
                         close_dir_mappings = true;
                     }
                     if ui.button("OK").clicked() {
-                        let mut map: std::collections::BTreeMap<String, rv_core::settings::DirMapping> =
-                            std::collections::BTreeMap::new();
+                        let mut map: std::collections::BTreeMap<
+                            String,
+                            rv_core::settings::DirMapping,
+                        > = std::collections::BTreeMap::new();
 
                         for m in app
                             .working_dir_mappings
@@ -284,7 +290,8 @@ pub fn draw_dir_mappings(app: &mut RomVaultApp, ctx: &egui::Context) {
                             );
                         }
 
-                        let mappings: Vec<rv_core::settings::DirMapping> = map.into_values().collect();
+                        let mappings: Vec<rv_core::settings::DirMapping> =
+                            map.into_values().collect();
 
                         for m in &mappings {
                             if m.dir_path.is_empty() {
@@ -314,4 +321,3 @@ pub fn draw_dir_mappings(app: &mut RomVaultApp, ctx: &egui::Context) {
         app.show_dir_mappings = false;
     }
 }
-
