@@ -4,6 +4,7 @@ use std::path::Path;
 use compress::codepage_437;
 use compress::i_compress::ICompress;
 use compress::zip_enums::ZipReturn;
+use compress::zip_extra_field;
 use compress::structured_archive::{ZipDateType, ZipStructure, get_compression_type, get_zip_comment_id, get_zip_date_time_type};
 use compress::deflate_raw_best;
 use crate::process_control::ProcessControl;
@@ -32,8 +33,8 @@ struct RawZipEntry {
     name: String,
     compressed_data: Vec<u8>,
     crc: u32,
-    compressed_size: u32,
-    uncompressed_size: u32,
+    compressed_size: u64,
+    uncompressed_size: u64,
     flags: u16,
     compression_method: u16,
     external_attributes: u32,
@@ -42,6 +43,16 @@ struct RawZipEntry {
 impl TorrentZipRebuild {
     const TORRENTZIP_DOS_TIME: u16 = 48128;
     const TORRENTZIP_DOS_DATE: u16 = 8600;
+
+    fn structured_version_needed(expected_method: u16, is_zip64: bool) -> u16 {
+        if expected_method == 93 {
+            63
+        } else if is_zip64 {
+            45
+        } else {
+            20
+        }
+    }
 
     fn torrentzip_flags(name: &str) -> u16 {
         0x0002 | if codepage_437::is_code_page_437(name) { 0 } else { 0x0800 }
@@ -218,14 +229,41 @@ impl TorrentZipRebuild {
             ZipDateType::Undefined => return false,
         };
 
-        let version_needed: u16 = if expected_method == 93 { 63 } else { 20 };
-
         let mut local_offset = 0usize;
         while local_offset + 30 <= zip_bytes.len()
             && zip_bytes[local_offset..local_offset + 4] == local_header_signature
         {
             let flags = u16::from_le_bytes([zip_bytes[local_offset + 6], zip_bytes[local_offset + 7]]);
             let normalized_flags = 0x0002 | (flags & utf8_flag);
+
+            let name_len = u16::from_le_bytes([zip_bytes[local_offset + 26], zip_bytes[local_offset + 27]]) as usize;
+            let extra_len = u16::from_le_bytes([zip_bytes[local_offset + 28], zip_bytes[local_offset + 29]]) as usize;
+
+            let header_comp_size = u32::from_le_bytes([
+                zip_bytes[local_offset + 18],
+                zip_bytes[local_offset + 19],
+                zip_bytes[local_offset + 20],
+                zip_bytes[local_offset + 21],
+            ]);
+            let header_uncomp_size = u32::from_le_bytes([
+                zip_bytes[local_offset + 22],
+                zip_bytes[local_offset + 23],
+                zip_bytes[local_offset + 24],
+                zip_bytes[local_offset + 25],
+            ]);
+
+            let extra_start = local_offset + 30 + name_len;
+            let extra_end = extra_start + extra_len;
+            if extra_end > zip_bytes.len() {
+                return false;
+            }
+            let extra_bytes = &zip_bytes[extra_start..extra_end];
+            let extra_info =
+                zip_extra_field::parse_extra_fields(extra_bytes, false, header_uncomp_size, header_comp_size, 0);
+            let is_zip64 = extra_info.is_zip64
+                || header_comp_size == 0xFFFF_FFFF
+                || header_uncomp_size == 0xFFFF_FFFF;
+            let version_needed = Self::structured_version_needed(expected_method, is_zip64);
 
             zip_bytes[local_offset + 4..local_offset + 6].copy_from_slice(&version_needed.to_le_bytes());
             zip_bytes[local_offset + 6..local_offset + 8].copy_from_slice(&normalized_flags.to_le_bytes());
@@ -235,14 +273,17 @@ impl TorrentZipRebuild {
                 zip_bytes[local_offset + 12..local_offset + 14].copy_from_slice(&d.to_le_bytes());
             }
 
-            let name_len = u16::from_le_bytes([zip_bytes[local_offset + 26], zip_bytes[local_offset + 27]]) as usize;
-            let extra_len = u16::from_le_bytes([zip_bytes[local_offset + 28], zip_bytes[local_offset + 29]]) as usize;
-            let comp_size = u32::from_le_bytes([
-                zip_bytes[local_offset + 18],
-                zip_bytes[local_offset + 19],
-                zip_bytes[local_offset + 20],
-                zip_bytes[local_offset + 21],
-            ]) as usize;
+            let comp_size = if header_comp_size == 0xFFFF_FFFF {
+                let Some(v) = extra_info.compressed_size else {
+                    return false;
+                };
+                let Ok(v) = usize::try_from(v) else {
+                    return false;
+                };
+                v
+            } else {
+                header_comp_size as usize
+            };
 
             let data_offset = local_offset + 30 + name_len + extra_len;
             local_offset = data_offset.saturating_add(comp_size);
@@ -258,18 +299,127 @@ impl TorrentZipRebuild {
             return false;
         }
 
-        let central_directory_size = u32::from_le_bytes([
+        let total_entries = u16::from_le_bytes([zip_bytes[eocd_offset + 10], zip_bytes[eocd_offset + 11]]);
+        let central_directory_size_u32 = u32::from_le_bytes([
             zip_bytes[eocd_offset + 12],
             zip_bytes[eocd_offset + 13],
             zip_bytes[eocd_offset + 14],
             zip_bytes[eocd_offset + 15],
-        ]) as usize;
-        let central_directory_offset = u32::from_le_bytes([
+        ]);
+        let central_directory_offset_u32 = u32::from_le_bytes([
             zip_bytes[eocd_offset + 16],
             zip_bytes[eocd_offset + 17],
             zip_bytes[eocd_offset + 18],
             zip_bytes[eocd_offset + 19],
-        ]) as usize;
+        ]);
+
+        let zip64_required = total_entries == 0xFFFF
+            || central_directory_size_u32 == 0xFFFF_FFFF
+            || central_directory_offset_u32 == 0xFFFF_FFFF;
+
+        let zip64_info = if eocd_offset >= 20 {
+            let locator_offset = eocd_offset - 20;
+            if locator_offset + 20 <= zip_bytes.len()
+                && zip_bytes[locator_offset..locator_offset + 4] == [0x50, 0x4B, 0x06, 0x07]
+            {
+                (|| {
+                    let disk = u32::from_le_bytes(zip_bytes[locator_offset + 4..locator_offset + 8].try_into().ok()?);
+                    if disk != 0 {
+                        return None;
+                    }
+                    let zip64_eocd_offset =
+                        u64::from_le_bytes(zip_bytes[locator_offset + 8..locator_offset + 16].try_into().ok()?);
+                    let total_disks =
+                        u32::from_le_bytes(zip_bytes[locator_offset + 16..locator_offset + 20].try_into().ok()?);
+                    if total_disks > 1 {
+                        return None;
+                    }
+                    let zip64_eocd_offset_usize = zip64_eocd_offset as usize;
+                    if zip64_eocd_offset_usize + 56 > zip_bytes.len() {
+                        return None;
+                    }
+                    if zip_bytes[zip64_eocd_offset_usize..zip64_eocd_offset_usize + 4]
+                        != [0x50, 0x4B, 0x06, 0x06]
+                    {
+                        return None;
+                    }
+                    let size_of_record = u64::from_le_bytes(
+                        zip_bytes[zip64_eocd_offset_usize + 4..zip64_eocd_offset_usize + 12]
+                            .try_into()
+                            .ok()?,
+                    );
+                    if size_of_record != 44 {
+                        return None;
+                    }
+                    let version_needed = u16::from_le_bytes(
+                        zip_bytes[zip64_eocd_offset_usize + 14..zip64_eocd_offset_usize + 16]
+                            .try_into()
+                            .ok()?,
+                    );
+                    if version_needed != 45 {
+                        return None;
+                    }
+                    let disk_num = u32::from_le_bytes(
+                        zip_bytes[zip64_eocd_offset_usize + 16..zip64_eocd_offset_usize + 20]
+                            .try_into()
+                            .ok()?,
+                    );
+                    let disk_cd = u32::from_le_bytes(
+                        zip_bytes[zip64_eocd_offset_usize + 20..zip64_eocd_offset_usize + 24]
+                            .try_into()
+                            .ok()?,
+                    );
+                    if disk_num != 0 || disk_cd != 0 {
+                        return None;
+                    }
+                    let entries_on_disk = u64::from_le_bytes(
+                        zip_bytes[zip64_eocd_offset_usize + 24..zip64_eocd_offset_usize + 32]
+                            .try_into()
+                            .ok()?,
+                    );
+                    let entries_total = u64::from_le_bytes(
+                        zip_bytes[zip64_eocd_offset_usize + 32..zip64_eocd_offset_usize + 40]
+                            .try_into()
+                            .ok()?,
+                    );
+                    if entries_on_disk != entries_total {
+                        return None;
+                    }
+                    let cd_size = u64::from_le_bytes(
+                        zip_bytes[zip64_eocd_offset_usize + 40..zip64_eocd_offset_usize + 48]
+                            .try_into()
+                            .ok()?,
+                    );
+                    let cd_offset = u64::from_le_bytes(
+                        zip_bytes[zip64_eocd_offset_usize + 48..zip64_eocd_offset_usize + 56]
+                            .try_into()
+                            .ok()?,
+                    );
+                    Some((entries_total, cd_size, cd_offset))
+                })()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if zip64_required && zip64_info.is_none() {
+            return false;
+        }
+
+        let (central_directory_offset, central_directory_size) = if let Some((_, cd_size, cd_offset)) = zip64_info {
+            let Ok(cd_offset) = usize::try_from(cd_offset) else {
+                return false;
+            };
+            let Ok(cd_size) = usize::try_from(cd_size) else {
+                return false;
+            };
+            (cd_offset, cd_size)
+        } else {
+            (central_directory_offset_u32 as usize, central_directory_size_u32 as usize)
+        };
+
         if central_directory_offset + central_directory_size > zip_bytes.len() {
             return false;
         }
@@ -294,6 +444,44 @@ impl TorrentZipRebuild {
 
             let flags = u16::from_le_bytes([zip_bytes[central_offset + 8], zip_bytes[central_offset + 9]]);
             let normalized_flags = 0x0002 | (flags & utf8_flag);
+
+            let header_comp_size = u32::from_le_bytes([
+                zip_bytes[central_offset + 20],
+                zip_bytes[central_offset + 21],
+                zip_bytes[central_offset + 22],
+                zip_bytes[central_offset + 23],
+            ]);
+            let header_uncomp_size = u32::from_le_bytes([
+                zip_bytes[central_offset + 24],
+                zip_bytes[central_offset + 25],
+                zip_bytes[central_offset + 26],
+                zip_bytes[central_offset + 27],
+            ]);
+            let header_local_offset = u32::from_le_bytes([
+                zip_bytes[central_offset + 42],
+                zip_bytes[central_offset + 43],
+                zip_bytes[central_offset + 44],
+                zip_bytes[central_offset + 45],
+            ]);
+
+            let extra_start = central_offset + 46 + file_name_length;
+            let extra_end = extra_start + extra_length;
+            if extra_end > zip_bytes.len() {
+                return false;
+            }
+            let extra_bytes = &zip_bytes[extra_start..extra_end];
+            let extra_info = zip_extra_field::parse_extra_fields(
+                extra_bytes,
+                true,
+                header_uncomp_size,
+                header_comp_size,
+                header_local_offset,
+            );
+            let is_zip64 = extra_info.is_zip64
+                || header_comp_size == 0xFFFF_FFFF
+                || header_uncomp_size == 0xFFFF_FFFF
+                || header_local_offset == 0xFFFF_FFFF;
+            let version_needed = Self::structured_version_needed(expected_method, is_zip64);
 
             zip_bytes[central_offset + 4..central_offset + 6].copy_from_slice(&0u16.to_le_bytes());
             zip_bytes[central_offset + 6..central_offset + 8].copy_from_slice(&version_needed.to_le_bytes());
@@ -468,7 +656,7 @@ impl TorrentZipRebuild {
                 zip_bytes[central_offset + 43],
                 zip_bytes[central_offset + 44],
                 zip_bytes[central_offset + 45],
-            ]) as usize;
+            ]);
 
             let name_start = central_offset + 46;
             let name_end = name_start + file_name_length;
@@ -490,22 +678,52 @@ impl TorrentZipRebuild {
                     return None;
                 }
 
-                if relative_offset + 30 > zip_bytes.len()
-                    || zip_bytes[relative_offset..relative_offset + 4] != [0x50, 0x4B, 0x03, 0x04]
+                let extra_end = name_end + extra_length;
+                if extra_end > zip_bytes.len() {
+                    return None;
+                }
+                let extra_bytes = &zip_bytes[name_end..extra_end];
+                let extra_info = zip_extra_field::parse_extra_fields(
+                    extra_bytes,
+                    true,
+                    uncompressed_size,
+                    compressed_size,
+                    relative_offset,
+                );
+
+                let compressed_size_u64 = if compressed_size == 0xFFFF_FFFF {
+                    extra_info.compressed_size?
+                } else {
+                    compressed_size as u64
+                };
+                let uncompressed_size_u64 = if uncompressed_size == 0xFFFF_FFFF {
+                    extra_info.uncompressed_size?
+                } else {
+                    uncompressed_size as u64
+                };
+                let relative_offset_u64 = if relative_offset == 0xFFFF_FFFF {
+                    extra_info.local_header_offset?
+                } else {
+                    relative_offset as u64
+                };
+
+                let relative_offset_usize = usize::try_from(relative_offset_u64).ok()?;
+                if relative_offset_usize + 30 > zip_bytes.len()
+                    || zip_bytes[relative_offset_usize..relative_offset_usize + 4] != [0x50, 0x4B, 0x03, 0x04]
                 {
                     return None;
                 }
 
                 let local_name_length = u16::from_le_bytes([
-                    zip_bytes[relative_offset + 26],
-                    zip_bytes[relative_offset + 27],
+                    zip_bytes[relative_offset_usize + 26],
+                    zip_bytes[relative_offset_usize + 27],
                 ]) as usize;
                 let local_extra_length = u16::from_le_bytes([
-                    zip_bytes[relative_offset + 28],
-                    zip_bytes[relative_offset + 29],
+                    zip_bytes[relative_offset_usize + 28],
+                    zip_bytes[relative_offset_usize + 29],
                 ]) as usize;
-                let data_offset = relative_offset + 30 + local_name_length + local_extra_length;
-                let data_end = data_offset + compressed_size as usize;
+                let data_offset = relative_offset_usize + 30 + local_name_length + local_extra_length;
+                let data_end = data_offset + usize::try_from(compressed_size_u64).ok()?;
 
                 if data_end > zip_bytes.len() {
                     return None;
@@ -515,8 +733,8 @@ impl TorrentZipRebuild {
                     name: entry_name.to_string(),
                     compressed_data: zip_bytes[data_offset..data_end].to_vec(),
                     crc,
-                    compressed_size,
-                    uncompressed_size,
+                    compressed_size: compressed_size_u64,
+                    uncompressed_size: uncompressed_size_u64,
                     flags: 0x0002 | (flags & 0x0800),
                     compression_method: 8,
                     external_attributes: 0,
@@ -539,56 +757,137 @@ impl TorrentZipRebuild {
             } else {
                 codepage_437::encode(&entry.name).unwrap_or_else(|| entry.name.as_bytes().to_vec())
             };
-            let local_offset = archive_bytes.len() as u32;
+
+            let local_offset = archive_bytes.len() as u64;
+            let needs_zip64_offset = local_offset > 0xFFFF_FFFF;
+            let needs_zip64_comp = entry.compressed_size > 0xFFFF_FFFF;
+            let needs_zip64_uncomp = entry.uncompressed_size > 0xFFFF_FFFF;
+            let is_zip64 = needs_zip64_offset || needs_zip64_comp || needs_zip64_uncomp;
+
+            let local_version_needed: u16 = if is_zip64 { 45 } else { 20 };
+            let local_comp_u32 = if needs_zip64_comp { 0xFFFF_FFFF } else { entry.compressed_size as u32 };
+            let local_uncomp_u32 = if needs_zip64_uncomp { 0xFFFF_FFFF } else { entry.uncompressed_size as u32 };
+
+            let local_extra = if needs_zip64_comp || needs_zip64_uncomp {
+                let mut payload = Vec::new();
+                if needs_zip64_uncomp {
+                    payload.extend_from_slice(&entry.uncompressed_size.to_le_bytes());
+                }
+                if needs_zip64_comp {
+                    payload.extend_from_slice(&entry.compressed_size.to_le_bytes());
+                }
+                let mut e = Vec::new();
+                e.extend_from_slice(&0x0001u16.to_le_bytes());
+                e.extend_from_slice(&(payload.len() as u16).to_le_bytes());
+                e.extend_from_slice(&payload);
+                e
+            } else {
+                Vec::new()
+            };
 
             archive_bytes.extend_from_slice(&0x04034B50u32.to_le_bytes());
-            archive_bytes.extend_from_slice(&20u16.to_le_bytes());
+            archive_bytes.extend_from_slice(&local_version_needed.to_le_bytes());
             archive_bytes.extend_from_slice(&entry.flags.to_le_bytes());
             archive_bytes.extend_from_slice(&entry.compression_method.to_le_bytes());
             archive_bytes.extend_from_slice(&Self::TORRENTZIP_DOS_TIME.to_le_bytes());
             archive_bytes.extend_from_slice(&Self::TORRENTZIP_DOS_DATE.to_le_bytes());
             archive_bytes.extend_from_slice(&entry.crc.to_le_bytes());
-            archive_bytes.extend_from_slice(&entry.compressed_size.to_le_bytes());
-            archive_bytes.extend_from_slice(&entry.uncompressed_size.to_le_bytes());
+            archive_bytes.extend_from_slice(&local_comp_u32.to_le_bytes());
+            archive_bytes.extend_from_slice(&local_uncomp_u32.to_le_bytes());
             archive_bytes.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
-            archive_bytes.extend_from_slice(&0u16.to_le_bytes());
+            archive_bytes.extend_from_slice(&(local_extra.len() as u16).to_le_bytes());
             archive_bytes.extend_from_slice(&name_bytes);
+            archive_bytes.extend_from_slice(&local_extra);
             archive_bytes.extend_from_slice(&entry.compressed_data);
+
+            let central_version_needed: u16 = if is_zip64 { 45 } else { 20 };
+            let central_comp_u32 = local_comp_u32;
+            let central_uncomp_u32 = local_uncomp_u32;
+            let central_offset_u32 = if needs_zip64_offset { 0xFFFF_FFFF } else { local_offset as u32 };
+            let central_extra = if is_zip64 {
+                let mut payload = Vec::new();
+                if needs_zip64_uncomp {
+                    payload.extend_from_slice(&entry.uncompressed_size.to_le_bytes());
+                }
+                if needs_zip64_comp {
+                    payload.extend_from_slice(&entry.compressed_size.to_le_bytes());
+                }
+                if needs_zip64_offset {
+                    payload.extend_from_slice(&local_offset.to_le_bytes());
+                }
+                let mut e = Vec::new();
+                e.extend_from_slice(&0x0001u16.to_le_bytes());
+                e.extend_from_slice(&(payload.len() as u16).to_le_bytes());
+                e.extend_from_slice(&payload);
+                e
+            } else {
+                Vec::new()
+            };
 
             central_directory.extend_from_slice(&0x02014B50u32.to_le_bytes());
             central_directory.extend_from_slice(&0u16.to_le_bytes());
-            central_directory.extend_from_slice(&20u16.to_le_bytes());
+            central_directory.extend_from_slice(&central_version_needed.to_le_bytes());
             central_directory.extend_from_slice(&entry.flags.to_le_bytes());
             central_directory.extend_from_slice(&entry.compression_method.to_le_bytes());
             central_directory.extend_from_slice(&Self::TORRENTZIP_DOS_TIME.to_le_bytes());
             central_directory.extend_from_slice(&Self::TORRENTZIP_DOS_DATE.to_le_bytes());
             central_directory.extend_from_slice(&entry.crc.to_le_bytes());
-            central_directory.extend_from_slice(&entry.compressed_size.to_le_bytes());
-            central_directory.extend_from_slice(&entry.uncompressed_size.to_le_bytes());
+            central_directory.extend_from_slice(&central_comp_u32.to_le_bytes());
+            central_directory.extend_from_slice(&central_uncomp_u32.to_le_bytes());
             central_directory.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
-            central_directory.extend_from_slice(&0u16.to_le_bytes());
+            central_directory.extend_from_slice(&(central_extra.len() as u16).to_le_bytes());
             central_directory.extend_from_slice(&0u16.to_le_bytes());
             central_directory.extend_from_slice(&0u16.to_le_bytes());
             central_directory.extend_from_slice(&0u16.to_le_bytes());
             central_directory.extend_from_slice(&entry.external_attributes.to_le_bytes());
-            central_directory.extend_from_slice(&local_offset.to_le_bytes());
+            central_directory.extend_from_slice(&central_offset_u32.to_le_bytes());
             central_directory.extend_from_slice(&name_bytes);
+            central_directory.extend_from_slice(&central_extra);
         }
 
         let mut comment_crc = Crc32Hasher::new();
         comment_crc.update(&central_directory);
         let comment = format!("TORRENTZIPPED-{:08X}", comment_crc.finalize());
 
-        let central_directory_offset = archive_bytes.len() as u32;
-        let central_directory_size = central_directory.len() as u32;
+        let central_directory_offset = archive_bytes.len() as u64;
+        let central_directory_size = central_directory.len() as u64;
         archive_bytes.extend_from_slice(&central_directory);
+
+        let zip64_required = entries.len() >= 0xFFFF
+            || central_directory_size >= 0xFFFF_FFFF
+            || central_directory_offset >= 0xFFFF_FFFF;
+
+        if zip64_required {
+            let zip64_eocd_offset = archive_bytes.len() as u64;
+            archive_bytes.extend_from_slice(&0x06064B50u32.to_le_bytes());
+            archive_bytes.extend_from_slice(&44u64.to_le_bytes());
+            archive_bytes.extend_from_slice(&45u16.to_le_bytes());
+            archive_bytes.extend_from_slice(&45u16.to_le_bytes());
+            archive_bytes.extend_from_slice(&0u32.to_le_bytes());
+            archive_bytes.extend_from_slice(&0u32.to_le_bytes());
+            archive_bytes.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+            archive_bytes.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+            archive_bytes.extend_from_slice(&central_directory_size.to_le_bytes());
+            archive_bytes.extend_from_slice(&central_directory_offset.to_le_bytes());
+
+            archive_bytes.extend_from_slice(&0x07064B50u32.to_le_bytes());
+            archive_bytes.extend_from_slice(&0u32.to_le_bytes());
+            archive_bytes.extend_from_slice(&zip64_eocd_offset.to_le_bytes());
+            archive_bytes.extend_from_slice(&1u32.to_le_bytes());
+        }
+
+        let entries_u16 = if entries.len() >= 0xFFFF { 0xFFFF } else { entries.len() as u16 };
+        let cd_size_u32 = if central_directory_size >= 0xFFFF_FFFF { 0xFFFF_FFFF } else { central_directory_size as u32 };
+        let cd_offset_u32 =
+            if central_directory_offset >= 0xFFFF_FFFF { 0xFFFF_FFFF } else { central_directory_offset as u32 };
+
         archive_bytes.extend_from_slice(&0x06054B50u32.to_le_bytes());
         archive_bytes.extend_from_slice(&0u16.to_le_bytes());
         archive_bytes.extend_from_slice(&0u16.to_le_bytes());
-        archive_bytes.extend_from_slice(&(entries.len() as u16).to_le_bytes());
-        archive_bytes.extend_from_slice(&(entries.len() as u16).to_le_bytes());
-        archive_bytes.extend_from_slice(&central_directory_size.to_le_bytes());
-        archive_bytes.extend_from_slice(&central_directory_offset.to_le_bytes());
+        archive_bytes.extend_from_slice(&entries_u16.to_le_bytes());
+        archive_bytes.extend_from_slice(&entries_u16.to_le_bytes());
+        archive_bytes.extend_from_slice(&cd_size_u32.to_le_bytes());
+        archive_bytes.extend_from_slice(&cd_offset_u32.to_le_bytes());
         archive_bytes.extend_from_slice(&(comment.len() as u16).to_le_bytes());
         archive_bytes.extend_from_slice(comment.as_bytes());
         archive_bytes
@@ -618,6 +917,7 @@ impl TorrentZipRebuild {
         };
 
         let mut entries = Vec::with_capacity(prepared.len());
+        let source_is_torrentzip = original_zip_file.zip_struct() == ZipStructure::ZipTrrnt;
 
         for file in &prepared {
             let is_dir = file.is_dir || file.name.ends_with('/');
@@ -626,6 +926,44 @@ impl TorrentZipRebuild {
             } else {
                 file.name.clone()
             };
+            let flags = Self::torrentzip_flags(&entry_name);
+
+            if source_is_torrentzip {
+                if let Ok((mut read_stream, _, compression_method)) =
+                    original_zip_file.zip_file_open_read_stream_ex(file.index as usize, true)
+                {
+                    if compression_method == 8 {
+                        let mut compressed_data = Vec::new();
+                        if read_stream.read_to_end(&mut compressed_data).is_ok() {
+                            let _ = original_zip_file.zip_file_close_read_stream();
+
+                            if let Some(header) = original_zip_file.get_file_header(file.index as usize) {
+                                let compressed_size = compressed_data.len() as u64;
+                                let uncompressed_size = header.uncompressed_size;
+                                let crc = header
+                                    .crc
+                                    .as_ref()
+                                    .and_then(|b| b.as_slice().try_into().ok())
+                                    .map(u32::from_be_bytes)
+                                    .unwrap_or(0);
+
+                                entries.push(RawZipEntry {
+                                    name: entry_name,
+                                    compressed_size,
+                                    uncompressed_size,
+                                    compressed_data,
+                                    crc,
+                                    flags,
+                                    compression_method: 8,
+                                    external_attributes: 0,
+                                });
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+
             let mut entry_bytes = Vec::new();
             if !is_dir && file.size > 0 {
                 let (mut read_stream, _) = original_zip_file
@@ -642,12 +980,12 @@ impl TorrentZipRebuild {
             let crc = crc_hasher.finalize();
 
             entries.push(RawZipEntry {
-                name: entry_name.clone(),
-                compressed_size: compressed_data.len() as u32,
-                uncompressed_size: entry_bytes.len() as u32,
+                name: entry_name,
+                compressed_size: compressed_data.len() as u64,
+                uncompressed_size: entry_bytes.len() as u64,
                 compressed_data,
                 crc,
-                flags: Self::torrentzip_flags(&entry_name),
+                flags,
                 compression_method: 8,
                 external_attributes: 0,
             });
@@ -978,8 +1316,60 @@ impl TorrentZipRebuild {
                 Self::remove_tmp_if_present(&tmp_filename);
                 return Self::aborted_status(control);
             }
-            let mut read_stream: Box<dyn Read> = Box::new(std::io::empty());
             let stream_size = t.size;
+            let source_is_structured = original_zip_file.zip_struct() == output_type;
+
+            let mut mod_time = None;
+            if output_type == ZipStructure::ZipTDC {
+                if let Some(header) = original_zip_file.get_file_header(t.index as usize) {
+                    mod_time = Some(header.header_last_modified);
+                }
+            }
+
+            if source_is_structured && matches!(output_type, ZipStructure::ZipZSTD | ZipStructure::ZipTDC) {
+                let mut uncompressed_size = 0u64;
+                let mut crc_be: Option<Vec<u8>> = None;
+                if let Some(header) = original_zip_file.get_file_header(t.index as usize) {
+                    uncompressed_size = header.uncompressed_size;
+                    crc_be = header
+                        .crc
+                        .as_ref()
+                        .filter(|b| b.len() == 4)
+                        .cloned()
+                        .or_else(|| if uncompressed_size == 0 { Some(vec![0, 0, 0, 0]) } else { None });
+                }
+
+                if let Some(crc_be) = crc_be.as_deref() {
+                    if let Ok((mut raw_stream, _, method)) =
+                        original_zip_file.zip_file_open_read_stream_ex(t.index as usize, true)
+                    {
+                        if method == output_compression_type {
+                            let mut compressed = Vec::new();
+                            if raw_stream.read_to_end(&mut compressed).is_ok() {
+                                let _ = original_zip_file.zip_file_close_read_stream();
+                                if let Ok(mut write_stream) = zip_file_out.zip_file_open_write_stream(
+                                    true,
+                                    &t.name,
+                                    uncompressed_size,
+                                    output_compression_type,
+                                    mod_time,
+                                ) {
+                                    let _ = write_stream.write_all(&compressed);
+                                    let _ = write_stream.flush();
+                                    let _ = zip_file_out.zip_file_close_write_stream(crc_be);
+                                    continue;
+                                }
+                            } else {
+                                let _ = original_zip_file.zip_file_close_read_stream();
+                            }
+                        } else {
+                            let _ = original_zip_file.zip_file_close_read_stream();
+                        }
+                    }
+                }
+            }
+
+            let mut read_stream: Box<dyn Read> = Box::new(std::io::empty());
 
             if t.size > 0 {
                 match original_zip_file.zip_file_open_read_stream(t.index as usize) {
@@ -995,7 +1385,7 @@ impl TorrentZipRebuild {
                 }
             }
 
-            match zip_file_out.zip_file_open_write_stream(false, &t.name, stream_size, output_compression_type, None) {
+            match zip_file_out.zip_file_open_write_stream(false, &t.name, stream_size, output_compression_type, mod_time) {
                 Ok(mut write_stream) => {
                     let mut crc_hasher = Crc32Hasher::new();
                     let mut size_to_go = stream_size;

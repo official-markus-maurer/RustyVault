@@ -100,7 +100,9 @@ fn rescan_selected_roots(root: Rc<RefCell<RvFile>>, scan_level: EScanLevel) {
             continue;
         }
 
-        let files = Scanner::scan_directory_with_level(&name, scan_level);
+        let physical_path = rv_core::settings::find_dir_mapping(&name).unwrap_or(name.clone());
+        let rule = rv_core::settings::find_rule(&name);
+        let files = Scanner::scan_directory_with_level_and_ignore(&physical_path, scan_level, &rule.ignore_files.items);
         let mut root_scan = ScannedFile::new(FileType::Dir);
         root_scan.name = name.clone();
         root_scan.children = files;
@@ -121,9 +123,25 @@ fn rescan_selected_roots(root: Rc<RefCell<RvFile>>, scan_level: EScanLevel) {
 /// - This Rust port includes this CLI binary specifically to allow the engine to run on headless 
 ///   servers (e.g. Linux Docker containers, NAS systems) for automated ROM management.
 fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    rv_core::settings::load_settings_from_file();
+    let settings = rv_core::settings::get_settings();
+    if settings.debug_logs_enabled {
+        let file = rv_core::open_update_log_file();
+        if let Some(file) = file {
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+                .with_writer(move || file.try_clone().unwrap())
+                .try_init();
+        } else {
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+                .try_init();
+        }
+    } else {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .try_init();
+    }
 
     println!("Welcome to RustyVault v0.1.0");
 

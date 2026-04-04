@@ -15,14 +15,25 @@ use rv_core::find_fixes::FindFixes;
 /// - Rust utilizes `egui::menu::bar` and directly triggers state transitions (or worker threads)
 ///   when the immediate-mode buttons report a `.clicked()` event.
 pub fn draw_left_toolbar(app: &mut RomVaultApp, ctx: &egui::Context) {
+    let dark_mode = ctx.style().visuals.dark_mode;
+    let panel_fill = if dark_mode {
+        egui::Color32::from_rgb(20, 20, 22)
+    } else {
+        egui::Color32::from_rgb(246, 246, 248)
+    };
+    let panel_stroke = if dark_mode {
+        egui::Stroke::new(1.0, egui::Color32::from_rgb(40, 40, 45))
+    } else {
+        egui::Stroke::new(1.0, egui::Color32::from_rgb(220, 220, 226))
+    };
     egui::SidePanel::left("left_toolbar_panel")
         .exact_width(80.0)
         .resizable(false)
         .frame(
             egui::Frame::none()
-                .fill(egui::Color32::from_rgb(20, 20, 22))
+                .fill(panel_fill)
                 .inner_margin(0.0)
-                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(40, 40, 45))),
+                .stroke(panel_stroke),
         )
         .show(ctx, |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);

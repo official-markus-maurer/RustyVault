@@ -571,6 +571,78 @@ impl FindFixes {
         })
     }
 
+    fn has_redundant_physical_collect_match(
+        current: Rc<RefCell<RvFile>>,
+        file: &RvFile,
+        candidate_files: &[Rc<RefCell<RvFile>>],
+    ) -> bool {
+        candidate_files.iter().any(|candidate| {
+            if Rc::ptr_eq(candidate, &current) {
+                return false;
+            }
+            let candidate_ref = candidate.borrow();
+            if candidate_ref.dat_status() != DatStatus::InDatCollect || candidate_ref.got_status() != GotStatus::Got {
+                return false;
+            }
+            drop(candidate_ref);
+            Self::read_physical_candidate_matches(Rc::clone(&current), file, Rc::clone(candidate))
+        })
+    }
+
+    fn has_redundant_collect_hash_match(
+        current: Rc<RefCell<RvFile>>,
+        file: &RvFile,
+        files_got: &[Rc<RefCell<RvFile>>],
+        crc_map: &HashMap<(u64, Vec<u8>), Vec<usize>>,
+        sha1_map: &HashMap<(u64, Vec<u8>), Vec<usize>>,
+        md5_map: &HashMap<(u64, Vec<u8>), Vec<usize>>,
+    ) -> bool {
+        let size = file.size.unwrap_or(0);
+        let alt_size = file.alt_size.unwrap_or(size);
+        let mut candidates = Vec::new();
+        let mut seen = HashSet::new();
+
+        if let Some(ref crc) = file.crc {
+            if let Some(got_list) = crc_map.get(&(size, crc.clone())) {
+                Self::extend_unique_got_candidates(&mut candidates, got_list, &mut seen);
+            }
+            if alt_size != size {
+                if let Some(got_list) = crc_map.get(&(alt_size, crc.clone())) {
+                    Self::extend_unique_got_candidates(&mut candidates, got_list, &mut seen);
+                }
+            }
+        }
+        if let Some(ref sha1) = file.sha1 {
+            if let Some(got_list) = sha1_map.get(&(size, sha1.clone())) {
+                Self::extend_unique_got_candidates(&mut candidates, got_list, &mut seen);
+            }
+            if alt_size != size {
+                if let Some(got_list) = sha1_map.get(&(alt_size, sha1.clone())) {
+                    Self::extend_unique_got_candidates(&mut candidates, got_list, &mut seen);
+                }
+            }
+        }
+        if let Some(ref md5) = file.md5 {
+            if let Some(got_list) = md5_map.get(&(size, md5.clone())) {
+                Self::extend_unique_got_candidates(&mut candidates, got_list, &mut seen);
+            }
+            if alt_size != size {
+                if let Some(got_list) = md5_map.get(&(alt_size, md5.clone())) {
+                    Self::extend_unique_got_candidates(&mut candidates, got_list, &mut seen);
+                }
+            }
+        }
+
+        candidates.into_iter().any(|idx| {
+            let candidate = &files_got[idx];
+            if Rc::ptr_eq(candidate, &current) {
+                return false;
+            }
+            let candidate_ref = candidate.borrow();
+            candidate_ref.dat_status() == DatStatus::InDatCollect && candidate_ref.got_status() == GotStatus::Got
+        })
+    }
+
     fn hydrate_physical_dat_files(candidate_files: &[Rc<RefCell<RvFile>>]) {
         for candidate in candidate_files {
             let needs_refresh = {
@@ -1021,6 +1093,20 @@ impl FindFixes {
                 false
             };
 
+            let should_delete_notindat = if dat_status == DatStatus::NotInDat {
+                let got_ref = got.borrow();
+                Self::has_redundant_collect_hash_match(
+                    Rc::clone(got),
+                    &got_ref,
+                    &all_got_files,
+                    &all_got_crc_map,
+                    &all_got_sha1_map,
+                    &all_got_md5_map,
+                ) || Self::has_redundant_physical_collect_match(Rc::clone(got), &got_ref, &all_dat_files)
+            } else {
+                false
+            };
+
             let mut got_ref = got.borrow_mut();
 
             if dat_status == DatStatus::InDatCollect {
@@ -1040,7 +1126,11 @@ impl FindFixes {
                 }
                 got_ref.cached_stats = None;
             } else if dat_status == DatStatus::NotInDat {
-                got_ref.set_rep_status(RepStatus::MoveToSort);
+                if should_delete_notindat {
+                    got_ref.set_rep_status(RepStatus::Delete);
+                } else {
+                    got_ref.set_rep_status(RepStatus::MoveToSort);
+                }
                 got_ref.cached_stats = None;
             }
         }

@@ -49,6 +49,10 @@ pub mod db_type_get;
 pub mod is_file_only;
 pub mod ulong_utils;
 pub mod clean_partial;
+pub mod report_error;
+pub mod task_reporter;
+pub mod mia_callback;
+pub mod patterns;
 
 /// Module containing Cache serialization
 pub mod cache;
@@ -88,6 +92,10 @@ pub use db_type_get::*;
 pub use is_file_only::*;
 pub use ulong_utils::{i_compare as u64_i_compare, i_compare_null};
 pub use clean_partial::*;
+pub use report_error::*;
+pub use task_reporter::*;
+pub use mia_callback::*;
+pub use patterns::*;
 pub use cache::*;
 pub use byte_sorted_list::*;
 pub use fast_array_sort::*;

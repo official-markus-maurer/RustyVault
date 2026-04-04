@@ -91,6 +91,22 @@
     }
 
     #[test]
+    fn test_delete_rule_removes_equivalent_normalized_key() {
+        with_settings_test_state(|| {
+            set_rule(DatRule {
+                dir_key: "DatRoot\\Console".to_string(),
+                single_archive: true,
+                ..Default::default()
+            });
+
+            delete_rule("DatRoot/Console");
+
+            let settings = get_settings();
+            assert!(settings.dat_rules.items.is_empty());
+        });
+    }
+
+    #[test]
     fn test_find_rule_trims_trailing_separators() {
         with_settings_test_state(|| {
             let rule = DatRule {

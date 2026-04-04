@@ -27,6 +27,7 @@ pub mod crc;
 pub mod crc_stream;
 pub mod reporter;
 pub mod archive_extract;
+pub mod zstd_config;
 
 pub use file_header::*;
 pub use structured_archive::*;
@@ -46,3 +47,4 @@ pub use crc::*;
 pub use crc_stream::*;
 pub use reporter::*;
 pub use archive_extract::*;
+pub use zstd_config::*;

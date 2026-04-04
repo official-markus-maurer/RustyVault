@@ -500,8 +500,12 @@ impl ICompress for GZipFile {
         } else if cm == 8 {
             GZipWriteInner::Deflate(DeflateEncoder::new(cloned, Compression::best()))
         } else {
-            let enc = zstd::stream::write::Encoder::new(cloned, 19)
+            let mut enc = zstd::stream::write::Encoder::new(cloned, 19)
                 .map_err(|_| ZipReturn::ZipUnsupportedCompression)?;
+            let threads = crate::zstd_config::zstd_threads();
+            if threads > 0 {
+                let _ = enc.multithread(threads as u32);
+            }
             GZipWriteInner::Zstd(enc)
         };
 

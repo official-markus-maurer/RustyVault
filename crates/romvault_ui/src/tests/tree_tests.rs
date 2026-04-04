@@ -57,7 +57,7 @@
         stats.roms_missing = 2;
         stats.roms_missing_mia = 2;
 
-        assert_eq!(tree_icon_idx_from_stats(&stats), 1);
+        assert_eq!(tree_icon_idx_from_stats(&stats), 5);
     }
 
     #[test]
@@ -75,7 +75,7 @@
         stats.total_roms = 2;
         stats.roms_fixes = 2;
 
-        assert_eq!(tree_icon_idx_from_stats(&stats), 5);
+        assert_eq!(tree_icon_idx_from_stats(&stats), 4);
     }
 
     #[test]
@@ -225,7 +225,7 @@
 
     #[test]
     fn test_tree_icon_idx_from_report_status_treats_in_to_sort_as_special_icon() {
-        assert_eq!(tree_icon_idx_from_report_status(rv_core::enums::ReportStatus::InToSort), 5);
+        assert_eq!(tree_icon_idx_from_report_status(rv_core::enums::ReportStatus::InToSort), 4);
     }
 
     #[test]

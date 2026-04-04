@@ -18,11 +18,22 @@ pub fn draw_info_and_filters(app: &mut RomVaultApp, ui: &mut egui::Ui) {
         body: B,
     ) {
         let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+        let dark_mode = ui.visuals().dark_mode;
+        let fill = if dark_mode {
+            egui::Color32::from_rgb(30, 30, 33)
+        } else {
+            egui::Color32::from_rgb(248, 248, 250)
+        };
+        let stroke = if dark_mode {
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(45, 45, 50))
+        } else {
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(214, 214, 220))
+        };
         ui.painter().rect(
             rect,
             egui::Rounding::same(6.0),
-            egui::Color32::from_rgb(30, 30, 33),
-            egui::Stroke::new(1.0, egui::Color32::from_rgb(45, 45, 50)),
+            fill,
+            stroke,
         );
 
         let inner_rect = rect.shrink(8.0);
@@ -106,11 +117,14 @@ pub fn draw_info_and_filters(app: &mut RomVaultApp, ui: &mut egui::Ui) {
                     ui,
                     egui::vec2(info_width, panel_height),
                     |ui| {
-                        ui.label(
+                        let text = if ui.visuals().dark_mode {
                             egui::RichText::new("Game")
                                 .strong()
-                                .color(egui::Color32::LIGHT_GRAY),
-                        );
+                                .color(egui::Color32::LIGHT_GRAY)
+                        } else {
+                            egui::RichText::new("Game").strong()
+                        };
+                        ui.label(text);
                     },
                     |ui| {
                         if !selected_name.is_empty() {
@@ -221,11 +235,14 @@ pub fn draw_info_and_filters(app: &mut RomVaultApp, ui: &mut egui::Ui) {
                     |ui| {
                         if app.show_filter_panel {
                             ui.horizontal(|ui| {
-                                ui.label(
+                                let text = if ui.visuals().dark_mode {
                                     egui::RichText::new("Filters")
                                         .strong()
-                                        .color(egui::Color32::LIGHT_GRAY),
-                                );
+                                        .color(egui::Color32::LIGHT_GRAY)
+                                } else {
+                                    egui::RichText::new("Filters").strong()
+                                };
+                                ui.label(text);
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {

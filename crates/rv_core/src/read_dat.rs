@@ -402,7 +402,39 @@ impl DatUpdate {
 
         if dat_node.is_dir() {
             let d_dir = dat_node.dir().unwrap();
-            new_rv.set_zip_dat_struct(d_dir.dat_struct(), d_dir.dat_struct_fix());
+            let logical_key = {
+                let parent_name = parent.borrow().get_full_name();
+                if parent_name.is_empty() {
+                    dat_node.name.clone()
+                } else {
+                    format!("{}\\{}", parent_name, dat_node.name)
+                }
+            };
+            let rule = crate::settings::find_rule(&logical_key);
+            let mut desired = d_dir.dat_struct();
+            if rule.compression_override_dat {
+                desired = match rule.compression {
+                    dat_reader::enums::FileType::Zip => match rule.compression_sub {
+                        dat_reader::enums::ZipStructure::ZipTrrnt
+                        | dat_reader::enums::ZipStructure::ZipZSTD
+                        | dat_reader::enums::ZipStructure::ZipTDC => rule.compression_sub,
+                        _ => dat_reader::enums::ZipStructure::ZipTrrnt,
+                    },
+                    dat_reader::enums::FileType::SevenZip => match rule.compression_sub {
+                        dat_reader::enums::ZipStructure::SevenZipSLZMA
+                        | dat_reader::enums::ZipStructure::SevenZipNLZMA
+                        | dat_reader::enums::ZipStructure::SevenZipSZSTD
+                        | dat_reader::enums::ZipStructure::SevenZipNZSTD => rule.compression_sub,
+                        _ => dat_reader::enums::ZipStructure::SevenZipSLZMA,
+                    },
+                    _ => dat_reader::enums::ZipStructure::None,
+                };
+            }
+            let mut fix = d_dir.dat_struct_fix();
+            if !rule.convert_while_fixing {
+                fix = false;
+            }
+            new_rv.set_zip_dat_struct(desired, fix);
             
             // Initially a DAT dir/game is completely "Missing"
             new_rv.set_dat_got_status(dat_reader::enums::DatStatus::InDatCollect, new_rv.got_status());

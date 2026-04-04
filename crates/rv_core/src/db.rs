@@ -69,7 +69,7 @@ impl DB {
     /// 
     /// This mimics the C# initialization behavior where physical paths are generated
     /// based on the global configuration upon starting up the DB.
-    fn check_create_root_dirs() {
+    pub fn check_create_root_dirs() {
         // Create DatRoot
         let dat_root = crate::settings::get_settings().dat_root;
         let dat_root_path = if dat_root.is_empty() { "DatRoot" } else { &dat_root };

@@ -113,6 +113,592 @@
     }
 
     #[test]
+    fn test_rezip_files_torrentzip_raw_preserves_compressed_streams_from_valid_torrentzip_source() {
+        fn deflate_raw_stored(bytes: &[u8]) -> Vec<u8> {
+            let len = u16::try_from(bytes.len()).unwrap();
+            let nlen = !len;
+            let mut out = Vec::with_capacity(5 + bytes.len());
+            out.push(0x01);
+            out.extend_from_slice(&len.to_le_bytes());
+            out.extend_from_slice(&nlen.to_le_bytes());
+            out.extend_from_slice(bytes);
+            out
+        }
+
+        let temp = tempdir().unwrap();
+        let source_path = temp.path().join("source.zip");
+
+        let filename = "hello.txt";
+        let uncompressed = b"hello";
+        let compressed = deflate_raw_stored(uncompressed);
+
+        let mut crc_hasher = crc32fast::Hasher::new();
+        crc_hasher.update(uncompressed);
+        let crc_be = crc_hasher.finalize().to_be_bytes();
+
+        {
+            let mut zip_file = ZipFile::new();
+            assert_eq!(
+                zip_file.zip_file_create_with_structure(&source_path.to_string_lossy(), ZipStructure::ZipTrrnt),
+                ZipReturn::ZipGood
+            );
+            let mut stream = zip_file
+                .zip_file_open_write_stream(true, filename, uncompressed.len() as u64, 8, None)
+                .unwrap();
+            stream.write_all(&compressed).unwrap();
+            drop(stream);
+            assert_eq!(zip_file.zip_file_close_write_stream(&crc_be), ZipReturn::ZipGood);
+            zip_file.zip_file_close();
+        }
+
+        let before_bytes = fs::read(&source_path).unwrap();
+        let before = TorrentZipRebuild::read_raw_zip_entry(&before_bytes, filename).unwrap();
+        assert_eq!(before.compressed_data, compressed);
+
+        let mut zip_file = ZipFile::new();
+        assert_eq!(
+            zip_file.zip_file_open(&source_path.to_string_lossy(), 0, true),
+            ZipReturn::ZipGood
+        );
+
+        let zipped_files = vec![ZippedFile {
+            index: 0,
+            name: filename.to_string(),
+            size: uncompressed.len() as u64,
+            crc: None,
+            sha1: None,
+            is_dir: false,
+        }];
+
+        let status = TorrentZipRebuild::rezip_files(&zipped_files, &mut zip_file, ZipStructure::ZipTrrnt);
+        assert_eq!(status, TrrntZipStatus::VALID_TRRNTZIP);
+
+        let after_bytes = fs::read(&source_path).unwrap();
+        let after = TorrentZipRebuild::read_raw_zip_entry(&after_bytes, filename).unwrap();
+        assert_eq!(after.compressed_data, before.compressed_data);
+    }
+
+    #[test]
+    fn test_rezip_files_zipzstd_raw_preserves_compressed_streams_from_valid_zipzstd_source() {
+        let temp = tempdir().unwrap();
+        let source_path = temp.path().join("source_zstd.zip");
+
+        let filename = "hello.txt";
+        let uncompressed = b"hello";
+        let compressed = vec![0xDE, 0xAD, 0xBE, 0xEF];
+
+        let mut crc_hasher = crc32fast::Hasher::new();
+        crc_hasher.update(uncompressed);
+        let crc_be = crc_hasher.finalize().to_be_bytes();
+
+        {
+            let mut zip_file = ZipFile::new();
+            assert_eq!(
+                zip_file.zip_file_create_with_structure(&source_path.to_string_lossy(), ZipStructure::ZipZSTD),
+                ZipReturn::ZipGood
+            );
+            let mut stream = zip_file
+                .zip_file_open_write_stream(true, filename, uncompressed.len() as u64, 93, None)
+                .unwrap();
+            stream.write_all(&compressed).unwrap();
+            drop(stream);
+            assert_eq!(zip_file.zip_file_close_write_stream(&crc_be), ZipReturn::ZipGood);
+            zip_file.zip_file_close();
+        }
+
+        let mut source_zip = ZipFile::new();
+        assert_eq!(
+            source_zip.zip_file_open(&source_path.to_string_lossy(), 0, true),
+            ZipReturn::ZipGood
+        );
+        assert_eq!(source_zip.zip_struct(), ZipStructure::ZipZSTD);
+        let (mut raw_stream, _, method) = source_zip.zip_file_open_read_stream_ex(0, true).unwrap();
+        assert_eq!(method, 93);
+        let mut before = Vec::new();
+        raw_stream.read_to_end(&mut before).unwrap();
+        source_zip.zip_file_close_read_stream();
+        source_zip.zip_file_close();
+        assert_eq!(before, compressed);
+
+        let mut for_rebuild = ZipFile::new();
+        assert_eq!(
+            for_rebuild.zip_file_open(&source_path.to_string_lossy(), 0, true),
+            ZipReturn::ZipGood
+        );
+        let zipped_files = vec![ZippedFile {
+            index: 0,
+            name: filename.to_string(),
+            size: uncompressed.len() as u64,
+            crc: None,
+            sha1: None,
+            is_dir: false,
+        }];
+
+        let status = TorrentZipRebuild::rezip_files(&zipped_files, &mut for_rebuild, ZipStructure::ZipZSTD);
+        assert_eq!(status, TrrntZipStatus::VALID_TRRNTZIP);
+
+        let mut rebuilt = ZipFile::new();
+        assert_eq!(
+            rebuilt.zip_file_open(&source_path.to_string_lossy(), 0, true),
+            ZipReturn::ZipGood
+        );
+        assert_eq!(rebuilt.zip_struct(), ZipStructure::ZipZSTD);
+        let (mut raw_stream, _, method) = rebuilt.zip_file_open_read_stream_ex(0, true).unwrap();
+        assert_eq!(method, 93);
+        let mut after = Vec::new();
+        raw_stream.read_to_end(&mut after).unwrap();
+        rebuilt.zip_file_close_read_stream();
+        rebuilt.zip_file_close();
+
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn test_rezip_files_ziptdc_raw_preserves_empty_file_deflate_stream() {
+        let temp = tempdir().unwrap();
+        let source_path = temp.path().join("source_tdc.zip");
+
+        let filename = "empty.txt";
+        let compressed = vec![0x01, 0x00, 0x00, 0xFF, 0xFF];
+        let crc_be = [0u8, 0, 0, 0];
+
+        {
+            let mut zip_file = ZipFile::new();
+            assert_eq!(
+                zip_file.zip_file_create_with_structure(&source_path.to_string_lossy(), ZipStructure::ZipTDC),
+                ZipReturn::ZipGood
+            );
+            let mut stream = zip_file
+                .zip_file_open_write_stream(true, filename, 0, 8, Some(20010101000000))
+                .unwrap();
+            stream.write_all(&compressed).unwrap();
+            drop(stream);
+            assert_eq!(zip_file.zip_file_close_write_stream(&crc_be), ZipReturn::ZipGood);
+            zip_file.zip_file_close();
+        }
+
+        let mut before_zip = ZipFile::new();
+        assert_eq!(
+            before_zip.zip_file_open(&source_path.to_string_lossy(), 0, true),
+            ZipReturn::ZipGood
+        );
+        assert_eq!(before_zip.zip_struct(), ZipStructure::ZipTDC);
+        let (mut raw_stream, _, method) = before_zip.zip_file_open_read_stream_ex(0, true).unwrap();
+        assert_eq!(method, 8);
+        let mut before = Vec::new();
+        raw_stream.read_to_end(&mut before).unwrap();
+        before_zip.zip_file_close_read_stream();
+        before_zip.zip_file_close();
+        assert_eq!(before, compressed);
+
+        let mut for_rebuild = ZipFile::new();
+        assert_eq!(
+            for_rebuild.zip_file_open(&source_path.to_string_lossy(), 0, true),
+            ZipReturn::ZipGood
+        );
+        let zipped_files = vec![ZippedFile {
+            index: 0,
+            name: filename.to_string(),
+            size: 0,
+            crc: None,
+            sha1: None,
+            is_dir: false,
+        }];
+
+        let status = TorrentZipRebuild::rezip_files(&zipped_files, &mut for_rebuild, ZipStructure::ZipTDC);
+        assert_eq!(status, TrrntZipStatus::VALID_TRRNTZIP);
+
+        let mut rebuilt = ZipFile::new();
+        assert_eq!(
+            rebuilt.zip_file_open(&source_path.to_string_lossy(), 0, true),
+            ZipReturn::ZipGood
+        );
+        assert_eq!(rebuilt.zip_struct(), ZipStructure::ZipTDC);
+        let (mut raw_stream, _, method) = rebuilt.zip_file_open_read_stream_ex(0, true).unwrap();
+        assert_eq!(method, 8);
+        let mut after = Vec::new();
+        raw_stream.read_to_end(&mut after).unwrap();
+        rebuilt.zip_file_close_read_stream();
+        rebuilt.zip_file_close();
+
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn test_rezip_files_ziptdc_preserves_dos_datetime_fields() {
+        fn deflate_raw_stored(bytes: &[u8]) -> Vec<u8> {
+            let len = u16::try_from(bytes.len()).unwrap();
+            let nlen = !len;
+            let mut out = Vec::with_capacity(5 + bytes.len());
+            out.push(0x01);
+            out.extend_from_slice(&len.to_le_bytes());
+            out.extend_from_slice(&nlen.to_le_bytes());
+            out.extend_from_slice(bytes);
+            out
+        }
+
+        fn local_dos_time_date(zip_bytes: &[u8]) -> (u16, u16) {
+            assert_eq!(&zip_bytes[0..4], &[0x50, 0x4B, 0x03, 0x04]);
+            let time = u16::from_le_bytes([zip_bytes[10], zip_bytes[11]]);
+            let date = u16::from_le_bytes([zip_bytes[12], zip_bytes[13]]);
+            (time, date)
+        }
+
+        fn central_dos_time_date(zip_bytes: &[u8]) -> (u16, u16) {
+            let off = zip_bytes
+                .windows(4)
+                .position(|w| w == [0x50, 0x4B, 0x01, 0x02])
+                .unwrap();
+            let time = u16::from_le_bytes([zip_bytes[off + 12], zip_bytes[off + 13]]);
+            let date = u16::from_le_bytes([zip_bytes[off + 14], zip_bytes[off + 15]]);
+            (time, date)
+        }
+
+        let temp = tempdir().unwrap();
+        let source_path = temp.path().join("source_tdc_datetime.zip");
+
+        let filename = "time.txt";
+        let uncompressed = b"abc";
+        let compressed = deflate_raw_stored(uncompressed);
+
+        let mut crc_hasher = crc32fast::Hasher::new();
+        crc_hasher.update(uncompressed);
+        let crc_be = crc_hasher.finalize().to_be_bytes();
+
+        let mod_time = Some(20010101000000);
+
+        {
+            let mut zip_file = ZipFile::new();
+            assert_eq!(
+                zip_file.zip_file_create_with_structure(&source_path.to_string_lossy(), ZipStructure::ZipTDC),
+                ZipReturn::ZipGood
+            );
+            let mut stream = zip_file
+                .zip_file_open_write_stream(true, filename, uncompressed.len() as u64, 8, mod_time)
+                .unwrap();
+            stream.write_all(&compressed).unwrap();
+            drop(stream);
+            assert_eq!(zip_file.zip_file_close_write_stream(&crc_be), ZipReturn::ZipGood);
+            zip_file.zip_file_close();
+        }
+
+        let before = fs::read(&source_path).unwrap();
+        let (local_time_before, local_date_before) = local_dos_time_date(&before);
+        let (central_time_before, central_date_before) = central_dos_time_date(&before);
+
+        assert_eq!(local_time_before, 0);
+        assert_eq!(local_date_before, 10785);
+        assert_eq!(central_time_before, 0);
+        assert_eq!(central_date_before, 10785);
+
+        let mut for_rebuild = ZipFile::new();
+        assert_eq!(
+            for_rebuild.zip_file_open(&source_path.to_string_lossy(), 0, true),
+            ZipReturn::ZipGood
+        );
+
+        let zipped_files = vec![ZippedFile {
+            index: 0,
+            name: filename.to_string(),
+            size: uncompressed.len() as u64,
+            crc: None,
+            sha1: None,
+            is_dir: false,
+        }];
+
+        let status = TorrentZipRebuild::rezip_files(&zipped_files, &mut for_rebuild, ZipStructure::ZipTDC);
+        assert_eq!(status, TrrntZipStatus::VALID_TRRNTZIP);
+
+        let after = fs::read(&source_path).unwrap();
+        let (local_time_after, local_date_after) = local_dos_time_date(&after);
+        let (central_time_after, central_date_after) = central_dos_time_date(&after);
+
+        assert_eq!((local_time_after, local_date_after), (local_time_before, local_date_before));
+        assert_eq!(
+            (central_time_after, central_date_after),
+            (central_time_before, central_date_before)
+        );
+    }
+
+    #[test]
+    fn test_rezip_files_ziptdc_recompress_path_preserves_dos_datetime_fields() {
+        fn local_dos_time_date(zip_bytes: &[u8]) -> (u16, u16) {
+            assert_eq!(&zip_bytes[0..4], &[0x50, 0x4B, 0x03, 0x04]);
+            let time = u16::from_le_bytes([zip_bytes[10], zip_bytes[11]]);
+            let date = u16::from_le_bytes([zip_bytes[12], zip_bytes[13]]);
+            (time, date)
+        }
+
+        fn central_dos_time_date(zip_bytes: &[u8]) -> (u16, u16) {
+            let off = zip_bytes
+                .windows(4)
+                .position(|w| w == [0x50, 0x4B, 0x01, 0x02])
+                .unwrap();
+            let time = u16::from_le_bytes([zip_bytes[off + 12], zip_bytes[off + 13]]);
+            let date = u16::from_le_bytes([zip_bytes[off + 14], zip_bytes[off + 15]]);
+            (time, date)
+        }
+
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("source_tdc_recompress.zip");
+
+        let filename = "time.txt";
+        let contents = b"abcdef";
+        let mod_time = Some(20010101000000);
+
+        {
+            let mut zip_file = ZipFile::new();
+            assert_eq!(zip_file.zip_file_create(&path.to_string_lossy()), ZipReturn::ZipGood);
+            let mut stream = zip_file
+                .zip_file_open_write_stream(false, filename, contents.len() as u64, 8, mod_time)
+                .unwrap();
+            stream.write_all(contents).unwrap();
+            drop(stream);
+            let mut crc_hasher = crc32fast::Hasher::new();
+            crc_hasher.update(contents);
+            let crc_be = crc_hasher.finalize().to_be_bytes();
+            assert_eq!(zip_file.zip_file_close_write_stream(&crc_be), ZipReturn::ZipGood);
+            zip_file.zip_file_close();
+        }
+
+        let before = fs::read(&path).unwrap();
+        let (local_time_before, local_date_before) = local_dos_time_date(&before);
+        let (central_time_before, central_date_before) = central_dos_time_date(&before);
+
+        assert_eq!(local_time_before, 0);
+        assert_eq!(local_date_before, 10785);
+        assert_eq!(central_time_before, 0);
+        assert_eq!(central_date_before, 10785);
+
+        let mut for_rebuild = ZipFile::new();
+        assert_eq!(
+            for_rebuild.zip_file_open(&path.to_string_lossy(), 0, true),
+            ZipReturn::ZipGood
+        );
+        assert_eq!(for_rebuild.zip_struct(), ZipStructure::None);
+
+        let zipped_files = vec![ZippedFile {
+            index: 0,
+            name: filename.to_string(),
+            size: contents.len() as u64,
+            crc: None,
+            sha1: None,
+            is_dir: false,
+        }];
+
+        let status = TorrentZipRebuild::rezip_files(&zipped_files, &mut for_rebuild, ZipStructure::ZipTDC);
+        assert_eq!(status, TrrntZipStatus::VALID_TRRNTZIP);
+
+        let after = fs::read(&path).unwrap();
+        let (local_time_after, local_date_after) = local_dos_time_date(&after);
+        let (central_time_after, central_date_after) = central_dos_time_date(&after);
+
+        assert_eq!((local_time_after, local_date_after), (local_time_before, local_date_before));
+        assert_eq!(
+            (central_time_after, central_date_after),
+            (central_time_before, central_date_before)
+        );
+    }
+
+    #[test]
+    fn test_rezip_files_zipzstd_recompress_path_forces_dos_datetime_zero() {
+        fn local_dos_time_date(zip_bytes: &[u8]) -> (u16, u16) {
+            assert_eq!(&zip_bytes[0..4], &[0x50, 0x4B, 0x03, 0x04]);
+            let time = u16::from_le_bytes([zip_bytes[10], zip_bytes[11]]);
+            let date = u16::from_le_bytes([zip_bytes[12], zip_bytes[13]]);
+            (time, date)
+        }
+
+        fn central_dos_time_date(zip_bytes: &[u8]) -> (u16, u16) {
+            let off = zip_bytes
+                .windows(4)
+                .position(|w| w == [0x50, 0x4B, 0x01, 0x02])
+                .unwrap();
+            let time = u16::from_le_bytes([zip_bytes[off + 12], zip_bytes[off + 13]]);
+            let date = u16::from_le_bytes([zip_bytes[off + 14], zip_bytes[off + 15]]);
+            (time, date)
+        }
+
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("source_zstd_recompress.zip");
+
+        let filename = "time.txt";
+        let contents = b"abcdef";
+        let mod_time = Some(20010101000000);
+
+        {
+            let mut zip_file = ZipFile::new();
+            assert_eq!(zip_file.zip_file_create(&path.to_string_lossy()), ZipReturn::ZipGood);
+            let mut stream = zip_file
+                .zip_file_open_write_stream(false, filename, contents.len() as u64, 8, mod_time)
+                .unwrap();
+            stream.write_all(contents).unwrap();
+            drop(stream);
+            let mut crc_hasher = crc32fast::Hasher::new();
+            crc_hasher.update(contents);
+            let crc_be = crc_hasher.finalize().to_be_bytes();
+            assert_eq!(zip_file.zip_file_close_write_stream(&crc_be), ZipReturn::ZipGood);
+            zip_file.zip_file_close();
+        }
+
+        let mut for_rebuild = ZipFile::new();
+        assert_eq!(
+            for_rebuild.zip_file_open(&path.to_string_lossy(), 0, true),
+            ZipReturn::ZipGood
+        );
+        assert_eq!(for_rebuild.zip_struct(), ZipStructure::None);
+
+        let zipped_files = vec![ZippedFile {
+            index: 0,
+            name: filename.to_string(),
+            size: contents.len() as u64,
+            crc: None,
+            sha1: None,
+            is_dir: false,
+        }];
+
+        let status = TorrentZipRebuild::rezip_files(&zipped_files, &mut for_rebuild, ZipStructure::ZipZSTD);
+        assert_eq!(status, TrrntZipStatus::VALID_TRRNTZIP);
+
+        let after = fs::read(&path).unwrap();
+        let (local_time_after, local_date_after) = local_dos_time_date(&after);
+        let (central_time_after, central_date_after) = central_dos_time_date(&after);
+
+        assert_eq!(local_time_after, 0);
+        assert_eq!(local_date_after, 0);
+        assert_eq!(central_time_after, 0);
+        assert_eq!(central_date_after, 0);
+    }
+
+    #[test]
+    fn test_rezip_files_zipzstd_raw_preserves_empty_file_and_forces_dos_datetime_zero() {
+        fn local_dos_time_date(zip_bytes: &[u8]) -> (u16, u16) {
+            assert_eq!(&zip_bytes[0..4], &[0x50, 0x4B, 0x03, 0x04]);
+            let time = u16::from_le_bytes([zip_bytes[10], zip_bytes[11]]);
+            let date = u16::from_le_bytes([zip_bytes[12], zip_bytes[13]]);
+            (time, date)
+        }
+
+        fn central_dos_time_date(zip_bytes: &[u8]) -> (u16, u16) {
+            let off = zip_bytes
+                .windows(4)
+                .position(|w| w == [0x50, 0x4B, 0x01, 0x02])
+                .unwrap();
+            let time = u16::from_le_bytes([zip_bytes[off + 12], zip_bytes[off + 13]]);
+            let date = u16::from_le_bytes([zip_bytes[off + 14], zip_bytes[off + 15]]);
+            (time, date)
+        }
+
+        let temp = tempdir().unwrap();
+        let source_path = temp.path().join("source_zstd_empty.zip");
+
+        let filename = "empty.txt";
+        let compressed = vec![0xCA, 0xFE, 0xBA, 0xBE];
+        let crc_be = [0u8, 0, 0, 0];
+
+        {
+            let mut zip_file = ZipFile::new();
+            assert_eq!(
+                zip_file.zip_file_create_with_structure(&source_path.to_string_lossy(), ZipStructure::ZipZSTD),
+                ZipReturn::ZipGood
+            );
+            let mut stream = zip_file
+                .zip_file_open_write_stream(true, filename, 0, 93, Some(20010101000000))
+                .unwrap();
+            stream.write_all(&compressed).unwrap();
+            drop(stream);
+            assert_eq!(zip_file.zip_file_close_write_stream(&crc_be), ZipReturn::ZipGood);
+            zip_file.zip_file_close();
+        }
+
+        let mut before_zip = ZipFile::new();
+        assert_eq!(
+            before_zip.zip_file_open(&source_path.to_string_lossy(), 0, true),
+            ZipReturn::ZipGood
+        );
+        assert_eq!(before_zip.zip_struct(), ZipStructure::ZipZSTD);
+        let (mut raw_stream, _, method) = before_zip.zip_file_open_read_stream_ex(0, true).unwrap();
+        assert_eq!(method, 93);
+        let mut before = Vec::new();
+        raw_stream.read_to_end(&mut before).unwrap();
+        before_zip.zip_file_close_read_stream();
+        before_zip.zip_file_close();
+        assert_eq!(before, compressed);
+
+        let mut for_rebuild = ZipFile::new();
+        assert_eq!(
+            for_rebuild.zip_file_open(&source_path.to_string_lossy(), 0, true),
+            ZipReturn::ZipGood
+        );
+        let zipped_files = vec![ZippedFile {
+            index: 0,
+            name: filename.to_string(),
+            size: 0,
+            crc: None,
+            sha1: None,
+            is_dir: false,
+        }];
+
+        let status = TorrentZipRebuild::rezip_files(&zipped_files, &mut for_rebuild, ZipStructure::ZipZSTD);
+        assert_eq!(status, TrrntZipStatus::VALID_TRRNTZIP);
+
+        let after = fs::read(&source_path).unwrap();
+        let (local_time_after, local_date_after) = local_dos_time_date(&after);
+        let (central_time_after, central_date_after) = central_dos_time_date(&after);
+        assert_eq!(local_time_after, 0);
+        assert_eq!(local_date_after, 0);
+        assert_eq!(central_time_after, 0);
+        assert_eq!(central_date_after, 0);
+
+        let mut rebuilt = ZipFile::new();
+        assert_eq!(
+            rebuilt.zip_file_open(&source_path.to_string_lossy(), 0, true),
+            ZipReturn::ZipGood
+        );
+        assert_eq!(rebuilt.zip_struct(), ZipStructure::ZipZSTD);
+        let (mut raw_stream, _, method) = rebuilt.zip_file_open_read_stream_ex(0, true).unwrap();
+        assert_eq!(method, 93);
+        let mut after_raw = Vec::new();
+        raw_stream.read_to_end(&mut after_raw).unwrap();
+        rebuilt.zip_file_close_read_stream();
+        rebuilt.zip_file_close();
+
+        assert_eq!(after_raw, before);
+    }
+
+    #[test]
+    fn test_build_torrentzip_archive_emits_zip64_extra_for_large_sizes_without_zip64_eocd() {
+        let entries = vec![RawZipEntry {
+            name: "big.bin".to_string(),
+            compressed_data: vec![0x00],
+            crc: 0,
+            compressed_size: 1,
+            uncompressed_size: 0x1_0000_0000,
+            flags: TorrentZipRebuild::torrentzip_flags("big.bin"),
+            compression_method: 8,
+            external_attributes: 0,
+        }];
+
+        let bytes = TorrentZipRebuild::build_torrentzip_archive(&entries);
+
+        assert_eq!(&bytes[0..4], &[0x50, 0x4B, 0x03, 0x04]);
+        assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), 45);
+        assert_eq!(
+            u32::from_le_bytes([bytes[22], bytes[23], bytes[24], bytes[25]]),
+            0xFFFF_FFFF
+        );
+
+        let name_len = u16::from_le_bytes([bytes[26], bytes[27]]) as usize;
+        let extra_len = u16::from_le_bytes([bytes[28], bytes[29]]) as usize;
+        assert!(extra_len >= 4 + 8);
+        let extra_start = 30 + name_len;
+        assert_eq!(u16::from_le_bytes([bytes[extra_start], bytes[extra_start + 1]]), 0x0001);
+
+        assert!(bytes.windows(4).any(|w| w == [0x50, 0x4B, 0x01, 0x02]));
+        assert!(!bytes.windows(4).any(|w| w == [0x50, 0x4B, 0x06, 0x06]));
+    }
+
+    #[test]
     fn test_rezip_files_with_hard_stop_removes_samtmp() {
         let temp = tempdir().unwrap();
         let source_path = temp.path().join("sample.zip");
@@ -153,6 +739,283 @@
         assert_eq!(status, TrrntZipStatus::USER_ABORTED_HARD);
         assert!(!temp.path().join("__sample.zip.samtmp").exists());
         assert!(source_path.exists());
+    }
+
+    #[test]
+    fn test_apply_structured_zip_metadata_sets_zip64_version_needed_to_extract() {
+        fn build_zip64_marker_bytes() -> Vec<u8> {
+            let filename = b"a.bin";
+            let local_zip64_extra = {
+                let mut e = Vec::new();
+                e.extend_from_slice(&0x0001u16.to_le_bytes());
+                e.extend_from_slice(&16u16.to_le_bytes());
+                e.extend_from_slice(&1u64.to_le_bytes());
+                e.extend_from_slice(&2u64.to_le_bytes());
+                e
+            };
+            let central_zip64_extra = {
+                let mut e = Vec::new();
+                e.extend_from_slice(&0x0001u16.to_le_bytes());
+                e.extend_from_slice(&24u16.to_le_bytes());
+                e.extend_from_slice(&1u64.to_le_bytes());
+                e.extend_from_slice(&2u64.to_le_bytes());
+                e.extend_from_slice(&0u64.to_le_bytes());
+                e
+            };
+
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&0x04034B50u32.to_le_bytes());
+            bytes.extend_from_slice(&45u16.to_le_bytes());
+            bytes.extend_from_slice(&2u16.to_le_bytes());
+            bytes.extend_from_slice(&8u16.to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+            bytes.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+            bytes.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+            bytes.extend_from_slice(&(filename.len() as u16).to_le_bytes());
+            bytes.extend_from_slice(&(local_zip64_extra.len() as u16).to_le_bytes());
+            bytes.extend_from_slice(filename);
+            bytes.extend_from_slice(&local_zip64_extra);
+            bytes.extend_from_slice(&[0x03, 0x00]);
+
+            let central_directory_offset = bytes.len();
+
+            bytes.extend_from_slice(&0x02014B50u32.to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes.extend_from_slice(&45u16.to_le_bytes());
+            bytes.extend_from_slice(&2u16.to_le_bytes());
+            bytes.extend_from_slice(&8u16.to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+            bytes.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+            bytes.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+            bytes.extend_from_slice(&(filename.len() as u16).to_le_bytes());
+            bytes.extend_from_slice(&(central_zip64_extra.len() as u16).to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+            bytes.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+            bytes.extend_from_slice(filename);
+            bytes.extend_from_slice(&central_zip64_extra);
+
+            let central_directory_size = bytes.len() - central_directory_offset;
+
+            bytes.extend_from_slice(&0x06054B50u32.to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes.extend_from_slice(&1u16.to_le_bytes());
+            bytes.extend_from_slice(&1u16.to_le_bytes());
+            bytes.extend_from_slice(&(central_directory_size as u32).to_le_bytes());
+            bytes.extend_from_slice(&(central_directory_offset as u32).to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+
+            bytes
+        }
+
+        let temp = tempdir().unwrap();
+
+        let path_tdc = temp.path().join("zip64_tdc.zip");
+        fs::write(&path_tdc, build_zip64_marker_bytes()).unwrap();
+        assert!(TorrentZipRebuild::apply_structured_zip_metadata(&path_tdc, ZipStructure::ZipTDC));
+        let patched = fs::read(&path_tdc).unwrap();
+        assert_eq!(u16::from_le_bytes([patched[4], patched[5]]), 45);
+        let central_offset = patched
+            .windows(4)
+            .position(|w| w == [0x50, 0x4B, 0x01, 0x02])
+            .unwrap();
+        assert_eq!(
+            u16::from_le_bytes([patched[central_offset + 6], patched[central_offset + 7]]),
+            45
+        );
+
+        let path_zstd = temp.path().join("zip64_zstd.zip");
+        fs::write(&path_zstd, build_zip64_marker_bytes()).unwrap();
+        assert!(TorrentZipRebuild::apply_structured_zip_metadata(&path_zstd, ZipStructure::ZipZSTD));
+        let patched = fs::read(&path_zstd).unwrap();
+        assert_eq!(u16::from_le_bytes([patched[4], patched[5]]), 63);
+        let central_offset = patched
+            .windows(4)
+            .position(|w| w == [0x50, 0x4B, 0x01, 0x02])
+            .unwrap();
+        assert_eq!(
+            u16::from_le_bytes([patched[central_offset + 6], patched[central_offset + 7]]),
+            63
+        );
+    }
+
+    #[test]
+    fn test_apply_structured_zip_metadata_handles_zip64_eocd_when_required_by_sentinel() {
+        fn build_zip64_sentinel_torrentzip() -> Vec<u8> {
+            let filename = b"a.bin";
+            let compressed = [0x03u8, 0x00u8];
+
+            let mut bytes = Vec::new();
+
+            bytes.extend_from_slice(&0x04034B50u32.to_le_bytes());
+            bytes.extend_from_slice(&20u16.to_le_bytes());
+            bytes.extend_from_slice(&2u16.to_le_bytes());
+            bytes.extend_from_slice(&8u16.to_le_bytes());
+            bytes.extend_from_slice(&TorrentZipRebuild::TORRENTZIP_DOS_TIME.to_le_bytes());
+            bytes.extend_from_slice(&TorrentZipRebuild::TORRENTZIP_DOS_DATE.to_le_bytes());
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+            bytes.extend_from_slice(&(compressed.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+            bytes.extend_from_slice(&(filename.len() as u16).to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes.extend_from_slice(filename);
+            bytes.extend_from_slice(&compressed);
+
+            let central_directory_offset = bytes.len() as u64;
+
+            bytes.extend_from_slice(&0x02014B50u32.to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes.extend_from_slice(&20u16.to_le_bytes());
+            bytes.extend_from_slice(&2u16.to_le_bytes());
+            bytes.extend_from_slice(&8u16.to_le_bytes());
+            bytes.extend_from_slice(&TorrentZipRebuild::TORRENTZIP_DOS_TIME.to_le_bytes());
+            bytes.extend_from_slice(&TorrentZipRebuild::TORRENTZIP_DOS_DATE.to_le_bytes());
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+            bytes.extend_from_slice(&(compressed.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+            bytes.extend_from_slice(&(filename.len() as u16).to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+            bytes.extend_from_slice(filename);
+
+            let central_directory_size = (bytes.len() as u64) - central_directory_offset;
+
+            let zip64_eocd_offset = bytes.len() as u64;
+            bytes.extend_from_slice(&0x06064B50u32.to_le_bytes());
+            bytes.extend_from_slice(&44u64.to_le_bytes());
+            bytes.extend_from_slice(&45u16.to_le_bytes());
+            bytes.extend_from_slice(&45u16.to_le_bytes());
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+            bytes.extend_from_slice(&1u64.to_le_bytes());
+            bytes.extend_from_slice(&1u64.to_le_bytes());
+            bytes.extend_from_slice(&central_directory_size.to_le_bytes());
+            bytes.extend_from_slice(&central_directory_offset.to_le_bytes());
+
+            bytes.extend_from_slice(&0x07064B50u32.to_le_bytes());
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+            bytes.extend_from_slice(&zip64_eocd_offset.to_le_bytes());
+            bytes.extend_from_slice(&1u32.to_le_bytes());
+
+            bytes.extend_from_slice(&0x06054B50u32.to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes.extend_from_slice(&0xFFFFu16.to_le_bytes());
+            bytes.extend_from_slice(&0xFFFFu16.to_le_bytes());
+            bytes.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+            bytes.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+
+            bytes
+        }
+
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("zip64_sentinel.zip");
+        fs::write(&path, build_zip64_sentinel_torrentzip()).unwrap();
+
+        assert!(TorrentZipRebuild::apply_structured_zip_metadata(&path, ZipStructure::ZipTrrnt));
+
+        let mut zip_file = ZipFile::new();
+        assert_eq!(zip_file.zip_file_open(&path.to_string_lossy(), 0, true), ZipReturn::ZipGood);
+        assert_eq!(zip_file.zip_struct(), ZipStructure::ZipTrrnt);
+        zip_file.zip_file_close();
+    }
+
+    #[test]
+    fn test_apply_structured_zip_metadata_handles_zip64_eocd_when_present_but_not_required() {
+        fn build_optional_zip64_eocd_torrentzip() -> Vec<u8> {
+            let filename = b"a.bin";
+            let compressed = [0x03u8, 0x00u8];
+
+            let mut bytes = Vec::new();
+
+            bytes.extend_from_slice(&0x04034B50u32.to_le_bytes());
+            bytes.extend_from_slice(&20u16.to_le_bytes());
+            bytes.extend_from_slice(&2u16.to_le_bytes());
+            bytes.extend_from_slice(&8u16.to_le_bytes());
+            bytes.extend_from_slice(&TorrentZipRebuild::TORRENTZIP_DOS_TIME.to_le_bytes());
+            bytes.extend_from_slice(&TorrentZipRebuild::TORRENTZIP_DOS_DATE.to_le_bytes());
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+            bytes.extend_from_slice(&(compressed.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+            bytes.extend_from_slice(&(filename.len() as u16).to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes.extend_from_slice(filename);
+            bytes.extend_from_slice(&compressed);
+
+            let central_directory_offset = bytes.len() as u64;
+
+            bytes.extend_from_slice(&0x02014B50u32.to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes.extend_from_slice(&20u16.to_le_bytes());
+            bytes.extend_from_slice(&2u16.to_le_bytes());
+            bytes.extend_from_slice(&8u16.to_le_bytes());
+            bytes.extend_from_slice(&TorrentZipRebuild::TORRENTZIP_DOS_TIME.to_le_bytes());
+            bytes.extend_from_slice(&TorrentZipRebuild::TORRENTZIP_DOS_DATE.to_le_bytes());
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+            bytes.extend_from_slice(&(compressed.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+            bytes.extend_from_slice(&(filename.len() as u16).to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+            bytes.extend_from_slice(filename);
+
+            let central_directory_size = (bytes.len() as u64) - central_directory_offset;
+
+            let zip64_eocd_offset = bytes.len() as u64;
+            bytes.extend_from_slice(&0x06064B50u32.to_le_bytes());
+            bytes.extend_from_slice(&44u64.to_le_bytes());
+            bytes.extend_from_slice(&45u16.to_le_bytes());
+            bytes.extend_from_slice(&45u16.to_le_bytes());
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+            bytes.extend_from_slice(&1u64.to_le_bytes());
+            bytes.extend_from_slice(&1u64.to_le_bytes());
+            bytes.extend_from_slice(&central_directory_size.to_le_bytes());
+            bytes.extend_from_slice(&central_directory_offset.to_le_bytes());
+
+            bytes.extend_from_slice(&0x07064B50u32.to_le_bytes());
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+            bytes.extend_from_slice(&zip64_eocd_offset.to_le_bytes());
+            bytes.extend_from_slice(&1u32.to_le_bytes());
+
+            bytes.extend_from_slice(&0x06054B50u32.to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes.extend_from_slice(&1u16.to_le_bytes());
+            bytes.extend_from_slice(&1u16.to_le_bytes());
+            bytes.extend_from_slice(&(central_directory_size as u32).to_le_bytes());
+            bytes.extend_from_slice(&(central_directory_offset as u32).to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+
+            bytes
+        }
+
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("zip64_present.zip");
+        fs::write(&path, build_optional_zip64_eocd_torrentzip()).unwrap();
+
+        assert!(TorrentZipRebuild::apply_structured_zip_metadata(&path, ZipStructure::ZipTrrnt));
+
+        let mut zip_file = ZipFile::new();
+        assert_eq!(zip_file.zip_file_open(&path.to_string_lossy(), 0, true), ZipReturn::ZipGood);
+        assert_eq!(zip_file.zip_struct(), ZipStructure::ZipTrrnt);
+        zip_file.zip_file_close();
     }
 
     #[test]

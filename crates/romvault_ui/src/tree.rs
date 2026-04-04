@@ -10,6 +10,13 @@ use rv_core::file_scanning::FileScanning;
 use rv_core::rv_file::{RvFile, TreeSelect};
 use rv_core::scanner::Scanner;
 
+#[derive(Clone)]
+pub struct TreeRow {
+    pub node_rc: Rc<RefCell<RvFile>>,
+    pub depth: usize,
+    pub has_children: bool,
+}
+
 fn merged_roms(stats: &rv_core::repair_status::RepairStatus) -> i32 {
     stats.roms_not_collected + stats.roms_unneeded
 }
@@ -24,6 +31,14 @@ fn missing_roms(stats: &rv_core::repair_status::RepairStatus) -> i32 {
 
 fn unknown_roms(stats: &rv_core::repair_status::RepairStatus) -> i32 {
     stats.roms_unknown
+}
+
+fn correct_plain(stats: &rv_core::repair_status::RepairStatus) -> i32 {
+    stats.roms_correct - stats.roms_correct_mia
+}
+
+fn missing_plain(stats: &rv_core::repair_status::RepairStatus) -> i32 {
+    stats.roms_missing - stats.roms_missing_mia
 }
 
 fn tree_color_from_rep_status(rep_status: RepStatus, dat_status: DatStatus) -> egui::Color32 {
@@ -74,28 +89,26 @@ fn tree_color_from_stats(stats: &rv_core::repair_status::RepairStatus) -> egui::
 fn tree_icon_idx_from_stats(stats: &rv_core::repair_status::RepairStatus) -> i32 {
     if stats.total_roms == 0 {
         2
-    } else if unknown_roms(stats) == stats.total_roms || merged_roms(stats) == stats.total_roms {
+    } else if unknown_roms(stats) == stats.total_roms || merged_roms(stats) == stats.total_roms || stats.roms_fixes > 0 {
         4
-    } else if stats.roms_fixes == stats.total_roms {
-        5
-    } else if correct_roms(stats) == stats.total_roms {
-        3
-    } else if missing_roms(stats) == stats.total_roms {
+    } else if correct_plain(stats) == 0 && missing_plain(stats) > 0 {
         1
+    } else if missing_plain(stats) == 0 && stats.roms_missing_mia > 0 {
+        5
+    } else if missing_plain(stats) == 0 {
+        3
     } else {
         2
     }
 }
 
 fn tree_icon_idx_from_report_status(report_status: rv_core::enums::ReportStatus) -> i32 {
-    if report_status == rv_core::enums::ReportStatus::Ignore {
+    if report_status == rv_core::enums::ReportStatus::InToSort {
         4
     } else if !report_status.has_correct() && report_status.has_missing(false) {
         1
     } else if report_status.has_unknown() || report_status.has_all_merged() {
         4
-    } else if !report_status.has_missing(false) && report_status.has_mia() {
-        5
     } else if !report_status.has_missing(false) {
         3
     } else {
@@ -184,71 +197,223 @@ impl RomVaultApp {
 
         let mut current = selected.borrow().parent.as_ref().and_then(|p| p.upgrade());
         while let Some(node_rc) = current {
+            self.enqueue_tree_stats_priority(Rc::clone(&node_rc));
             let next = {
                 let mut n = node_rc.borrow_mut();
-                n.tree_expanded = true;
+                if !n.tree_expanded {
+                    n.tree_expanded = true;
+                    self.tree_rows_dirty = true;
+                }
                 n.parent.as_ref().and_then(|p| p.upgrade())
             };
             current = next;
         }
     }
 
+    fn is_ancestor_or_self(ancestor: &Rc<RefCell<RvFile>>, node: &Rc<RefCell<RvFile>>) -> bool {
+        let mut current = Some(Rc::clone(node));
+        while let Some(rc) = current {
+            if Rc::ptr_eq(&rc, ancestor) {
+                return true;
+            }
+            current = rc.borrow().parent.as_ref().and_then(|p| p.upgrade());
+        }
+        false
+    }
+
+    pub fn rebuild_tree_rows_cache(&mut self) {
+        let mut rows: Vec<TreeRow> = Vec::new();
+
+        GLOBAL_DB.with(|db_ref| {
+            if let Some(db) = db_ref.borrow().as_ref() {
+                let root = Rc::clone(&db.dir_root);
+                let top_children = root.borrow().children.clone();
+
+                let mut stack: Vec<(Rc<RefCell<RvFile>>, usize)> = Vec::new();
+                for child in top_children.into_iter().rev() {
+                    stack.push((child, 0));
+                }
+
+                while let Some((node_rc, depth)) = stack.pop() {
+                    let (is_file, is_game, tree_expanded, has_multiple_dats, has_child_dirs, dir_children) = {
+                        let node = node_rc.borrow();
+                        let has_child_dirs = node.children.iter().any(|c| {
+                            let cb = c.borrow();
+                            cb.is_directory() && cb.game.is_none()
+                        });
+                        (
+                            node.is_file(),
+                            node.game.is_some(),
+                            node.tree_expanded,
+                            node.is_directory() && node.dat.is_none() && node.dir_dats.len() > 1,
+                            has_child_dirs,
+                            if node.tree_expanded {
+                                node.children
+                                    .iter()
+                                    .filter(|c| {
+                                        let cb = c.borrow();
+                                        !cb.is_file() && cb.game.is_none()
+                                    })
+                                    .cloned()
+                                    .collect::<Vec<_>>()
+                            } else {
+                                Vec::new()
+                            },
+                        )
+                    };
+
+                    if is_file || is_game {
+                        continue;
+                    }
+
+                    let has_children = has_child_dirs || has_multiple_dats;
+                    rows.push(TreeRow {
+                        node_rc: Rc::clone(&node_rc),
+                        depth,
+                        has_children,
+                    });
+
+                    if tree_expanded {
+                        for child in dir_children.into_iter().rev() {
+                            stack.push((child, depth + 1));
+                        }
+                    }
+                }
+            }
+        });
+
+        self.tree_rows_cache = rows;
+        self.tree_rows_dirty = false;
+    }
+
+    pub fn enqueue_tree_stats(&mut self, node_rc: Rc<RefCell<RvFile>>) {
+        let should_enqueue = {
+            let node = node_rc.borrow();
+            node.is_directory() && node.cached_stats.is_none()
+        };
+        if !should_enqueue {
+            return;
+        }
+
+        let key = Rc::as_ptr(&node_rc) as usize;
+        if self.tree_stats_queued.insert(key) {
+            self.tree_stats_queue.push_back(node_rc);
+        }
+    }
+
+    pub fn enqueue_tree_stats_priority(&mut self, node_rc: Rc<RefCell<RvFile>>) {
+        let should_enqueue = {
+            let node = node_rc.borrow();
+            node.is_directory() && node.cached_stats.is_none()
+        };
+        if !should_enqueue {
+            return;
+        }
+
+        let key = Rc::as_ptr(&node_rc) as usize;
+        if self.tree_stats_queued.insert(key) {
+            self.tree_stats_queue.push_front(node_rc);
+        }
+    }
+
+    pub fn process_tree_stats_queue(&mut self, ctx: &egui::Context) {
+        let start = std::time::Instant::now();
+        let mut did_work = false;
+        while start.elapsed() < std::time::Duration::from_millis(2) {
+            let Some(node_rc) = self.tree_stats_queue.pop_front() else {
+                break;
+            };
+            let key = Rc::as_ptr(&node_rc) as usize;
+            self.tree_stats_queued.remove(&key);
+
+            let should_compute = {
+                let node = node_rc.borrow();
+                node.is_directory() && node.cached_stats.is_none()
+            };
+            if !should_compute {
+                continue;
+            }
+
+            let mut stats = rv_core::repair_status::RepairStatus::new();
+            stats.report_status(Rc::clone(&node_rc));
+
+            {
+                let mut node = node_rc.borrow_mut();
+                if node.cached_stats.is_none() {
+                    node.cached_stats = Some(stats);
+                    node.ui_display_name.clear();
+                    did_work = true;
+                }
+            }
+        }
+
+        if did_work {
+            ctx.request_repaint();
+        }
+    }
+
     pub fn select_node(&mut self, node_rc: Rc<RefCell<RvFile>>) {
         self.selected_node = Some(node_rc);
         self.pending_tree_scroll_to_selected = true;
+        if let Some(selected) = self.selected_node.as_ref() {
+            self.enqueue_tree_stats_priority(Rc::clone(selected));
+        }
         self.expand_selected_ancestors();
     }
 
-    /// Recursively draws a single `RvFile` node and its children in the UI tree.
-    pub fn draw_tree_node(&mut self, ui: &mut egui::Ui, node_rc: Rc<RefCell<RvFile>>, parent_path: String) {
-        let is_file;
-        let is_directory;
-        let is_game;
+    pub fn draw_tree_row(&mut self, ui: &mut egui::Ui, row: &TreeRow) {
+        let node_rc = Rc::clone(&row.node_rc);
+        let depth = row.depth;
+        let has_expandable_children = row.has_children;
+
+        let (is_file, is_directory, is_game, tree_checked, tree_expanded, has_multiple_dats, is_in_to_sort) = {
+            let node = node_rc.borrow();
+            (
+                node.is_file(),
+                node.is_directory(),
+                node.game.is_some(),
+                node.tree_checked,
+                node.tree_expanded,
+                node.is_directory() && node.dat.is_none() && node.dir_dats.len() > 1,
+                node.dat_status() == DatStatus::InToSort,
+            )
+        };
+        if is_file || is_game {
+            return;
+        }
+
+        let row_height = 18.0;
+        let row_rect =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), row_height), egui::Sense::click());
+
+        let is_selected_for_scroll = self
+            .selected_node
+            .as_ref()
+            .is_some_and(|n| Rc::ptr_eq(n, &node_rc));
+        if is_selected_for_scroll && self.pending_tree_scroll_to_selected {
+            ui.scroll_to_rect(row_rect.0, Some(egui::Align::Center));
+            self.pending_tree_scroll_to_selected = false;
+        }
+
         let color;
         let icon_idx;
         let img_src;
-        let tree_checked;
-        let tree_expanded;
-        let node_name;
         let cached_stats;
-        let is_in_to_sort;
-        let to_sort_is_primary;
-        let to_sort_is_cache;
-        let node_path;
         let mut ui_display_name;
+
+        let should_enqueue_stats = {
+            let node = node_rc.borrow();
+            is_directory && node.cached_stats.is_none()
+        };
+        if should_enqueue_stats {
+            self.enqueue_tree_stats(Rc::clone(&node_rc));
+        }
 
         {
             let mut node = node_rc.borrow_mut();
-            is_file = node.is_file();
-            is_directory = node.is_directory();
-            is_game = node.game.is_some();
-            node_name = node.name.clone();
+
+            cached_stats = node.cached_stats;
             ui_display_name = node.ui_display_name.clone();
-
-            node_path = if parent_path.is_empty() {
-                node_name.clone()
-            } else {
-                format!("{}\\{}", parent_path, node_name)
-            };
-
-            is_in_to_sort = node.dat_status() == DatStatus::InToSort;
-            to_sort_is_primary = node.to_sort_status_is(rv_core::enums::ToSortDirType::TO_SORT_PRIMARY);
-            to_sort_is_cache = node.to_sort_status_is(rv_core::enums::ToSortDirType::TO_SORT_CACHE);
-
-            if is_directory && node.cached_stats.is_none() {
-                drop(node);
-                let mut stats = rv_core::repair_status::RepairStatus::new();
-                stats.report_status(Rc::clone(&node_rc));
-
-                node = node_rc.borrow_mut();
-                node.cached_stats = Some(stats);
-                node.ui_display_name.clear();
-                ui_display_name.clear();
-
-                cached_stats = Some(stats);
-            } else {
-                cached_stats = node.cached_stats;
-            }
 
             color = if let Some(stats) = &cached_stats {
                 tree_color_from_stats(stats)
@@ -284,9 +449,6 @@ impl RomVaultApp {
                 }
             };
 
-            tree_checked = node.tree_checked;
-            tree_expanded = node.tree_expanded;
-
             if is_directory && ui_display_name.is_empty() {
                 let icon = match node.file_type {
                     FileType::Dir => "📁",
@@ -296,6 +458,10 @@ impl RomVaultApp {
                 let mut name = format!("{} {}", icon, node.name);
 
                 if is_in_to_sort {
+                    let to_sort_is_primary =
+                        node.to_sort_status_is(rv_core::enums::ToSortDirType::TO_SORT_PRIMARY);
+                    let to_sort_is_cache = node.to_sort_status_is(rv_core::enums::ToSortDirType::TO_SORT_CACHE);
+
                     if to_sort_is_primary && to_sort_is_cache {
                         name = format!("{} (Primary, Cache)", name);
                     } else if to_sort_is_primary {
@@ -312,33 +478,35 @@ impl RomVaultApp {
                         name = format!("{} (Files: 0)", name);
                     }
                 } else {
-                    if node.dat.is_none() && node.dir_dats.len() == 1 {
-                        let desc = node.dir_dats[0]
-                            .borrow()
-                            .get_data(rv_core::rv_dat::DatData::Description)
-                            .unwrap_or_default();
-                        if !desc.is_empty() {
-                            name = format!("{}: {}", name, desc);
-                        }
-                    } else if let Some(dat) = &node.dat {
-                        if dat
-                            .borrow()
-                            .dat_flags
-                            .contains(rv_core::rv_dat::DatFlags::AUTO_ADDED_DIRECTORY)
-                        {
-                            name = format!("{}: ", name);
-                        }
-                    }
-
                     if let Some(stats) = cached_stats {
-                        let mut parts = Vec::new();
-                        // Always show Have and Missing if there are any stats at all, to match C# reference
-                        if stats.total_roms > 0 {
-                            parts.push(format!("Have: {}", crate::format_number(stats.roms_correct)));
-                            if stats.roms_correct_mia > 0 {
-                                parts.push(format!("Found MIA: {}", crate::format_number(stats.roms_correct_mia)));
+                        if node.dat.is_none() && node.dir_dats.len() == 1 {
+                            let desc = node.dir_dats[0]
+                                .borrow()
+                                .get_data(rv_core::rv_dat::DatData::Description)
+                                .unwrap_or_default();
+                            if !desc.is_empty() {
+                                name = format!("{}: {}", name, desc);
                             }
-                            parts.push(format!("Missing: {}", crate::format_number(stats.roms_missing)));
+                        } else if let Some(dat) = &node.dat {
+                            if dat
+                                .borrow()
+                                .dat_flags
+                                .contains(rv_core::rv_dat::DatFlags::AUTO_ADDED_DIRECTORY)
+                            {
+                                name = format!("{}: ", name);
+                            }
+                        }
+
+                        let mut parts = Vec::new();
+                        if stats.total_roms > 0 {
+                            parts.push(format!("Have: {}", crate::format_number(correct_plain(&stats))));
+                            if stats.roms_correct_mia > 0 {
+                                parts.push(format!(
+                                    "Found MIA: {}",
+                                    crate::format_number(stats.roms_correct_mia)
+                                ));
+                            }
+                            parts.push(format!("Missing: {}", crate::format_number(missing_plain(&stats))));
                             if stats.roms_missing_mia > 0 {
                                 parts.push(format!("MIA: {}", crate::format_number(stats.roms_missing_mia)));
                             }
@@ -346,7 +514,10 @@ impl RomVaultApp {
                                 parts.push(format!("Fixes: {}", crate::format_number(stats.roms_fixes)));
                             }
                             if stats.roms_not_collected > 0 {
-                                parts.push(format!("NotCollected: {}", crate::format_number(stats.roms_not_collected)));
+                                parts.push(format!(
+                                    "NotCollected: {}",
+                                    crate::format_number(stats.roms_not_collected)
+                                ));
                             }
                             if stats.roms_unknown > 0 {
                                 parts.push(format!("Unknown: {}", crate::format_number(stats.roms_unknown)));
@@ -366,556 +537,557 @@ impl RomVaultApp {
 
                 node.ui_display_name = name.clone();
                 ui_display_name = name;
-            } else if !is_directory && ui_display_name.is_empty() {
-                let name = node.name.clone();
-                node.ui_display_name = name.clone();
-                ui_display_name = name;
             }
         }
 
-        if is_file || is_game {
-            return;
-        }
-
-        let has_expandable_children = if is_directory {
-            // A node is expandable if it has at least one child that is NOT a file and NOT a game.
-            // i.e. it contains another directory or a DAT folder
-            node_rc.borrow().children.iter().any(|c| {
-                let cb = c.borrow();
-                !cb.is_file() && cb.game.is_none()
-            })
-        } else {
-            false
-        };
-
-        let _node_id = ui.make_persistent_id(&node_path);
         let mut toggle_expanded = false;
         let mut expand_descendants = None;
         let mut clicked_label = false;
-        let row_height = 18.0;
-        let current_y = ui.cursor().min.y;
-        let is_visible = ui.clip_rect().intersects(egui::Rect::from_min_size(
-            egui::pos2(ui.cursor().min.x, current_y),
-            egui::vec2(ui.available_width(), row_height),
-        ));
 
-        let row_rect = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_height), egui::Sense::click());
-        let np_clone = node_path.clone();
-
-        let is_selected_for_scroll = self
+        let mut ui_builder = ui.child_ui(row_rect.0, *ui.layout());
+        let is_selected = self
             .selected_node
             .as_ref()
             .is_some_and(|n| Rc::ptr_eq(n, &node_rc));
-        if is_selected_for_scroll && self.pending_tree_scroll_to_selected {
-            ui.scroll_to_rect(row_rect.0, Some(egui::Align::Center));
-            self.pending_tree_scroll_to_selected = false;
+        if is_selected {
+            let bg_color = ui_builder.visuals().selection.bg_fill;
+            ui_builder.painter().rect_filled(row_rect.0, 0.0, bg_color);
         }
 
-        if is_visible {
-            let mut ui_builder = ui.child_ui(row_rect.0, *ui.layout());
+        ui_builder.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            ui.add_space(18.0 * depth as f32);
 
-            ui_builder.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 2.0;
-
-                if has_expandable_children {
-                    let expand_icon = if tree_expanded {
-                        include_asset!("ExpandBoxMinus.png")
-                    } else {
-                        include_asset!("ExpandBoxPlus.png")
-                    };
-                    let expand_resp =
-                        ui.add_sized([9.0, 9.0], egui::ImageButton::new(expand_icon).frame(false));
-                    if expand_resp.clicked() {
-                        toggle_expanded = true;
-                    } else if expand_resp.secondary_clicked() {
-                        let is_shift = ui.input(|i| i.modifiers.shift);
-                        if is_shift {
-                            expand_descendants = Self::expand_descendants_target(&node_rc);
-                        } else {
-                            toggle_expanded = true;
-                        }
-                    }
+            if has_expandable_children {
+                let expand_icon = if tree_expanded {
+                    include_asset!("ExpandBoxMinus.png")
                 } else {
-                    ui.add_space(9.0);
-                }
-
-                let checkbox_img = match tree_checked {
-                    TreeSelect::Selected => include_asset!("TickBoxTicked.png"),
-                    TreeSelect::UnSelected => include_asset!("TickBoxUnTicked.png"),
-                    TreeSelect::Locked => include_asset!("TickBoxLocked.png"),
+                    include_asset!("ExpandBoxPlus.png")
                 };
-                let checkbox_resp = ui
-                    .add_enabled_ui(!self.ui_working(), |ui| {
-                        ui.add_sized([13.0, 13.0], egui::ImageButton::new(checkbox_img).frame(false))
-                    })
-                    .inner;
-                if checkbox_resp.clicked() {
-                    let is_shift = ui.input(|i| i.modifiers.shift);
-                    let new_state = match tree_checked {
-                        TreeSelect::Selected => TreeSelect::UnSelected,
-                        _ => TreeSelect::Selected,
-                    };
-
-                    let mut stack = vec![Rc::clone(&node_rc)];
-                    while let Some(current) = stack.pop() {
-                        let mut n = current.borrow_mut();
-                        n.tree_checked = new_state;
-                        let children = n.children.clone();
-                        drop(n);
-                        if !is_shift {
-                            for child in children {
-                                stack.push(Rc::clone(&child));
-                            }
-                        }
-                    }
-                    if !self.ui_working() {
-                        self.db_cache_dirty = true;
-                    }
-                } else if checkbox_resp.secondary_clicked() {
-                    let is_shift = ui.input(|i| i.modifiers.shift);
-                    Self::set_tree_checked_locked(&node_rc, !is_shift);
-                    if !self.ui_working() {
-                        self.db_cache_dirty = true;
-                    }
+                let expand_resp =
+                    ui.add_sized([9.0, 9.0], egui::ImageButton::new(expand_icon).frame(false));
+                if expand_resp.clicked() {
+                    toggle_expanded = true;
+                } else if expand_resp.secondary_clicked() {
+                    expand_descendants = Self::expand_descendants_target(&node_rc);
                 }
+            } else {
+                ui.add_space(9.0);
+            }
 
-                ui.add_sized([16.0, row_height], egui::Image::new(img_src).max_width(16.0));
-
-                let is_selected = self
-                    .selected_node
-                    .as_ref()
-                    .is_some_and(|n| Rc::ptr_eq(n, &node_rc));
-
-                let clean_name = ui_display_name
-                    .trim_start_matches(|c: char| !c.is_alphanumeric() && c != '(' && c != '[')
-                    .trim();
-                let label_text = egui::RichText::new(clean_name).color(color);
-                let label_resp = if is_selected {
-                    let bg_color = ui.visuals().selection.bg_fill;
-                    ui.painter().rect_filled(ui.cursor(), 0.0, bg_color);
-                    ui.add(egui::Label::new(label_text).sense(egui::Sense::click()))
-                } else {
-                    ui.add(egui::Label::new(label_text).sense(egui::Sense::click()))
+            let checkbox_img = match tree_checked {
+                TreeSelect::Selected => include_asset!("TickBoxTicked.png"),
+                TreeSelect::UnSelected => include_asset!("TickBoxUnTicked.png"),
+                TreeSelect::Locked => include_asset!("TickBoxLocked.png"),
+            };
+            let checkbox_resp = ui
+                .add_enabled_ui(!self.ui_working(), |ui| {
+                    ui.add_sized([13.0, 13.0], egui::ImageButton::new(checkbox_img).frame(false))
+                })
+                .inner;
+            if checkbox_resp.clicked() {
+                let is_shift = ui.input(|i| i.modifiers.shift);
+                let new_state = match tree_checked {
+                    TreeSelect::Selected => TreeSelect::UnSelected,
+                    _ => TreeSelect::Selected,
                 };
 
-                if label_resp.clicked() || label_resp.secondary_clicked() {
-                    clicked_label = true;
+                let mut stack = vec![Rc::clone(&node_rc)];
+                while let Some(current) = stack.pop() {
+                    let mut n = current.borrow_mut();
+                    n.tree_checked = new_state;
+                    let children = n.children.clone();
+                    drop(n);
+                    if !is_shift {
+                        for child in children {
+                            stack.push(Rc::clone(&child));
+                        }
+                    }
+                }
+                if !self.ui_working() {
+                    self.db_cache_dirty = true;
+                }
+            } else if checkbox_resp.secondary_clicked() {
+                let is_shift = ui.input(|i| i.modifiers.shift);
+                Self::set_tree_checked_locked(&node_rc, !is_shift);
+                if !self.ui_working() {
+                    self.db_cache_dirty = true;
+                }
+            }
+
+            ui.add_sized([16.0, row_height], egui::Image::new(img_src).max_width(16.0));
+
+            let clean_name = ui_display_name
+                .trim_start_matches(|c: char| !c.is_alphanumeric() && c != '(' && c != '[')
+                .trim();
+            let label_color = if is_selected {
+                ui.visuals().selection.stroke.color
+            } else {
+                color
+            };
+            let label_text = egui::RichText::new(clean_name).color(label_color);
+            let label_resp = ui.add(egui::Label::new(label_text).sense(egui::Sense::click()));
+
+            if label_resp.clicked() {
+                clicked_label = true;
+            }
+            if label_resp.secondary_clicked() {
+                self.select_node(Rc::clone(&node_rc));
+            }
+
+            enum TreeAction {
+                Quick,
+                Normal,
+                Full,
+            }
+            let mut pending_action = None;
+            let mut pending_action_logical: Option<String> = None;
+
+            label_resp.context_menu(|ui| {
+                if ui.button("Scan").clicked() {
+                    pending_action = Some(TreeAction::Normal);
+                    pending_action_logical = Some(node_rc.borrow().get_logical_name());
+                    ui.close_menu();
+                }
+                if ui.button("Scan Quick (Headers Only)").clicked() {
+                    pending_action = Some(TreeAction::Quick);
+                    pending_action_logical = Some(node_rc.borrow().get_logical_name());
+                    ui.close_menu();
+                }
+                if ui.button("Scan Full (Complete Re-Scan)").clicked() {
+                    pending_action = Some(TreeAction::Full);
+                    pending_action_logical = Some(node_rc.borrow().get_logical_name());
+                    ui.close_menu();
                 }
 
-                enum TreeAction {
-                    Quick,
-                    Normal,
-                    Full,
-                }
-                let mut pending_action = None;
-
-                label_resp.context_menu(|ui| {
-                    if ui.button("Scan Quick (Headers Only)").clicked() {
-                        pending_action = Some(TreeAction::Quick);
-                        ui.close_menu();
-                    }
-                    if ui.button("Scan").clicked() {
-                        pending_action = Some(TreeAction::Normal);
-                        ui.close_menu();
-                    }
-                    if ui.button("Scan Full (Complete Re-Scan)").clicked() {
-                        pending_action = Some(TreeAction::Full);
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    if ui.button("Directory Settings").clicked() {
-                        self.active_dat_rule = rv_core::settings::find_rule(&node_name);
-                        self.show_dir_settings = true;
-                        ui.close_menu();
-                    }
-                    if ui.button("Directory Mappings").clicked() {
-                        self.open_dir_mappings();
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    let can_open_dir = std::path::Path::new(&np_clone).exists();
+                if is_in_to_sort {
+                    let np_clone = node_rc.borrow().get_logical_name();
+                    let open_tosort =
+                        rv_core::settings::find_dir_mapping(&np_clone).unwrap_or_else(|| np_clone.clone());
+                    let can_open_tosort = std::path::Path::new(&open_tosort).is_dir();
                     if ui
-                        .add_enabled(can_open_dir, egui::Button::new("Open Directory"))
+                        .add_enabled(can_open_tosort, egui::Button::new("Open ToSort Directory"))
                         .clicked()
                     {
-                        self.task_logs.push(format!("Opening Directory: {}", np_clone));
+                        self.task_logs.push(format!("Opening ToSort Directory: {}", open_tosort));
                         let _ = std::process::Command::new("cmd")
-                            .args(["/C", "start", "", &np_clone])
+                            .args(["/C", "start", "", &open_tosort])
                             .spawn();
                         ui.close_menu();
                     }
+                    ui.separator();
 
-                    if is_in_to_sort {
-                        let can_open_tosort = std::path::Path::new(&np_clone).is_dir();
-                        if ui
-                            .add_enabled(can_open_tosort, egui::Button::new("Open ToSort Directory"))
-                            .clicked()
-                        {
-                            self.task_logs.push(format!("Opening ToSort Directory: {}", np_clone));
-                            let _ = std::process::Command::new("cmd")
-                                .args(["/C", "start", "", &np_clone])
-                                .spawn();
-                            ui.close_menu();
-                        }
-                        ui.separator();
-                        if ui
-                            .add_enabled(!self.ui_working(), egui::Button::new("Move Up"))
-                            .clicked()
-                        {
-                            self.task_logs.push(format!("Move ToSort Up: {}", node_rc.borrow().name));
-                            GLOBAL_DB.with(|db_ref| {
-                                if let Some(db) = db_ref.borrow().as_ref() {
-                                    let mut dir_root = db.dir_root.borrow_mut();
-                                    let mut idx = None;
-                                    for (i, child) in dir_root.children.iter().enumerate() {
-                                        if Rc::ptr_eq(child, &node_rc) {
-                                            idx = Some(i);
-                                            break;
-                                        }
-                                    }
-                                    if let Some(i) = idx {
-                                        // Ensure we don't swap it above the first ToSort folder (idx 1 usually, as RustyVault is 0)
-                                        // or above RustyVault itself
-                                        if i > 1 {
-                                            dir_root.children.swap(i, i - 1);
-                                        }
-                                    }
-                                    drop(dir_root);
+                    let mut can_move_up = false;
+                    let mut can_move_down = false;
+                    GLOBAL_DB.with(|db_ref| {
+                        if let Some(db) = db_ref.borrow().as_ref() {
+                            let dir_root = db.dir_root.borrow();
+                            let mut idx = None;
+                            for (i, child) in dir_root.children.iter().enumerate() {
+                                if Rc::ptr_eq(child, &node_rc) {
+                                    idx = Some(i);
+                                    break;
                                 }
-                            });
-                            if !self.ui_working() {
-                                self.db_cache_dirty = true;
                             }
-                            ui.close_menu();
-                        }
-                        if ui
-                            .add_enabled(!self.ui_working(), egui::Button::new("Move Down"))
-                            .clicked()
-                        {
-                            self.task_logs.push(format!("Move ToSort Down: {}", node_rc.borrow().name));
-                            GLOBAL_DB.with(|db_ref| {
-                                if let Some(db) = db_ref.borrow().as_ref() {
-                                    let mut dir_root = db.dir_root.borrow_mut();
-                                    let mut idx = None;
-                                    for (i, child) in dir_root.children.iter().enumerate() {
-                                        if Rc::ptr_eq(child, &node_rc) {
-                                            idx = Some(i);
-                                            break;
-                                        }
-                                    }
-                                    if let Some(i) = idx {
-                                        if i < dir_root.children.len() - 1 {
-                                            dir_root.children.swap(i, i + 1);
-                                        }
-                                    }
-                                    drop(dir_root);
+                            if let Some(i) = idx {
+                                can_move_up = i >= 2;
+                                if !dir_root.children.is_empty() {
+                                    can_move_down = i <= dir_root.children.len().saturating_sub(2);
                                 }
-                            });
-                            if !self.ui_working() {
-                                self.db_cache_dirty = true;
                             }
-                            ui.close_menu();
                         }
-                        if ui
-                            .add_enabled(!self.ui_working(), egui::Button::new("Set To Primary ToSort"))
-                            .clicked()
-                        {
-                            self.task_logs.push(format!("Set To Primary ToSort: {}", node_rc.borrow().name));
-                            GLOBAL_DB.with(|db_ref| {
-                                if let Some(db) = db_ref.borrow().as_ref() {
-                                    let mut clicked = node_rc.borrow_mut();
-                                    if clicked.tree_checked == TreeSelect::Locked {
-                                        clicked.tree_checked = TreeSelect::Selected;
-                                    }
-                                    drop(clicked);
+                    });
+                    let (show_set_file_only, show_clear_file_only) = {
+                        let n = node_rc.borrow();
+                        let is_primary = n.to_sort_status_is(rv_core::enums::ToSortDirType::TO_SORT_PRIMARY);
+                        let is_cache = n.to_sort_status_is(rv_core::enums::ToSortDirType::TO_SORT_CACHE);
+                        let is_file_only = n.to_sort_status_is(rv_core::enums::ToSortDirType::TO_SORT_FILE_ONLY);
+                        (!(is_file_only || is_primary || is_cache), is_file_only)
+                    };
 
-                                    let root = db.dir_root.borrow();
-                                    let mut old_primary: Option<Rc<RefCell<RvFile>>> = None;
-                                    for child in root.children.iter().skip(1) {
-                                        if child.borrow().to_sort_status_is(
-                                            rv_core::enums::ToSortDirType::TO_SORT_PRIMARY,
-                                        ) {
-                                            old_primary = Some(Rc::clone(child));
-                                            break;
-                                        }
-                                    }
-                                    drop(root);
-
-                                    let was_cache = old_primary
-                                        .as_ref()
-                                        .map(|n| n.borrow().to_sort_status_is(rv_core::enums::ToSortDirType::TO_SORT_CACHE))
-                                        .unwrap_or(false);
-                                    if let Some(op) = old_primary {
-                                        let mut opm = op.borrow_mut();
-                                        opm.to_sort_status_clear(
-                                            rv_core::enums::ToSortDirType::TO_SORT_PRIMARY
-                                                | rv_core::enums::ToSortDirType::TO_SORT_CACHE,
-                                        );
-                                    }
-
-                                    let mut clicked = node_rc.borrow_mut();
-                                    clicked.to_sort_status_set(rv_core::enums::ToSortDirType::TO_SORT_PRIMARY);
-                                    if was_cache {
-                                        clicked.to_sort_status_set(rv_core::enums::ToSortDirType::TO_SORT_CACHE);
+                    if ui
+                        .add_enabled(!self.ui_working() && can_move_up, egui::Button::new("Move Up"))
+                        .clicked()
+                    {
+                        self.task_logs.push(format!("Move ToSort Up: {}", node_rc.borrow().name));
+                        GLOBAL_DB.with(|db_ref| {
+                            if let Some(db) = db_ref.borrow().as_ref() {
+                                let mut dir_root = db.dir_root.borrow_mut();
+                                let mut idx = None;
+                                for (i, child) in dir_root.children.iter().enumerate() {
+                                    if Rc::ptr_eq(child, &node_rc) {
+                                        idx = Some(i);
+                                        break;
                                     }
                                 }
-                            });
-                            if !self.ui_working() {
-                                self.db_cache_dirty = true;
-                            }
-                            ui.close_menu();
-                        }
-                        if ui
-                            .add_enabled(!self.ui_working(), egui::Button::new("Set To Cache ToSort"))
-                            .clicked()
-                        {
-                            self.task_logs.push(format!("Set To Cache ToSort: {}", node_rc.borrow().name));
-                            GLOBAL_DB.with(|db_ref| {
-                                if let Some(db) = db_ref.borrow().as_ref() {
-                                    let mut clicked = node_rc.borrow_mut();
-                                    if clicked.tree_checked == TreeSelect::Locked {
-                                        clicked.tree_checked = TreeSelect::Selected;
+                                if let Some(i) = idx {
+                                    if i > 1 {
+                                        dir_root.children.swap(i, i - 1);
                                     }
-                                    drop(clicked);
-
-                                    let root = db.dir_root.borrow();
-                                    let mut old_cache: Option<Rc<RefCell<RvFile>>> = None;
-                                    for child in root.children.iter().skip(1) {
-                                        if child.borrow().to_sort_status_is(
-                                            rv_core::enums::ToSortDirType::TO_SORT_CACHE,
-                                        ) {
-                                            old_cache = Some(Rc::clone(child));
-                                            break;
-                                        }
-                                    }
-                                    drop(root);
-
-                                    if let Some(oc) = old_cache {
-                                        oc.borrow_mut().to_sort_status_clear(
-                                            rv_core::enums::ToSortDirType::TO_SORT_CACHE,
-                                        );
-                                    }
-                                    node_rc
-                                        .borrow_mut()
-                                        .to_sort_status_set(rv_core::enums::ToSortDirType::TO_SORT_CACHE);
                                 }
-                            });
-                            if !self.ui_working() {
-                                self.db_cache_dirty = true;
                             }
-                            ui.close_menu();
+                        });
+                        if !self.ui_working() {
+                            self.db_cache_dirty = true;
                         }
-                        if ui
-                            .add_enabled(!self.ui_working(), egui::Button::new("Set To File Only ToSort"))
-                            .clicked()
-                        {
-                            self.task_logs.push(format!("Set To File Only ToSort: {}", node_rc.borrow().name));
-                            let is_primary_or_cache = {
-                                let n = node_rc.borrow();
-                                n.to_sort_status_is(rv_core::enums::ToSortDirType::TO_SORT_PRIMARY)
-                                    || n.to_sort_status_is(rv_core::enums::ToSortDirType::TO_SORT_CACHE)
-                            };
-                            if is_primary_or_cache {
-                                self.task_logs.push("Primary/Cache Directory Cannot be File Only.".to_string());
-                            } else {
-                                if node_rc.borrow().tree_checked == TreeSelect::Locked {
-                                    node_rc.borrow_mut().tree_checked = TreeSelect::Selected;
+                        self.tree_rows_dirty = true;
+                        ui.close_menu();
+                    }
+                    if ui
+                        .add_enabled(!self.ui_working() && can_move_down, egui::Button::new("Move Down"))
+                        .clicked()
+                    {
+                        self.task_logs.push(format!("Move ToSort Down: {}", node_rc.borrow().name));
+                        GLOBAL_DB.with(|db_ref| {
+                            if let Some(db) = db_ref.borrow().as_ref() {
+                                let mut dir_root = db.dir_root.borrow_mut();
+                                let mut idx = None;
+                                for (i, child) in dir_root.children.iter().enumerate() {
+                                    if Rc::ptr_eq(child, &node_rc) {
+                                        idx = Some(i);
+                                        break;
+                                    }
+                                }
+                                if let Some(i) = idx {
+                                    if i < dir_root.children.len().saturating_sub(1) {
+                                        dir_root.children.swap(i, i + 1);
+                                    }
+                                }
+                            }
+                        });
+                        if !self.ui_working() {
+                            self.db_cache_dirty = true;
+                        }
+                        self.tree_rows_dirty = true;
+                        ui.close_menu();
+                    }
+                    if ui
+                        .add_enabled(!self.ui_working(), egui::Button::new("Set To Primary ToSort"))
+                        .clicked()
+                    {
+                        self.task_logs
+                            .push(format!("Set To Primary ToSort: {}", node_rc.borrow().name));
+                        GLOBAL_DB.with(|db_ref| {
+                            if let Some(db) = db_ref.borrow().as_ref() {
+                                let mut clicked = node_rc.borrow_mut();
+                                if clicked.tree_checked == TreeSelect::Locked {
+                                    clicked.tree_checked = TreeSelect::Selected;
+                                }
+                                clicked.ui_display_name.clear();
+                                drop(clicked);
+
+                                let root = db.dir_root.borrow();
+                                let mut old_primary: Option<Rc<RefCell<RvFile>>> = None;
+                                for child in root.children.iter().skip(1) {
+                                    if child.borrow().to_sort_status_is(
+                                        rv_core::enums::ToSortDirType::TO_SORT_PRIMARY,
+                                    ) {
+                                        old_primary = Some(Rc::clone(child));
+                                        break;
+                                    }
+                                }
+                                drop(root);
+
+                                let was_cache = old_primary
+                                    .as_ref()
+                                    .map(|n| {
+                                        n.borrow().to_sort_status_is(rv_core::enums::ToSortDirType::TO_SORT_CACHE)
+                                    })
+                                    .unwrap_or(false);
+                                if let Some(op) = old_primary {
+                                    let mut opm = op.borrow_mut();
+                                    opm.to_sort_status_clear(
+                                        rv_core::enums::ToSortDirType::TO_SORT_PRIMARY
+                                            | rv_core::enums::ToSortDirType::TO_SORT_CACHE,
+                                    );
+                                    opm.ui_display_name.clear();
+                                }
+
+                                let mut clicked = node_rc.borrow_mut();
+                                clicked.to_sort_status_set(rv_core::enums::ToSortDirType::TO_SORT_PRIMARY);
+                                if was_cache {
+                                    clicked.to_sort_status_set(rv_core::enums::ToSortDirType::TO_SORT_CACHE);
+                                }
+                            }
+                        });
+                        if !self.ui_working() {
+                            self.db_cache_dirty = true;
+                        }
+                        self.tree_rows_dirty = true;
+                        ui.close_menu();
+                    }
+                    if ui
+                        .add_enabled(!self.ui_working(), egui::Button::new("Set To Cache ToSort"))
+                        .clicked()
+                    {
+                        self.task_logs.push(format!("Set To Cache ToSort: {}", node_rc.borrow().name));
+                        GLOBAL_DB.with(|db_ref| {
+                            if let Some(db) = db_ref.borrow().as_ref() {
+                                let mut clicked = node_rc.borrow_mut();
+                                if clicked.tree_checked == TreeSelect::Locked {
+                                    clicked.tree_checked = TreeSelect::Selected;
+                                }
+                                clicked.ui_display_name.clear();
+                                drop(clicked);
+
+                                let root = db.dir_root.borrow();
+                                let mut old_cache: Option<Rc<RefCell<RvFile>>> = None;
+                                for child in root.children.iter().skip(1) {
+                                    if child
+                                        .borrow()
+                                        .to_sort_status_is(rv_core::enums::ToSortDirType::TO_SORT_CACHE)
+                                    {
+                                        old_cache = Some(Rc::clone(child));
+                                        break;
+                                    }
+                                }
+                                drop(root);
+
+                                if let Some(oc) = old_cache {
+                                    let mut ocm = oc.borrow_mut();
+                                    ocm.to_sort_status_clear(rv_core::enums::ToSortDirType::TO_SORT_CACHE);
+                                    ocm.ui_display_name.clear();
                                 }
                                 node_rc
                                     .borrow_mut()
-                                    .to_sort_status_set(rv_core::enums::ToSortDirType::TO_SORT_FILE_ONLY);
-                                if !self.ui_working() {
-                                    self.db_cache_dirty = true;
-                                }
+                                    .to_sort_status_set(rv_core::enums::ToSortDirType::TO_SORT_CACHE);
                             }
-                            ui.close_menu();
+                        });
+                        if !self.ui_working() {
+                            self.db_cache_dirty = true;
                         }
-                        if ui
+                        self.tree_rows_dirty = true;
+                        ui.close_menu();
+                    }
+                    if show_set_file_only
+                        && ui
+                            .add_enabled(!self.ui_working(), egui::Button::new("Set To File Only ToSort"))
+                            .clicked()
+                    {
+                        self.task_logs
+                            .push(format!("Set To File Only ToSort: {}", node_rc.borrow().name));
+                        if node_rc.borrow().tree_checked == TreeSelect::Locked {
+                            node_rc.borrow_mut().tree_checked = TreeSelect::Selected;
+                        }
+                        node_rc.borrow_mut().ui_display_name.clear();
+                        node_rc
+                            .borrow_mut()
+                            .to_sort_status_set(rv_core::enums::ToSortDirType::TO_SORT_FILE_ONLY);
+                        if !self.ui_working() {
+                            self.db_cache_dirty = true;
+                        }
+                        self.tree_rows_dirty = true;
+                        ui.close_menu();
+                    }
+                    if show_clear_file_only
+                        && ui
                             .add_enabled(!self.ui_working(), egui::Button::new("Clear File Only ToSort"))
                             .clicked()
-                        {
-                            self.task_logs.push(format!("Clear File Only ToSort: {}", node_rc.borrow().name));
-                            node_rc
-                                .borrow_mut()
-                                .to_sort_status_clear(rv_core::enums::ToSortDirType::TO_SORT_FILE_ONLY);
-                            if !self.ui_working() {
-                                self.db_cache_dirty = true;
-                            }
-                            ui.close_menu();
+                    {
+                        self.task_logs
+                            .push(format!("Clear File Only ToSort: {}", node_rc.borrow().name));
+                        node_rc.borrow_mut().ui_display_name.clear();
+                        node_rc
+                            .borrow_mut()
+                            .to_sort_status_clear(rv_core::enums::ToSortDirType::TO_SORT_FILE_ONLY);
+                        if !self.ui_working() {
+                            self.db_cache_dirty = true;
                         }
-                        ui.separator();
-                        if ui
-                            .add_enabled(!self.ui_working(), egui::Button::new("Remove"))
-                            .clicked()
-                        {
-                            self.task_logs.push(format!("Remove ToSort Directory: {}", node_rc.borrow().name));
-                            let mut select_after_remove: Option<Rc<RefCell<RvFile>>> = None;
-                            GLOBAL_DB.with(|db_ref| {
-                                if let Some(db) = db_ref.borrow().as_ref() {
-                                    let mut dir_root = db.dir_root.borrow_mut();
-                                    let mut idx_to_remove = None;
-                                    for (i, child) in dir_root.children.iter().enumerate() {
-                                        if Rc::ptr_eq(child, &node_rc) {
-                                            idx_to_remove = Some(i);
-                                            break;
-                                        }
-                                    }
-                                    if let Some(idx) = idx_to_remove {
-                                        if idx > 0 && idx - 1 < dir_root.children.len() {
-                                            select_after_remove = Some(Rc::clone(&dir_root.children[idx - 1]));
-                                        }
-                                        dir_root.child_remove(idx);
-                                    }
-                                    drop(dir_root);
-
-                                    rv_core::repair_status::RepairStatus::report_status_reset(Rc::clone(&db.dir_root));
-                                }
-                            });
-                            if let Some(selected) = &self.selected_node {
-                                if Rc::ptr_eq(selected, &node_rc) {
-                                    self.selected_node = None;
-                                }
-                            }
-                            if let Some(new_sel) = select_after_remove {
-                                self.select_node(new_sel);
-                            }
-                            if !self.ui_working() {
-                                self.db_cache_dirty = true;
-                            }
-                            ui.close_menu();
-                        }
-                    } else {
-                        if ui.button("Set Dir Dat Settings").clicked() {
-                            self.active_dat_rule = rv_core::settings::find_rule(&node_name);
-                            self.show_dir_settings = true;
-                            ui.close_menu();
-                        }
-                        if ui.button("Set Dir Mappings").clicked() {
-                            self.open_dir_mappings();
-                            ui.close_menu();
-                        }
-                        ui.separator();
-                        let can_open_dir = std::path::Path::new(&node_path).exists();
-                        if ui
-                            .add_enabled(can_open_dir, egui::Button::new("Open Directory"))
-                            .clicked()
-                        {
-                            self.task_logs.push(format!("Opening Directory: {}", node_path));
-                            let _ = std::process::Command::new("cmd")
-                                .args(["/C", "start", "", &node_path])
-                                .spawn();
-                            ui.close_menu();
-                        }
-                        ui.separator();
-                        if ui
-                            .add_enabled(!self.ui_working(), egui::Button::new("Save fix DATs"))
-                            .clicked()
-                        {
-                            self.prompt_fixdat_report_for_node(true, Rc::clone(&node_rc));
-                            ui.close_menu();
-                        }
-                        if ui
-                            .add_enabled(!self.ui_working(), egui::Button::new("Save full DAT"))
-                            .clicked()
-                        {
-                            self.prompt_make_dat(Rc::clone(&node_rc));
-                            ui.close_menu();
-                        }
+                        self.tree_rows_dirty = true;
+                        ui.close_menu();
                     }
-                });
+                    ui.separator();
+                    if ui
+                        .add_enabled(!self.ui_working(), egui::Button::new("Remove"))
+                        .clicked()
+                    {
+                        self.task_logs.push(format!("Remove ToSort Directory: {}", node_rc.borrow().name));
+                        let mut select_after_remove: Option<Rc<RefCell<RvFile>>> = None;
+                        GLOBAL_DB.with(|db_ref| {
+                            if let Some(db) = db_ref.borrow().as_ref() {
+                                let mut dir_root = db.dir_root.borrow_mut();
+                                let mut idx_to_remove = None;
+                                for (i, child) in dir_root.children.iter().enumerate() {
+                                    if Rc::ptr_eq(child, &node_rc) {
+                                        idx_to_remove = Some(i);
+                                        break;
+                                    }
+                                }
+                                if let Some(idx) = idx_to_remove {
+                                    if idx > 0 && idx - 1 < dir_root.children.len() {
+                                        select_after_remove = Some(Rc::clone(&dir_root.children[idx - 1]));
+                                    }
+                                    dir_root.child_remove(idx);
+                                }
+                                drop(dir_root);
 
-                if let Some(action) = pending_action {
-                    match action {
-                        TreeAction::Quick => {
-                            let np = np_clone.clone();
-                            let target_rc = Rc::clone(&node_rc);
-                            self.launch_task("Scan ROMs (Quick)", move |tx| {
-                                let _ = tx.send(format!("Scanning {} (Headers Only)...", np));
-                                let files = Scanner::scan_directory_with_level(&np, rv_core::settings::EScanLevel::Level1);
-                                let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
-                                root_scan.children = files;
-                                let _ = tx.send("Integrating files into DB...".to_string());
-                                FileScanning::scan_dir_with_level(target_rc, &mut root_scan, rv_core::settings::EScanLevel::Level1);
-                            });
+                                rv_core::repair_status::RepairStatus::report_status_reset(Rc::clone(&db.dir_root));
+                            }
+                        });
+                        if let Some(selected) = &self.selected_node {
+                            if Rc::ptr_eq(selected, &node_rc) {
+                                self.selected_node = None;
+                            }
                         }
-                        TreeAction::Normal => {
-                            let np = np_clone.clone();
-                            let target_rc = Rc::clone(&node_rc);
-                            self.launch_task("Scan ROMs", move |tx| {
-                                let _ = tx.send(format!("Scanning {}...", np));
-                                let files = Scanner::scan_directory_with_level(&np, rv_core::settings::EScanLevel::Level2);
-                                let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
-                                root_scan.children = files;
-                                let _ = tx.send("Integrating files into DB...".to_string());
-                                FileScanning::scan_dir_with_level(target_rc, &mut root_scan, rv_core::settings::EScanLevel::Level2);
-                            });
+                        if let Some(new_sel) = select_after_remove {
+                            self.select_node(new_sel);
                         }
-                        TreeAction::Full => {
-                            let np = np_clone.clone();
-                            let target_rc = Rc::clone(&node_rc);
-                            self.launch_task("Scan ROMs (Full)", move |tx| {
-                                let _ = tx.send(format!("Scanning {} (Full Re-Scan)...", np));
-                                let files = Scanner::scan_directory_with_level(&np, rv_core::settings::EScanLevel::Level3);
-                                let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
-                                root_scan.children = files;
-                                let _ = tx.send("Integrating files into DB...".to_string());
-                                FileScanning::scan_dir_with_level(target_rc, &mut root_scan, rv_core::settings::EScanLevel::Level3);
-                            });
+                        if !self.ui_working() {
+                            self.db_cache_dirty = true;
                         }
+                        self.tree_rows_dirty = true;
+                        ui.close_menu();
                     }
+                    ui.separator();
                 }
 
-                if clicked_label {
-                    self.select_node(Rc::clone(&node_rc));
+                if ui.button("Set Dir Dat Settings").clicked() {
+                    let node_path = node_rc.borrow().get_logical_name();
+                    self.active_dat_rule = rv_core::settings::find_rule(&node_path);
+                    self.dir_settings_tab = 0;
+                    self.dir_settings_compact = false;
+                    self.show_dir_settings = true;
+                    ui.close_menu();
                 }
-
-                if toggle_expanded {
-                    let mut n = node_rc.borrow_mut();
-                    n.tree_expanded = !n.tree_expanded;
-                    if !self.ui_working() {
-                        self.db_cache_dirty = true;
-                    }
+                if ui.button("Set Dir Mappings").clicked() {
+                    self.open_dir_mappings();
+                    ui.close_menu();
+                }
+                ui.separator();
+                let node_path = node_rc.borrow().get_logical_name();
+                let open_path =
+                    rv_core::settings::find_dir_mapping(&node_path).unwrap_or_else(|| node_path.clone());
+                let can_open_dir = std::path::Path::new(&open_path).exists();
+                if ui
+                    .add_enabled(can_open_dir, egui::Button::new("Open Directory"))
+                    .clicked()
+                {
+                    self.task_logs.push(format!("Opening Directory: {}", open_path));
+                    let _ = std::process::Command::new("cmd")
+                        .args(["/C", "start", "", &open_path])
+                        .spawn();
+                    ui.close_menu();
+                }
+                ui.separator();
+                if ui
+                    .add_enabled(!self.ui_working(), egui::Button::new("Save fix DATs"))
+                    .clicked()
+                {
+                    self.prompt_fixdat_report_for_node(true, Rc::clone(&node_rc));
+                    ui.close_menu();
+                }
+                if ui
+                    .add_enabled(!self.ui_working(), egui::Button::new("Save full DAT"))
+                    .clicked()
+                {
+                    self.prompt_make_dat(Rc::clone(&node_rc));
+                    ui.close_menu();
                 }
             });
-        } else if toggle_expanded {
-            let mut n = node_rc.borrow_mut();
-            n.tree_expanded = !n.tree_expanded;
-            if !self.ui_working() {
-                self.db_cache_dirty = true;
+
+            if let Some(action) = pending_action {
+                let logical = pending_action_logical.unwrap_or_else(|| node_rc.borrow().get_logical_name());
+                match action {
+                    TreeAction::Quick => {
+                        let np =
+                            rv_core::settings::find_dir_mapping(&logical).unwrap_or(logical.clone());
+                        let rule = rv_core::settings::find_rule(&logical);
+                        let target_rc = Rc::clone(&node_rc);
+                        self.launch_task("Scan ROMs (Quick)", move |tx| {
+                            let _ = tx.send(format!("Scanning {} (Headers Only)...", logical));
+                            let files = Scanner::scan_directory_with_level_and_ignore(
+                                &np,
+                                rv_core::settings::EScanLevel::Level1,
+                                &rule.ignore_files.items,
+                            );
+                            let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
+                            root_scan.children = files;
+                            let _ = tx.send("Integrating files into DB...".to_string());
+                            FileScanning::scan_dir_with_level(
+                                target_rc,
+                                &mut root_scan,
+                                rv_core::settings::EScanLevel::Level1,
+                            );
+                        });
+                    }
+                    TreeAction::Normal => {
+                        let np =
+                            rv_core::settings::find_dir_mapping(&logical).unwrap_or(logical.clone());
+                        let rule = rv_core::settings::find_rule(&logical);
+                        let target_rc = Rc::clone(&node_rc);
+                        self.launch_task("Scan ROMs", move |tx| {
+                            let _ = tx.send(format!("Scanning {}...", logical));
+                            let files = Scanner::scan_directory_with_level_and_ignore(
+                                &np,
+                                rv_core::settings::EScanLevel::Level2,
+                                &rule.ignore_files.items,
+                            );
+                            let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
+                            root_scan.children = files;
+                            let _ = tx.send("Integrating files into DB...".to_string());
+                            FileScanning::scan_dir_with_level(
+                                target_rc,
+                                &mut root_scan,
+                                rv_core::settings::EScanLevel::Level2,
+                            );
+                        });
+                    }
+                    TreeAction::Full => {
+                        let np =
+                            rv_core::settings::find_dir_mapping(&logical).unwrap_or(logical.clone());
+                        let rule = rv_core::settings::find_rule(&logical);
+                        let target_rc = Rc::clone(&node_rc);
+                        self.launch_task("Scan ROMs (Full)", move |tx| {
+                            let _ = tx.send(format!("Scanning {} (Full Re-Scan)...", logical));
+                            let files = Scanner::scan_directory_with_level_and_ignore(
+                                &np,
+                                rv_core::settings::EScanLevel::Level3,
+                                &rule.ignore_files.items,
+                            );
+                            let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
+                            root_scan.children = files;
+                            let _ = tx.send("Integrating files into DB...".to_string());
+                            FileScanning::scan_dir_with_level(
+                                target_rc,
+                                &mut root_scan,
+                                rv_core::settings::EScanLevel::Level3,
+                            );
+                        });
+                    }
+                }
             }
-        }
+
+            if clicked_label {
+                self.select_node(Rc::clone(&node_rc));
+            }
+        });
 
         if let Some(expanded) = expand_descendants {
             Self::set_descendants_expanded(&node_rc, expanded);
-            if !self.ui_working() {
-                self.db_cache_dirty = true;
+            self.tree_rows_dirty = true;
+        }
+
+        if toggle_expanded {
+            let mut collapse_selected_to_self = false;
+            if tree_expanded {
+                if let Some(selected) = &self.selected_node {
+                    collapse_selected_to_self = Self::is_ancestor_or_self(&node_rc, selected);
+                }
+            }
+            let mut n = node_rc.borrow_mut();
+            n.tree_expanded = !n.tree_expanded;
+            self.tree_rows_dirty = true;
+            drop(n);
+            if collapse_selected_to_self {
+                self.select_node(Rc::clone(&node_rc));
             }
         }
 
-        if tree_expanded && has_expandable_children {
-            let start_y = current_y + row_height;
-
-            ui.horizontal(|ui| {
-                ui.add_space(18.0);
-                ui.vertical(|ui| {
-                    let children = node_rc.borrow().children.clone();
-                    for child in children {
-                        self.draw_tree_node(ui, child, np_clone.clone());
-                    }
-                });
-            });
-
-            let end_y = ui.cursor().min.y;
-            let line_x = row_rect.0.min.x + 9.0;
-            let line_rect =
-                egui::Rect::from_min_max(egui::pos2(line_x, start_y), egui::pos2(line_x + 1.0, end_y));
-            if ui.clip_rect().intersects(line_rect) {
-                let stroke = egui::Stroke::new(1.0, egui::Color32::from_gray(100));
-                ui.painter()
-                    .line_segment([egui::pos2(line_x, start_y), egui::pos2(line_x, end_y)], stroke);
-            }
+        if has_multiple_dats {
+            let _ = has_multiple_dats;
         }
     }
+
 }
 
 #[cfg(test)]

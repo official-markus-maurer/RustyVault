@@ -34,41 +34,6 @@ use crate::scanned_file::ScannedFile;
 ///   equivalent or faster throughput without manual thread pool management.
 pub struct Scanner;
 
-fn wildcard_match(pattern: &str, text: &str) -> bool {
-    let p = pattern.as_bytes();
-    let t = text.as_bytes();
-    let mut pi = 0usize;
-    let mut ti = 0usize;
-    let mut star: Option<usize> = None;
-    let mut star_match_ti = 0usize;
-
-    while ti < t.len() {
-        if pi < p.len() && (p[pi] == b'?' || p[pi] == t[ti]) {
-            pi += 1;
-            ti += 1;
-            continue;
-        }
-        if pi < p.len() && p[pi] == b'*' {
-            star = Some(pi);
-            pi += 1;
-            star_match_ti = ti;
-            continue;
-        }
-        if let Some(star_pi) = star {
-            pi = star_pi + 1;
-            star_match_ti += 1;
-            ti = star_match_ti;
-            continue;
-        }
-        return false;
-    }
-
-    while pi < p.len() && p[pi] == b'*' {
-        pi += 1;
-    }
-    pi == p.len()
-}
-
 fn is_ignored_file_name(file_name: &str, patterns: &[String]) -> bool {
     #[cfg(windows)]
     let name = file_name.to_ascii_lowercase();
@@ -76,17 +41,31 @@ fn is_ignored_file_name(file_name: &str, patterns: &[String]) -> bool {
     let name = file_name.to_string();
 
     for pat in patterns {
+        let Some(scan_pat) = crate::patterns::extract_scan_pattern(pat) else {
+            continue;
+        };
+        if scan_pat.is_empty() {
+            continue;
+        }
         #[cfg(windows)]
-        let p = pat.to_ascii_lowercase();
+        {
+            let is_regex = scan_pat.len() >= 6 && scan_pat[..6].eq_ignore_ascii_case("regex:");
+            if is_regex {
+                if crate::patterns::matches_pattern(file_name, scan_pat) {
+                    return true;
+                }
+            } else {
+                let p = scan_pat.to_ascii_lowercase();
+                if crate::patterns::matches_pattern(&name, &p) {
+                    return true;
+                }
+            }
+        }
         #[cfg(not(windows))]
-        let p = pat.to_string();
-
-        if p.contains('*') || p.contains('?') {
-            if wildcard_match(&p, &name) {
+        {
+            if crate::patterns::matches_pattern(&name, scan_pat) {
                 return true;
             }
-        } else if p == name {
-            return true;
         }
     }
     false
@@ -512,6 +491,14 @@ impl Scanner {
         path_str: &str,
         scan_level: crate::settings::EScanLevel,
     ) -> Vec<ScannedFile> {
+        Self::scan_directory_with_level_and_ignore(path_str, scan_level, &[])
+    }
+
+    pub fn scan_directory_with_level_and_ignore(
+        path_str: &str,
+        scan_level: crate::settings::EScanLevel,
+        extra_ignore_patterns: &[String],
+    ) -> Vec<ScannedFile> {
         let path = Path::new(path_str);
         let deep_scan = matches!(
             scan_level,
@@ -520,7 +507,9 @@ impl Scanner {
         
         if let Ok(entries) = fs::read_dir(path) {
             let entry_list: Vec<_> = entries.flatten().collect();
-            let ignore_patterns = Arc::new(crate::settings::get_settings().ignore_files.items.clone());
+            let mut ignore_patterns = crate::settings::get_settings().ignore_files.items.clone();
+            ignore_patterns.extend_from_slice(extra_ignore_patterns);
+            let ignore_patterns = Arc::new(ignore_patterns);
 
             // Parallelize directory entry processing!
             let results: Vec<ScannedFile> = entry_list

@@ -121,9 +121,19 @@ fn collect_fix_entries_by_dat(root: Rc<RefCell<RvFile>>) -> Vec<(Rc<RefCell<RvDa
         .filter_map(|(k, v)| seen_dats.get(&k).map(|d| (Rc::clone(d), v)))
         .collect();
 
-    out.sort_by(|(a, _), (b, _)| dat_display_name(&a.borrow()).to_ascii_lowercase().cmp(&dat_display_name(&b.borrow()).to_ascii_lowercase()));
+    out.sort_by(|(a, _), (b, _)| {
+        let da = dat_display_name(&a.borrow());
+        let db = dat_display_name(&b.borrow());
+        let la = da.to_ascii_lowercase();
+        let lb = db.to_ascii_lowercase();
+        la.cmp(&lb).then(da.cmp(&db))
+    });
     for (_, entries) in out.iter_mut() {
-        entries.sort_by(|a, b| a.file_name.to_ascii_lowercase().cmp(&b.file_name.to_ascii_lowercase()));
+        entries.sort_by(|a, b| {
+            let la = a.file_name.to_ascii_lowercase();
+            let lb = b.file_name.to_ascii_lowercase();
+            la.cmp(&lb).then(a.file_name.cmp(&b.file_name))
+        });
     }
     out
 }
@@ -269,7 +279,11 @@ fn classify_dat(root: Rc<RefCell<RvFile>>, dat_rc: Rc<RefCell<RvDat>>) -> (i32, 
         }
     }
 
-    partial_entries.sort_by(|a, b| a.file_name.to_ascii_lowercase().cmp(&b.file_name.to_ascii_lowercase()));
+    partial_entries.sort_by(|a, b| {
+        let la = a.file_name.to_ascii_lowercase();
+        let lb = b.file_name.to_ascii_lowercase();
+        la.cmp(&lb).then(a.file_name.cmp(&b.file_name))
+    });
     (correct, missing, fixes_needed, partial_entries)
 }
 

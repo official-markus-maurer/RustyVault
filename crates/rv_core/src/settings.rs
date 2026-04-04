@@ -99,6 +99,11 @@ pub struct DatRule {
     #[serde(rename = "CompressionOverrideDAT")]
     pub compression_override_dat: bool,
 
+    #[serde(default = "default_compression_sub")]
+    pub compression_sub: dat_reader::enums::ZipStructure,
+    #[serde(default = "default_true")]
+    pub convert_while_fixing: bool,
+
     /// Target merge format
     pub merge: MergeType,
     /// Target content filter
@@ -148,6 +153,8 @@ impl Default for DatRule {
             dir_path: None,
             compression: dat_reader::enums::FileType::Zip,
             compression_override_dat: false,
+            compression_sub: dat_reader::enums::ZipStructure::ZipTrrnt,
+            convert_while_fixing: true,
             merge: MergeType::Split,
             filter: FilterType::KeepAll,
             header_type: HeaderType::Optional,
@@ -163,6 +170,14 @@ impl Default for DatRule {
             category_order: CategoryOrderWrapper { items: Vec::new() },
         }
     }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_compression_sub() -> dat_reader::enums::ZipStructure {
+    dat_reader::enums::ZipStructure::ZipTrrnt
 }
 
 /// Specific launch options for a tied emulator.
@@ -349,11 +364,130 @@ pub fn get_settings() -> Settings {
     GLOBAL_SETTINGS.with(|s| s.borrow().clone())
 }
 
+fn canonicalize_settings(mut settings: Settings) -> Settings {
+    settings.dat_root = settings.dat_root.trim().to_string();
+    settings.cache_file = settings.cache_file.trim().to_string();
+    settings.fix_dat_out_path = settings
+        .fix_dat_out_path
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    settings.ignore_files.items = settings
+        .ignore_files
+        .items
+        .iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let had_explicit_mappings = settings
+        .dir_mappings
+        .items
+        .iter()
+        .any(|m| !normalize_dir_key(&m.dir_key).is_empty());
+
+    let mut mapping_map: std::collections::BTreeMap<String, DirMapping> = std::collections::BTreeMap::new();
+    for mut m in settings.dir_mappings.items {
+        let key = normalize_dir_key(&m.dir_key);
+        if key.is_empty() {
+            continue;
+        }
+        m.dir_key = key.clone();
+        m.dir_path = m.dir_path.trim().to_string();
+        #[cfg(windows)]
+        let map_key = key.to_ascii_lowercase();
+        #[cfg(not(windows))]
+        let map_key = key.clone();
+        match mapping_map.entry(map_key) {
+            std::collections::btree_map::Entry::Vacant(v) => {
+                v.insert(m);
+            }
+            std::collections::btree_map::Entry::Occupied(_) => {}
+        }
+    }
+
+    let mut rule_map: std::collections::BTreeMap<String, DatRule> = std::collections::BTreeMap::new();
+    for mut r in settings.dat_rules.items {
+        let key = normalize_dir_key(&r.dir_key);
+        if key.is_empty() {
+            continue;
+        }
+        r.dir_key = key.clone();
+        r.dir_path = r
+            .dir_path
+            .as_ref()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        r.ignore_files.items = r
+            .ignore_files
+            .items
+            .iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        #[cfg(windows)]
+        let map_key = key.to_ascii_lowercase();
+        #[cfg(not(windows))]
+        let map_key = key.clone();
+        match rule_map.entry(map_key) {
+            std::collections::btree_map::Entry::Vacant(v) => {
+                v.insert(r);
+            }
+            std::collections::btree_map::Entry::Occupied(_) => {}
+        }
+    }
+
+    if !had_explicit_mappings {
+        for (map_key, rule) in &rule_map {
+            let Some(dir_path) = rule.dir_path.as_ref().filter(|p| !p.trim().is_empty()) else {
+                continue;
+            };
+            match mapping_map.entry(map_key.clone()) {
+                std::collections::btree_map::Entry::Vacant(v) => {
+                    v.insert(DirMapping {
+                        dir_key: rule.dir_key.clone(),
+                        dir_path: dir_path.clone(),
+                    });
+                }
+                std::collections::btree_map::Entry::Occupied(_) => {}
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    let rustyvault_key = "rustyvault".to_string();
+    #[cfg(not(windows))]
+    let rustyvault_key = "RustyVault".to_string();
+    mapping_map.entry(rustyvault_key).or_insert_with(|| DirMapping {
+        dir_key: "RustyVault".to_string(),
+        dir_path: "RomRoot".to_string(),
+    });
+    #[cfg(windows)]
+    let tosort_key = "tosort".to_string();
+    #[cfg(not(windows))]
+    let tosort_key = "ToSort".to_string();
+    mapping_map.entry(tosort_key).or_insert_with(|| DirMapping {
+        dir_key: "ToSort".to_string(),
+        dir_path: "ToSort".to_string(),
+    });
+
+    settings.dir_mappings.items = mapping_map.into_values().collect();
+
+    settings.dat_rules.items = rule_map.into_values().collect();
+    settings.dat_rules.items.sort_by(|a, b| a.dir_key.cmp(&b.dir_key));
+    settings
+}
+
 /// Overwrites the globally active Settings with a new instance.
 pub fn update_settings(new_settings: Settings) {
+    let new_settings = canonicalize_settings(new_settings);
     GLOBAL_SETTINGS.with(|s| {
         *s.borrow_mut() = new_settings;
     });
+    let threads = get_settings().zstd_comp_count.max(0) as usize;
+    compress::set_zstd_threads(threads);
 }
 
 /// Loads `RomVault3cfg.xml` from disk into the global `Settings` thread-local singleton.
@@ -373,8 +507,10 @@ pub fn load_settings_from_file() {
                 }
                 
                 GLOBAL_SETTINGS.with(|s| {
-                    *s.borrow_mut() = settings;
+                    *s.borrow_mut() = canonicalize_settings(settings);
                 });
+                let threads = get_settings().zstd_comp_count.max(0) as usize;
+                compress::set_zstd_threads(threads);
                 return;
             }
         }
@@ -385,12 +521,14 @@ pub fn load_settings_from_file() {
     GLOBAL_SETTINGS.with(|s| {
         *s.borrow_mut() = new_settings.clone();
     });
+    compress::set_zstd_threads(new_settings.zstd_comp_count.max(0) as usize);
     let _ = write_settings_to_file(&new_settings);
 }
 
 /// Writes a `Settings` instance to disk as `RomVault3cfg.xml`.
 pub fn write_settings_to_file(settings: &Settings) -> Result<(), Box<dyn std::error::Error>> {
-    let xml_str = quick_xml::se::to_string(settings)?;
+    let settings = canonicalize_settings(settings.clone());
+    let xml_str = quick_xml::se::to_string(&settings)?;
     
     // Quick-xml doesn't add the XML declaration by default
     let full_xml = format!("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n{}", xml_str);
@@ -568,7 +706,9 @@ pub fn strip_physical_prefix(path: &std::path::Path, base: &std::path::Path) -> 
     /// Updates or inserts a specific physical `DirMapping` by its `dir_key`.
     pub fn set_dir_mapping(mapping: DirMapping) {
         GLOBAL_SETTINGS.with(|s| {
-            let mut settings = s.borrow_mut();
+            let mut settings_ref = s.borrow_mut();
+            let mut settings = settings_ref.clone();
+
             let normalized_dir_key = normalize_dir_key(&mapping.dir_key);
             let mut normalized_mapping = mapping;
             normalized_mapping.dir_key = normalized_dir_key.clone();
@@ -583,13 +723,17 @@ pub fn strip_physical_prefix(path: &std::path::Path, base: &std::path::Path) -> 
             } else {
                 settings.dir_mappings.items.push(normalized_mapping);
             }
+
+            *settings_ref = canonicalize_settings(settings);
         });
     }
 
     /// Updates or inserts a specific DatRule by its `dir_key`.
     pub fn set_rule(rule: DatRule) {
         GLOBAL_SETTINGS.with(|s| {
-            let mut settings = s.borrow_mut();
+            let mut settings_ref = s.borrow_mut();
+            let mut settings = settings_ref.clone();
+
             let normalized_dir_key = normalize_dir_key(&rule.dir_key);
             let mut normalized_rule = rule;
             normalized_rule.dir_key = normalized_dir_key.clone();
@@ -604,6 +748,22 @@ pub fn strip_physical_prefix(path: &std::path::Path, base: &std::path::Path) -> 
             } else {
                 settings.dat_rules.items.push(normalized_rule);
             }
+
+            *settings_ref = canonicalize_settings(settings);
+        });
+    }
+
+    pub fn delete_rule(dir_key: &str) {
+        GLOBAL_SETTINGS.with(|s| {
+            let mut settings_ref = s.borrow_mut();
+            let mut settings = settings_ref.clone();
+            let normalized_dir_key = normalize_dir_key(dir_key);
+
+            settings.dat_rules.items.retain(|r| {
+                !logical_dir_key_eq(&normalize_dir_key(&r.dir_key), &normalized_dir_key)
+            });
+
+            *settings_ref = canonicalize_settings(settings);
         });
     }
 

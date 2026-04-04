@@ -3314,6 +3314,7 @@ dependencies = [
  "memmap2",
  "quick-xml",
  "rayon",
+ "regex",
  "serde",
  "sevenz-rust2",
  "sha1",

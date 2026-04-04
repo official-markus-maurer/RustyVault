@@ -2,6 +2,7 @@
     use crate::find_fixes::FindFixes;
     use crate::settings::{get_settings, set_dir_mapping, update_settings, DirMapping, Settings};
     use dat_reader::enums::FileType;
+    use dat_reader::enums::ZipStructure;
     use std::cell::RefCell;
     use std::rc::Rc;
     use tempfile::tempdir;
@@ -1267,6 +1268,55 @@
     }
 
     #[test]
+    fn test_fix_deletes_unselected_neededforfix_source_after_using_it() {
+        let temp = tempdir().unwrap();
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        root.borrow_mut().name = temp.path().to_string_lossy().to_string();
+
+        let src_file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut f = src_file.borrow_mut();
+            f.name = "dupe.bin".to_string();
+            f.size = Some(4);
+            f.crc = Some(vec![0xAD, 0xF3, 0xF3, 0x63]);
+            f.tree_checked = TreeSelect::UnSelected;
+            f.set_dat_got_status(dat_reader::enums::DatStatus::NotInDat, GotStatus::Got);
+            f.set_rep_status(RepStatus::NeededForFix);
+            f.parent = Some(Rc::downgrade(&root));
+        }
+
+        let dst_file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut f = dst_file.borrow_mut();
+            f.name = "needed.bin".to_string();
+            f.size = Some(4);
+            f.crc = Some(vec![0xAD, 0xF3, 0xF3, 0x63]);
+            f.tree_checked = TreeSelect::Selected;
+            f.set_dat_got_status(dat_reader::enums::DatStatus::InDatCollect, GotStatus::NotGot);
+            f.set_rep_status(RepStatus::CanBeFixed);
+            f.parent = Some(Rc::downgrade(&root));
+        }
+
+        root.borrow_mut().child_add(Rc::clone(&src_file));
+        root.borrow_mut().child_add(Rc::clone(&dst_file));
+
+        let src_path = temp.path().join("dupe.bin");
+        let dst_path = temp.path().join("needed.bin");
+        fs::write(&src_path, b"data").unwrap();
+        assert!(src_path.exists());
+        assert!(!dst_path.exists());
+
+        Fix::perform_fixes(Rc::clone(&root));
+
+        assert_eq!(dst_file.borrow().rep_status(), RepStatus::Correct);
+        assert_eq!(src_file.borrow().rep_status(), RepStatus::Deleted);
+        assert_eq!(src_file.borrow().got_status(), GotStatus::NotGot);
+        assert!(!src_path.exists());
+        assert!(dst_path.exists());
+        assert_eq!(fs::read(&dst_path).unwrap(), b"data");
+    }
+
+    #[test]
     fn test_fix_can_be_fixed_avoids_self_cleanup_when_source_and_target_differ_only_by_case() {
         let temp = tempdir().unwrap();
         let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
@@ -1319,6 +1369,22 @@
         assert_eq!(dst_file.borrow().rep_status(), RepStatus::Correct);
         assert_eq!(src_file.borrow().rep_status(), RepStatus::NeededForFix);
         assert_eq!(total_fixed, 1);
+    }
+
+    #[test]
+    fn test_effective_desired_zip_struct_uses_global_seven_zip_default_when_none() {
+        let original_settings = get_settings();
+        update_settings(Settings {
+            seven_z_default_struct: 2,
+            ..Settings::default()
+        });
+
+        assert_eq!(
+            Fix::effective_desired_zip_struct(FileType::SevenZip, ZipStructure::None),
+            ZipStructure::SevenZipSZSTD
+        );
+
+        update_settings(original_settings);
     }
 
     #[test]

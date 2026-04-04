@@ -167,7 +167,16 @@ impl ZipFile {
         let (extra, header_uncompressed_size, header_compressed_size, _header_local_offset) =
             zip_extra_field::write_zip64_extra(uncompressed_size, compressed_size, file_offset, false);
 
-        let filename_bytes = filename.as_bytes();
+        let is_zip64 = !extra.is_empty();
+
+        let mut general_purpose_bit_flag: u16 = 2;
+        let filename_bytes = if let Some(cp) = codepage_437::encode(filename) {
+            cp
+        } else {
+            general_purpose_bit_flag |= 1 << 11;
+            filename.as_bytes().to_vec()
+        };
+
         if filename_bytes.len() > u16::MAX as usize || extra.len() > u16::MAX as usize {
             return Err(ZipReturn::ZipFileNameToLong);
         }
@@ -185,10 +194,18 @@ impl ZipFile {
             0u32
         };
 
+        let version_needed_to_extract: u16 = if compression_method == 93 {
+            63
+        } else if is_zip64 {
+            45
+        } else {
+            20
+        };
+
         let mut out = Vec::new();
         out.extend_from_slice(&[0x50, 0x4B, 0x03, 0x04]);
-        out.extend_from_slice(&20u16.to_le_bytes());
-        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&version_needed_to_extract.to_le_bytes());
+        out.extend_from_slice(&general_purpose_bit_flag.to_le_bytes());
         out.extend_from_slice(&compression_method.to_le_bytes());
         out.extend_from_slice(&dos_time.to_le_bytes());
         out.extend_from_slice(&dos_date.to_le_bytes());
@@ -197,7 +214,7 @@ impl ZipFile {
         out.extend_from_slice(&header_uncompressed_size.to_le_bytes());
         out.extend_from_slice(&(filename_bytes.len() as u16).to_le_bytes());
         out.extend_from_slice(&(extra.len() as u16).to_le_bytes());
-        out.extend_from_slice(filename_bytes);
+        out.extend_from_slice(&filename_bytes);
         out.extend_from_slice(&extra);
 
         let mut fh = FileHeader::new();
@@ -220,7 +237,24 @@ impl ZipFile {
             self.pending_write = None;
             return ZipReturn::ZipGood;
         }
-        ZipReturn::ZipErrorRollBackFile
+
+        let Some(writer) = self.manual_writer.as_mut() else {
+            return ZipReturn::ZipErrorRollBackFile;
+        };
+        let Some(last) = writer.entries.pop() else {
+            return ZipReturn::ZipErrorRollBackFile;
+        };
+
+        let truncate_to = last.local_header_offset;
+        if writer.file.set_len(truncate_to).is_err() {
+            return ZipReturn::ZipErrorRollBackFile;
+        }
+        if writer.file.seek(SeekFrom::Start(truncate_to)).is_err() {
+            return ZipReturn::ZipErrorRollBackFile;
+        }
+
+        let _ = self.file_headers.pop();
+        ZipReturn::ZipGood
     }
 }
 
@@ -325,6 +359,10 @@ impl ManualZipWriter {
             entries: Vec::new(),
             finalized: false,
         }
+    }
+
+    fn zip64_eocd_required(entries_len: usize, central_directory_offset: u64, central_directory_size: u64) -> bool {
+        entries_len >= 0xFFFF || central_directory_offset >= 0xFFFF_FFFF || central_directory_size >= 0xFFFF_FFFF
     }
 
     fn write_local_entry(
@@ -523,9 +561,8 @@ impl ManualZipWriter {
         }
         let comment_len = comment_bytes.len() as u16;
 
-        let needs_zip64 = self.entries.len() > u16::MAX as usize
-            || central_directory_offset > u32::MAX as u64
-            || central_directory_size > u32::MAX as u64;
+        let needs_zip64 =
+            Self::zip64_eocd_required(self.entries.len(), central_directory_offset, central_directory_size);
 
         if needs_zip64 {
             let zip64_eocd_offset = self
@@ -578,17 +615,17 @@ impl ManualZipWriter {
                 .map_err(|_| ZipReturn::ZipErrorWritingToOutputStream)?;
         }
 
-        let entries_u16 = if self.entries.len() > u16::MAX as usize {
+        let entries_u16 = if self.entries.len() >= 0xFFFF {
             0xFFFFu16
         } else {
             self.entries.len() as u16
         };
-        let cd_size_u32 = if central_directory_size > u32::MAX as u64 {
+        let cd_size_u32 = if central_directory_size >= 0xFFFF_FFFF {
             0xFFFF_FFFFu32
         } else {
             central_directory_size as u32
         };
-        let cd_offset_u32 = if central_directory_offset > u32::MAX as u64 {
+        let cd_offset_u32 = if central_directory_offset >= 0xFFFF_FFFF {
             0xFFFF_FFFFu32
         } else {
             central_directory_offset as u32
@@ -690,14 +727,32 @@ impl ZipFile {
             if entry.filename.contains('\\') {
                 return false;
             }
+
+            let utf8_flag_set = (entry.flags & (1 << 11)) != 0;
+            let is_cp437 = codepage_437::is_code_page_437(&entry.filename);
+            if is_cp437 == utf8_flag_set {
+                return false;
+            }
+
+            match get_zip_date_time_type(zip_struct) {
+                ZipDateType::DateTime => {}
+                ZipDateType::None => {
+                    if entry.dos_time != 0 || entry.dos_date != 0 {
+                        return false;
+                    }
+                }
+                ZipDateType::TrrntZip => {
+                    if entry.dos_time != Self::TORRENTZIP_DOS_TIME || entry.dos_date != Self::TORRENTZIP_DOS_DATE
+                    {
+                        return false;
+                    }
+                }
+                ZipDateType::Undefined => return false,
+            }
         }
 
         for i in 0..entries.len().saturating_sub(1) {
-            if Self::compare_ascii_casefolded_bytes(
-                entries[i].filename.as_bytes(),
-                entries[i + 1].filename.as_bytes(),
-            ) >= 0
-            {
+            if Self::trrntzip_string_compare(&entries[i].filename, &entries[i + 1].filename) >= 0 {
                 return false;
             }
         }
@@ -713,11 +768,7 @@ impl ZipFile {
                     continue;
                 }
 
-                if Self::compare_ascii_casefolded_bytes(
-                    filename0.as_bytes(),
-                    &filename1.as_bytes()[..filename0.len()],
-                ) == 0
-                {
+                if filename1.starts_with(filename0) {
                     return false;
                 }
             }
@@ -788,11 +839,13 @@ impl ZipFile {
         }
     }
 
-    fn compare_ascii_casefolded_bytes(a: &[u8], b: &[u8]) -> i32 {
-        let len = std::cmp::min(a.len(), b.len());
+    fn trrntzip_string_compare(a: &str, b: &str) -> i32 {
+        let ab = a.as_bytes();
+        let bb = b.as_bytes();
+        let len = std::cmp::min(ab.len(), bb.len());
         for i in 0..len {
-            let ca = Self::ascii_lower(a[i]);
-            let cb = Self::ascii_lower(b[i]);
+            let ca = Self::ascii_lower(ab[i]);
+            let cb = Self::ascii_lower(bb[i]);
             if ca < cb {
                 return -1;
             }
@@ -800,17 +853,22 @@ impl ZipFile {
                 return 1;
             }
         }
-        if a.len() < b.len() {
-            -1
-        } else if a.len() > b.len() {
-            1
-        } else {
-            0
+        if ab.len() < bb.len() {
+            return -1;
         }
-    }
-
-    fn trrntzip_string_compare(a: &str, b: &str) -> i32 {
-        Self::compare_ascii_casefolded_bytes(a.as_bytes(), b.as_bytes())
+        if ab.len() > bb.len() {
+            return 1;
+        }
+        // Tie-break with ordinal/byte-wise comparison
+        for i in 0..len {
+            if ab[i] < bb[i] {
+                return -1;
+            }
+            if ab[i] > bb[i] {
+                return 1;
+            }
+        }
+        0
     }
 
     fn decode_filename(file_name_bytes: &[u8], general_purpose_bit_flag: u16) -> Option<String> {
@@ -876,67 +934,107 @@ impl ZipFile {
             || central_directory_size_u32 == 0xFFFF_FFFF
             || total_entries == 0xFFFF;
 
-        let (local_files_count, central_directory_size, central_directory_offset, end_of_central_dir_offset) =
-            if zip64_required && eocd_offset >= 20 {
-                let locator_offset = eocd_offset - 20;
-                if locator_offset + 20 > len {
-                    return None;
-                }
-                if zip_bytes[locator_offset..locator_offset + 4] != [0x50, 0x4B, 0x06, 0x07] {
-                    return None;
-                }
-                let disk = u32::from_le_bytes(zip_bytes[locator_offset + 4..locator_offset + 8].try_into().ok()?);
-                if disk != 0 {
-                    return None;
-                }
-                let zip64_eocd_offset =
-                    u64::from_le_bytes(zip_bytes[locator_offset + 8..locator_offset + 16].try_into().ok()?);
-                let total_disks =
-                    u32::from_le_bytes(zip_bytes[locator_offset + 16..locator_offset + 20].try_into().ok()?);
-                if total_disks > 1 {
-                    return None;
-                }
-                let zip64_eocd_offset_usize = zip64_eocd_offset as usize;
-                if zip64_eocd_offset_usize + 56 > len {
-                    return None;
-                }
-                if zip_bytes[zip64_eocd_offset_usize..zip64_eocd_offset_usize + 4]
-                    != [0x50, 0x4B, 0x06, 0x06]
-                {
-                    return None;
-                }
-                let size_of_record =
-                    u64::from_le_bytes(zip_bytes[zip64_eocd_offset_usize + 4..zip64_eocd_offset_usize + 12].try_into().ok()?);
-                if size_of_record != 44 {
-                    return None;
-                }
-                let version_needed =
-                    u16::from_le_bytes(zip_bytes[zip64_eocd_offset_usize + 14..zip64_eocd_offset_usize + 16].try_into().ok()?);
-                if version_needed != 45 {
-                    return None;
-                }
-                let disk_num =
-                    u32::from_le_bytes(zip_bytes[zip64_eocd_offset_usize + 16..zip64_eocd_offset_usize + 20].try_into().ok()?);
-                let disk_cd =
-                    u32::from_le_bytes(zip_bytes[zip64_eocd_offset_usize + 20..zip64_eocd_offset_usize + 24].try_into().ok()?);
-                if disk_num != 0 || disk_cd != 0 {
-                    return None;
-                }
-                let entries_on_disk =
-                    u64::from_le_bytes(zip_bytes[zip64_eocd_offset_usize + 24..zip64_eocd_offset_usize + 32].try_into().ok()?);
-                let entries_total =
-                    u64::from_le_bytes(zip_bytes[zip64_eocd_offset_usize + 32..zip64_eocd_offset_usize + 40].try_into().ok()?);
-                if entries_on_disk != entries_total {
-                    return None;
-                }
-                let cd_size =
-                    u64::from_le_bytes(zip_bytes[zip64_eocd_offset_usize + 40..zip64_eocd_offset_usize + 48].try_into().ok()?);
-                let cd_offset =
-                    u64::from_le_bytes(zip_bytes[zip64_eocd_offset_usize + 48..zip64_eocd_offset_usize + 56].try_into().ok()?);
+        let zip64_info = if eocd_offset >= 20 {
+            let locator_offset = eocd_offset - 20;
+            if locator_offset + 20 <= len && zip_bytes[locator_offset..locator_offset + 4] == [0x50, 0x4B, 0x06, 0x07] {
+                (|| {
+                    let disk =
+                        u32::from_le_bytes(zip_bytes[locator_offset + 4..locator_offset + 8].try_into().ok()?);
+                    if disk != 0 {
+                        return None;
+                    }
+                    let zip64_eocd_offset =
+                        u64::from_le_bytes(zip_bytes[locator_offset + 8..locator_offset + 16].try_into().ok()?);
+                    let total_disks =
+                        u32::from_le_bytes(zip_bytes[locator_offset + 16..locator_offset + 20].try_into().ok()?);
+                    if total_disks > 1 {
+                        return None;
+                    }
+                    let zip64_eocd_offset_usize = zip64_eocd_offset as usize;
+                    if zip64_eocd_offset_usize + 56 > len {
+                        return None;
+                    }
+                    if zip_bytes[zip64_eocd_offset_usize..zip64_eocd_offset_usize + 4]
+                        != [0x50, 0x4B, 0x06, 0x06]
+                    {
+                        return None;
+                    }
+                    let size_of_record = u64::from_le_bytes(
+                        zip_bytes[zip64_eocd_offset_usize + 4..zip64_eocd_offset_usize + 12]
+                            .try_into()
+                            .ok()?,
+                    );
+                    if size_of_record != 44 {
+                        return None;
+                    }
+                    let version_needed = u16::from_le_bytes(
+                        zip_bytes[zip64_eocd_offset_usize + 14..zip64_eocd_offset_usize + 16]
+                            .try_into()
+                            .ok()?,
+                    );
+                    if version_needed != 45 {
+                        return None;
+                    }
+                    let disk_num = u32::from_le_bytes(
+                        zip_bytes[zip64_eocd_offset_usize + 16..zip64_eocd_offset_usize + 20]
+                            .try_into()
+                            .ok()?,
+                    );
+                    let disk_cd = u32::from_le_bytes(
+                        zip_bytes[zip64_eocd_offset_usize + 20..zip64_eocd_offset_usize + 24]
+                            .try_into()
+                            .ok()?,
+                    );
+                    if disk_num != 0 || disk_cd != 0 {
+                        return None;
+                    }
+                    let entries_on_disk = u64::from_le_bytes(
+                        zip_bytes[zip64_eocd_offset_usize + 24..zip64_eocd_offset_usize + 32]
+                            .try_into()
+                            .ok()?,
+                    );
+                    let entries_total = u64::from_le_bytes(
+                        zip_bytes[zip64_eocd_offset_usize + 32..zip64_eocd_offset_usize + 40]
+                            .try_into()
+                            .ok()?,
+                    );
+                    if entries_on_disk != entries_total {
+                        return None;
+                    }
+                    let cd_size = u64::from_le_bytes(
+                        zip_bytes[zip64_eocd_offset_usize + 40..zip64_eocd_offset_usize + 48]
+                            .try_into()
+                            .ok()?,
+                    );
+                    let cd_offset = u64::from_le_bytes(
+                        zip_bytes[zip64_eocd_offset_usize + 48..zip64_eocd_offset_usize + 56]
+                            .try_into()
+                            .ok()?,
+                    );
 
+                    Some((entries_total, cd_size, cd_offset, zip64_eocd_offset))
+                })()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if zip64_required && zip64_info.is_none() {
+            return None;
+        }
+
+        let (local_files_count, central_directory_size, central_directory_offset, end_of_central_dir_offset) =
+            if let Some((entries_total, cd_size, cd_offset, zip64_eocd_offset)) = zip64_info {
                 (entries_total, cd_size, cd_offset, zip64_eocd_offset)
             } else {
-                (total_entries as u64, central_directory_size_u32 as u64, central_directory_offset_u32 as u64, eocd_offset as u64)
+                (
+                    total_entries as u64,
+                    central_directory_size_u32 as u64,
+                    central_directory_offset_u32 as u64,
+                    eocd_offset as u64,
+                )
             };
 
         let correction = (end_of_central_dir_offset as i128)
@@ -1043,15 +1141,27 @@ impl ZipFile {
             let compression_method = u16::from_le_bytes([zip_bytes[central_offset + 10], zip_bytes[central_offset + 11]]);
             let last_mod_time = u16::from_le_bytes([zip_bytes[central_offset + 12], zip_bytes[central_offset + 13]]);
             let last_mod_date = u16::from_le_bytes([zip_bytes[central_offset + 14], zip_bytes[central_offset + 15]]);
+            let compressed_size_u32 = u32::from_le_bytes([
+                zip_bytes[central_offset + 20],
+                zip_bytes[central_offset + 21],
+                zip_bytes[central_offset + 22],
+                zip_bytes[central_offset + 23],
+            ]);
+            let uncompressed_size_u32 = u32::from_le_bytes([
+                zip_bytes[central_offset + 24],
+                zip_bytes[central_offset + 25],
+                zip_bytes[central_offset + 26],
+                zip_bytes[central_offset + 27],
+            ]);
             let file_name_length = u16::from_le_bytes([zip_bytes[central_offset + 28], zip_bytes[central_offset + 29]]) as usize;
             let extra_length = u16::from_le_bytes([zip_bytes[central_offset + 30], zip_bytes[central_offset + 31]]) as usize;
             let comment_length = u16::from_le_bytes([zip_bytes[central_offset + 32], zip_bytes[central_offset + 33]]) as usize;
-            let relative_offset = u32::from_le_bytes([
+            let relative_offset_u32 = u32::from_le_bytes([
                 zip_bytes[central_offset + 42],
                 zip_bytes[central_offset + 43],
                 zip_bytes[central_offset + 44],
                 zip_bytes[central_offset + 45],
-            ]) as usize;
+            ]);
 
             let name_start = central_offset + 46;
             let name_end = name_start + file_name_length;
@@ -1064,6 +1174,31 @@ impl ZipFile {
                 None => return false,
             };
 
+            let extra_end = name_end + extra_length;
+            if extra_end > zip_bytes.len() {
+                return false;
+            }
+            let extra_bytes = &zip_bytes[name_end..extra_end];
+            let extra_info = zip_extra_field::parse_extra_fields(
+                extra_bytes,
+                true,
+                uncompressed_size_u32,
+                compressed_size_u32,
+                relative_offset_u32,
+            );
+            if extra_info.extra_data_found {
+                return false;
+            }
+
+            let relative_offset_u64 = if relative_offset_u32 == 0xFFFF_FFFF {
+                let Some(v) = extra_info.local_header_offset else {
+                    return false;
+                };
+                v
+            } else {
+                relative_offset_u32 as u64
+            };
+
             if name.contains('\\') {
                 return false;
             }
@@ -1071,10 +1206,6 @@ impl ZipFile {
             let utf8_flag_set = (flags & (1 << 11)) != 0;
             let is_cp437 = codepage_437::is_code_page_437(&name);
             if is_cp437 == utf8_flag_set {
-                return false;
-            }
-
-            if extra_length != 0 {
                 return false;
             }
 
@@ -1100,6 +1231,10 @@ impl ZipFile {
                 ZipDateType::Undefined => return false,
             }
 
+            let relative_offset = match usize::try_from(relative_offset_u64) {
+                Ok(v) => v,
+                Err(_) => return false,
+            };
             if relative_offset + 30 > zip_bytes.len() {
                 return false;
             }
@@ -1114,15 +1249,44 @@ impl ZipFile {
             let local_name_length = u16::from_le_bytes([zip_bytes[relative_offset + 26], zip_bytes[relative_offset + 27]]) as usize;
             let local_extra_length = u16::from_le_bytes([zip_bytes[relative_offset + 28], zip_bytes[relative_offset + 29]]) as usize;
 
-            if local_extra_length != 0 {
-                return false;
-            }
-
             if local_name_length != file_name_length {
                 return false;
             }
 
             if local_flags != flags || local_compression != compression_method || local_time != last_mod_time || local_date != last_mod_date {
+                return false;
+            }
+
+            let local_name_start = relative_offset + 30;
+            let local_name_end = local_name_start + local_name_length;
+            if local_name_end > zip_bytes.len() {
+                return false;
+            }
+            let local_extra_end = local_name_end + local_extra_length;
+            if local_extra_end > zip_bytes.len() {
+                return false;
+            }
+            let local_extra_bytes = &zip_bytes[local_name_end..local_extra_end];
+            let local_compressed_size_u32 = u32::from_le_bytes([
+                zip_bytes[relative_offset + 18],
+                zip_bytes[relative_offset + 19],
+                zip_bytes[relative_offset + 20],
+                zip_bytes[relative_offset + 21],
+            ]);
+            let local_uncompressed_size_u32 = u32::from_le_bytes([
+                zip_bytes[relative_offset + 22],
+                zip_bytes[relative_offset + 23],
+                zip_bytes[relative_offset + 24],
+                zip_bytes[relative_offset + 25],
+            ]);
+            let local_extra_info = zip_extra_field::parse_extra_fields(
+                local_extra_bytes,
+                false,
+                local_uncompressed_size_u32,
+                local_compressed_size_u32,
+                0,
+            );
+            if local_extra_info.extra_data_found {
                 return false;
             }
 
@@ -1179,14 +1343,11 @@ impl ZipFile {
                     return false;
                 };
 
-                if dir_name.ends_with('/') && next_name.len() > dir_name.len() {
-                    let dir_bytes = dir_name.as_bytes();
-                    let next_bytes = next_name.as_bytes();
-                    if next_bytes.len() >= dir_bytes.len()
-                        && Self::compare_ascii_casefolded_bytes(dir_bytes, &next_bytes[..dir_bytes.len()]) == 0
-                    {
-                        return false;
-                    }
+                if dir_name.ends_with('/')
+                    && next_name.len() > dir_name.len()
+                    && next_name.starts_with(&dir_name)
+                {
+                    return false;
                 }
 
                 central_offset = next_offset;
@@ -1925,6 +2086,10 @@ impl ICompress for ZipFile {
         Ok((Box::new(std::io::Cursor::new(buffer)), out_size))
     }
 
+    fn zip_file_open_read_stream_ex(&mut self, index: usize, raw: bool) -> Result<(Box<dyn Read>, u64, u16), ZipReturn> {
+        ZipFile::zip_file_open_read_stream_ex(self, index, raw)
+    }
+
     fn zip_file_close_read_stream(&mut self) -> ZipReturn {
         // Nothing to do since we read to memory
         ZipReturn::ZipGood
@@ -2013,18 +2178,16 @@ impl ICompress for ZipFile {
 
         if matches!(self.zip_struct, ZipStructure::ZipTrrnt | ZipStructure::ZipTDC | ZipStructure::ZipZSTD) {
             if let Some(last) = self.file_headers.last() {
-                if Self::compare_ascii_casefolded_bytes(last.filename.as_bytes(), filename.as_bytes()) > 0 {
+                if Self::trrntzip_string_compare(&last.filename, filename) > 0 {
                     return Err(ZipReturn::ZipTrrntzipIncorrectFileOrder);
                 }
 
-                if matches!(self.zip_struct, ZipStructure::ZipTrrnt | ZipStructure::ZipZSTD) && last.filename.ends_with('/') {
-                    let dir_bytes = last.filename.as_bytes();
-                    let next_bytes = filename.as_bytes();
-                    if next_bytes.len() > dir_bytes.len()
-                        && Self::compare_ascii_casefolded_bytes(dir_bytes, &next_bytes[..dir_bytes.len()]) == 0
-                    {
-                        return Err(ZipReturn::ZipTrrntzipIncorrectDirectoryAddedToZip);
-                    }
+                if matches!(self.zip_struct, ZipStructure::ZipTrrnt | ZipStructure::ZipZSTD)
+                    && last.filename.ends_with('/')
+                    && filename.len() > last.filename.len()
+                    && filename.starts_with(&last.filename)
+                {
+                    return Err(ZipReturn::ZipTrrntzipIncorrectDirectoryAddedToZip);
                 }
             }
         }
@@ -2054,6 +2217,10 @@ impl ICompress for ZipFile {
         let buffer = pending_write.buffer.borrow();
         let mut uncompressed = Vec::new();
         let mut compressed = Vec::new();
+
+        if pending_write.raw && _crc32.len() != 4 {
+            return ZipReturn::ZipErrorWritingToOutputStream;
+        }
 
         let crc_be = if _crc32.len() == 4 {
             _crc32.to_vec()
@@ -2090,13 +2257,28 @@ impl ICompress for ZipFile {
                     };
                 }
                 93 => {
-                    compressed = match zstd::stream::encode_all(&uncompressed[..], 19) {
+                    let threads = crate::zstd_config::zstd_threads();
+                    let mut encoder = match zstd::stream::write::Encoder::new(Vec::new(), 19) {
+                        Ok(e) => e,
+                        Err(_) => return ZipReturn::ZipErrorWritingToOutputStream,
+                    };
+                    if threads > 0 {
+                        let _ = encoder.multithread(threads as u32);
+                    }
+                    if encoder.write_all(&uncompressed).is_err() {
+                        return ZipReturn::ZipErrorWritingToOutputStream;
+                    }
+                    compressed = match encoder.finish() {
                         Ok(v) => v,
                         Err(_) => return ZipReturn::ZipErrorWritingToOutputStream,
                     };
                 }
                 _ => return ZipReturn::ZipUnsupportedCompression,
             }
+        }
+
+        if compressed.is_empty() && uncompressed_size != 0 {
+            return ZipReturn::ZipErrorWritingToOutputStream;
         }
 
         let entry = match writer.write_local_entry(

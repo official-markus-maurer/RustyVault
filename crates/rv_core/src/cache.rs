@@ -1,6 +1,5 @@
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter};
-use std::path::Path;
 use std::rc::{Rc, Weak};
 use std::cell::RefCell;
 use crate::rv_file::RvFile;
@@ -28,13 +27,54 @@ impl Cache {
     const BACKUP_FILE: &'static str = "RustyVault3_3.CacheBackup";
     const TMP_FILE: &'static str = "RustyVault3_3.Cache_tmp";
 
+    pub fn cache_path() -> std::path::PathBuf {
+        let (cache_path, _backup_path, _tmp_path) = Self::cache_paths();
+        cache_path
+    }
+
+    fn cache_paths() -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+        let settings = crate::settings::get_settings();
+        let raw = settings.cache_file.trim();
+
+        let mut cache_path = if raw.is_empty() {
+            std::path::PathBuf::from(Self::CACHE_FILE)
+        } else if raw.ends_with(['\\', '/']) {
+            std::path::PathBuf::from(raw).join(Self::CACHE_FILE)
+        } else {
+            std::path::PathBuf::from(raw)
+        };
+
+        if cache_path.file_name().is_none() {
+            cache_path = cache_path.join(Self::CACHE_FILE);
+        }
+
+        if raw.is_empty() {
+            return (
+                std::path::PathBuf::from(Self::CACHE_FILE),
+                std::path::PathBuf::from(Self::BACKUP_FILE),
+                std::path::PathBuf::from(Self::TMP_FILE),
+            );
+        }
+
+        let parent = cache_path.parent().unwrap_or_else(|| std::path::Path::new(""));
+        let file_name = cache_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(Self::CACHE_FILE);
+
+        let backup = parent.join(format!("{file_name}Backup"));
+        let tmp = parent.join(format!("{file_name}_tmp"));
+        (cache_path, backup, tmp)
+    }
+
     /// Reads the binary cache file from disk and deserializes it into the `dir_root` tree.
     /// 
     /// If memory mapping (`mmap`) is available, it performs a zero-copy read. Otherwise,
     /// it falls back to a standard buffered reader. After deserialization, it invokes
     /// `relink_parents` to reconstruct the `Weak` pointer tree hierarchy that `serde` skips.
     pub fn read_cache() -> Option<Rc<RefCell<RvFile>>> {
-        let path = Path::new(Self::CACHE_FILE);
+        let (cache_path, _backup_path, _tmp_path) = Self::cache_paths();
+        let path = cache_path.as_path();
         if !path.exists() {
             return None;
         }
@@ -96,11 +136,18 @@ impl Cache {
     pub fn write_cache(root: Rc<RefCell<RvFile>>) {
         Self::prepare_for_serialize(Rc::clone(&root));
         
-        if Path::new(Self::TMP_FILE).exists() {
-            let _ = fs::remove_file(Self::TMP_FILE);
+        let (cache_path, backup_path, tmp_path) = Self::cache_paths();
+        if tmp_path.exists() {
+            let _ = fs::remove_file(&tmp_path);
         }
 
-        let file = match File::create(Self::TMP_FILE) {
+        if let Some(parent) = cache_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                let _ = fs::create_dir_all(parent);
+            }
+        }
+
+        let file = match File::create(&tmp_path) {
             Ok(f) => f,
             Err(e) => {
                 println!("Error creating temp cache file: {:?}", e);
@@ -117,14 +164,14 @@ impl Cache {
             return;
         }
 
-        if Path::new(Self::CACHE_FILE).exists() {
-            if Path::new(Self::BACKUP_FILE).exists() {
-                let _ = fs::remove_file(Self::BACKUP_FILE);
+        if cache_path.exists() {
+            if backup_path.exists() {
+                let _ = fs::remove_file(&backup_path);
             }
-            let _ = fs::rename(Self::CACHE_FILE, Self::BACKUP_FILE);
+            let _ = fs::rename(&cache_path, &backup_path);
         }
 
-        let _ = fs::rename(Self::TMP_FILE, Self::CACHE_FILE);
+        let _ = fs::rename(&tmp_path, &cache_path);
     }
 
     fn prepare_for_serialize(root: Rc<RefCell<RvFile>>) {

@@ -1361,6 +1361,38 @@
     }
 
     #[test]
+    fn test_find_fixes_deletes_unused_notindat_duplicate_when_romroot_already_has_match() {
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+
+        let romroot_file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut f = romroot_file.borrow_mut();
+            f.name = "owned.bin".to_string();
+            f.size = Some(1024);
+            f.crc = Some(vec![0x10, 0x20, 0x30, 0x40]);
+            f.set_dat_got_status(DatStatus::InDatCollect, GotStatus::Got);
+            f.tree_checked = TreeSelect::Selected;
+        }
+        root.borrow_mut().child_add(Rc::clone(&romroot_file));
+
+        let notindat_file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut f = notindat_file.borrow_mut();
+            f.name = "owned_copy.bin".to_string();
+            f.size = Some(1024);
+            f.crc = Some(vec![0x10, 0x20, 0x30, 0x40]);
+            f.set_dat_got_status(DatStatus::NotInDat, GotStatus::Got);
+            f.tree_checked = TreeSelect::Selected;
+        }
+        root.borrow_mut().child_add(Rc::clone(&notindat_file));
+
+        FindFixes::scan_files(Rc::clone(&root));
+
+        assert_eq!(romroot_file.borrow().rep_status(), RepStatus::Correct);
+        assert_eq!(notindat_file.borrow().rep_status(), RepStatus::Delete);
+    }
+
+    #[test]
     fn test_find_fixes_deletes_unused_tosort_file_when_romroot_archive_member_already_has_match() {
         let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
 

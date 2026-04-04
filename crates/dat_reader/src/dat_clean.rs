@@ -1035,7 +1035,9 @@ impl DatClean {
             if t != std::cmp::Ordering::Equal {
                 return t;
             }
-            a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase())
+            let la = a.name.to_ascii_lowercase();
+            let lb = b.name.to_ascii_lowercase();
+            la.cmp(&lb).then(a.name.cmp(&b.name))
         });
 
         let mut last_name = String::new();

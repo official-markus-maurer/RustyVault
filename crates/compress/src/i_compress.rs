@@ -25,6 +25,10 @@ pub trait ICompress {
     fn zip_file_close(&mut self);
     
     fn zip_file_open_read_stream(&mut self, index: usize) -> Result<(Box<dyn Read>, u64), ZipReturn>;
+
+    fn zip_file_open_read_stream_ex(&mut self, _index: usize, _raw: bool) -> Result<(Box<dyn Read>, u64, u16), ZipReturn> {
+        Err(ZipReturn::ZipCannotFastOpen)
+    }
     
     fn zip_file_close_read_stream(&mut self) -> ZipReturn;
     
