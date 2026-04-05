@@ -461,10 +461,10 @@ fn test_fix_file_process_queue() {
     }
 
     // Setup maps with source file
-    let mut crc_map = HashMap::new();
-    crc_map.insert((1024, vec![0xAA, 0xBB, 0xCC, 0xDD]), Rc::clone(&src_file));
-    let sha1_map = HashMap::new();
-    let md5_map = HashMap::new();
+    let mut crc_map: HashMap<crate::hash_keys::CrcKey, Rc<RefCell<RvFile>>> = HashMap::new();
+    crc_map.insert((1024, [0xAA, 0xBB, 0xCC, 0xDD]), Rc::clone(&src_file));
+    let sha1_map: HashMap<crate::hash_keys::Sha1Key, Rc<RefCell<RvFile>>> = HashMap::new();
+    let md5_map: HashMap<crate::hash_keys::Md5Key, Rc<RefCell<RvFile>>> = HashMap::new();
 
     // Setup destination file that needs fix
     let dst_file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
@@ -516,22 +516,34 @@ fn test_fix_file_process_queue_matches_alt_sha1_source() {
         let mut f = src_file.borrow_mut();
         f.name = "source.zip".to_string();
         f.size = Some(1024);
-        f.sha1 = Some(vec![0x11, 0x22, 0x33, 0x44]);
+        f.sha1 = Some(vec![
+            0x11, 0x22, 0x33, 0x44, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
         f.set_dat_got_status(dat_reader::enums::DatStatus::NotInDat, GotStatus::Got);
         f.set_rep_status(RepStatus::NeededForFix);
     }
 
-    let crc_map = HashMap::new();
-    let mut sha1_map = HashMap::new();
-    sha1_map.insert((1024, vec![0x11, 0x22, 0x33, 0x44]), Rc::clone(&src_file));
-    let md5_map = HashMap::new();
+    let crc_map: HashMap<crate::hash_keys::CrcKey, Rc<RefCell<RvFile>>> = HashMap::new();
+    let mut sha1_map: HashMap<crate::hash_keys::Sha1Key, Rc<RefCell<RvFile>>> = HashMap::new();
+    sha1_map.insert(
+        (
+            1024,
+            [
+                0x11, 0x22, 0x33, 0x44, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ],
+        ),
+        Rc::clone(&src_file),
+    );
+    let md5_map: HashMap<crate::hash_keys::Md5Key, Rc<RefCell<RvFile>>> = HashMap::new();
 
     let dst_file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
     {
         let mut f = dst_file.borrow_mut();
         f.name = "dest.zip".to_string();
         f.alt_size = Some(1024);
-        f.alt_sha1 = Some(vec![0x11, 0x22, 0x33, 0x44]);
+        f.alt_sha1 = Some(vec![
+            0x11, 0x22, 0x33, 0x44, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
         f.set_dat_got_status(
             dat_reader::enums::DatStatus::InDatCollect,
             GotStatus::NotGot,
@@ -564,7 +576,9 @@ fn test_find_source_file_matches_primary_sha1_using_alt_size() {
         let mut f = source_file.borrow_mut();
         f.name = "source.bin".to_string();
         f.size = Some(1024);
-        f.sha1 = Some(vec![0x12, 0x34, 0x56, 0x78]);
+        f.sha1 = Some(vec![
+            0x12, 0x34, 0x56, 0x78, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
     }
 
     let target_file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
@@ -572,16 +586,23 @@ fn test_find_source_file_matches_primary_sha1_using_alt_size() {
         let mut f = target_file.borrow_mut();
         f.name = "target.bin".to_string();
         f.alt_size = Some(1024);
-        f.sha1 = Some(vec![0x12, 0x34, 0x56, 0x78]);
+        f.sha1 = Some(vec![
+            0x12, 0x34, 0x56, 0x78, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
     }
 
-    let crc_map = HashMap::new();
-    let mut sha1_map = HashMap::new();
+    let crc_map: HashMap<crate::hash_keys::CrcKey, Rc<RefCell<RvFile>>> = HashMap::new();
+    let mut sha1_map: HashMap<crate::hash_keys::Sha1Key, Rc<RefCell<RvFile>>> = HashMap::new();
     sha1_map.insert(
-        (1024, vec![0x12, 0x34, 0x56, 0x78]),
+        (
+            1024,
+            [
+                0x12, 0x34, 0x56, 0x78, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ],
+        ),
         Rc::clone(&source_file),
     );
-    let md5_map = HashMap::new();
+    let md5_map: HashMap<crate::hash_keys::Md5Key, Rc<RefCell<RvFile>>> = HashMap::new();
 
     let found = Fix::find_source_file(&target_file.borrow(), &crc_map, &sha1_map, &md5_map);
     assert!(found.is_some());
@@ -604,10 +625,10 @@ fn test_fix_file_process_queue_preserves_merged_source_as_not_collected_after_de
         f.set_rep_status(RepStatus::NeededForFix);
     }
 
-    let mut crc_map = HashMap::new();
-    crc_map.insert((1024, vec![0x0A, 0x1B, 0x2C, 0x3D]), Rc::clone(&src_file));
-    let sha1_map = HashMap::new();
-    let md5_map = HashMap::new();
+    let mut crc_map: HashMap<crate::hash_keys::CrcKey, Rc<RefCell<RvFile>>> = HashMap::new();
+    crc_map.insert((1024, [0x0A, 0x1B, 0x2C, 0x3D]), Rc::clone(&src_file));
+    let sha1_map: HashMap<crate::hash_keys::Sha1Key, Rc<RefCell<RvFile>>> = HashMap::new();
+    let md5_map: HashMap<crate::hash_keys::Md5Key, Rc<RefCell<RvFile>>> = HashMap::new();
 
     let dst_file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
     {
@@ -664,10 +685,10 @@ fn test_fix_file_process_queue_preserves_mia_and_sets_got_status() {
         f.set_rep_status(RepStatus::NeededForFix);
     }
 
-    let mut crc_map = HashMap::new();
-    crc_map.insert((1024, vec![0xAB, 0xBC, 0xCD, 0xDE]), Rc::clone(&src_file));
-    let sha1_map = HashMap::new();
-    let md5_map = HashMap::new();
+    let mut crc_map: HashMap<crate::hash_keys::CrcKey, Rc<RefCell<RvFile>>> = HashMap::new();
+    crc_map.insert((1024, [0xAB, 0xBC, 0xCD, 0xDE]), Rc::clone(&src_file));
+    let sha1_map: HashMap<crate::hash_keys::Sha1Key, Rc<RefCell<RvFile>>> = HashMap::new();
+    let md5_map: HashMap<crate::hash_keys::Md5Key, Rc<RefCell<RvFile>>> = HashMap::new();
 
     let dst_file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
     {
@@ -1428,7 +1449,7 @@ fn test_fix_uses_locked_source_without_deleting_it() {
     }
 
     let mut crc_map = HashMap::new();
-    crc_map.insert((1024, vec![0xAA, 0xBB, 0xCC, 0xDD]), Rc::clone(&src_file));
+    crc_map.insert((1024, [0xAA, 0xBB, 0xCC, 0xDD]), Rc::clone(&src_file));
     let sha1_map = HashMap::new();
     let md5_map = HashMap::new();
 
@@ -1558,7 +1579,7 @@ fn test_fix_can_be_fixed_avoids_self_cleanup_when_source_and_target_differ_only_
     let mut queue = Vec::new();
     let mut total_fixed = 0;
     let mut crc_map = HashMap::new();
-    crc_map.insert((4, vec![0xAD, 0xF3, 0xF3, 0x63]), Rc::clone(&src_file));
+    crc_map.insert((4, [0xAD, 0xF3, 0xF3, 0x63]), Rc::clone(&src_file));
     let sha1_map = HashMap::new();
     let md5_map = HashMap::new();
 
@@ -1928,7 +1949,7 @@ fn test_fix_zip_move_moves_whole_archive() {
     let mut queue = Vec::new();
     let mut total_fixed = 0;
     let mut crc_map = HashMap::new();
-    crc_map.insert((4, vec![0x12, 0x34, 0x56, 0x78]), Rc::clone(&source_child));
+    crc_map.insert((4, [0x12, 0x34, 0x56, 0x78]), Rc::clone(&source_child));
     let sha1_map = HashMap::new();
     let md5_map = HashMap::new();
 
@@ -2027,7 +2048,7 @@ fn test_fix_zip_move_does_not_treat_case_only_archive_path_difference_as_distinc
     let mut queue = Vec::new();
     let mut total_fixed = 0;
     let mut crc_map = HashMap::new();
-    crc_map.insert((4, vec![0x12, 0x34, 0x56, 0x78]), Rc::clone(&source_child));
+    crc_map.insert((4, [0x12, 0x34, 0x56, 0x78]), Rc::clone(&source_child));
     let sha1_map = HashMap::new();
     let md5_map = HashMap::new();
 
@@ -2119,7 +2140,7 @@ fn test_fix_zip_move_moves_whole_archive_for_indatmerged_target_entry() {
     let mut queue = Vec::new();
     let mut total_fixed = 0;
     let mut crc_map = HashMap::new();
-    crc_map.insert((4, vec![0x12, 0x34, 0x56, 0x78]), Rc::clone(&source_child));
+    crc_map.insert((4, [0x12, 0x34, 0x56, 0x78]), Rc::clone(&source_child));
     let sha1_map = HashMap::new();
     let md5_map = HashMap::new();
 
@@ -2226,7 +2247,7 @@ fn test_fix_zip_move_moves_whole_archive_with_nested_directory_members() {
     let mut queue = Vec::new();
     let mut total_fixed = 0;
     let mut crc_map = HashMap::new();
-    crc_map.insert((4, vec![0x12, 0x34, 0x56, 0x78]), Rc::clone(&source_child));
+    crc_map.insert((4, [0x12, 0x34, 0x56, 0x78]), Rc::clone(&source_child));
     let sha1_map = HashMap::new();
     let md5_map = HashMap::new();
 
@@ -2314,7 +2335,7 @@ fn test_fix_zip_move_copies_locked_source_archive() {
     let mut queue = Vec::new();
     let mut total_fixed = 0;
     let mut crc_map = HashMap::new();
-    crc_map.insert((4, vec![0x12, 0x34, 0x56, 0x78]), Rc::clone(&source_child));
+    crc_map.insert((4, [0x12, 0x34, 0x56, 0x78]), Rc::clone(&source_child));
     let sha1_map = HashMap::new();
     let md5_map = HashMap::new();
 
@@ -2424,7 +2445,7 @@ fn test_fix_zip_partial_rebuild_preserves_existing_and_adds_missing() {
     let mut queue = Vec::new();
     let mut total_fixed = 0;
     let mut crc_map = HashMap::new();
-    crc_map.insert((3, vec![0x00, 0x00, 0x00, 0x03]), Rc::clone(&source_file));
+    crc_map.insert((3, [0x00, 0x00, 0x00, 0x03]), Rc::clone(&source_file));
     let sha1_map = HashMap::new();
     let md5_map = HashMap::new();
 
@@ -2535,7 +2556,7 @@ fn test_fix_zip_partial_rebuild_canbefixedmia_survives_reset() {
     let mut queue = Vec::new();
     let mut total_fixed = 0;
     let mut crc_map = HashMap::new();
-    crc_map.insert((3, vec![0x00, 0x00, 0x00, 0x03]), Rc::clone(&source_file));
+    crc_map.insert((3, [0x00, 0x00, 0x00, 0x03]), Rc::clone(&source_file));
     let sha1_map = HashMap::new();
     let md5_map = HashMap::new();
 
@@ -2573,7 +2594,9 @@ fn test_fix_zip_partial_rebuild_matches_alt_sha1_source() {
         let mut file = source_file.borrow_mut();
         file.name = "missing.bin".to_string();
         file.size = Some(3);
-        file.sha1 = Some(vec![0x01, 0x23, 0x45, 0x67]);
+        file.sha1 = Some(vec![
+            0x01, 0x23, 0x45, 0x67, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
         file.tree_checked = TreeSelect::Selected;
         file.set_rep_status(RepStatus::NeededForFix);
         file.parent = Some(Rc::downgrade(&source_dir));
@@ -2593,7 +2616,9 @@ fn test_fix_zip_partial_rebuild_matches_alt_sha1_source() {
         let mut file = missing_child.borrow_mut();
         file.name = "missing.bin".to_string();
         file.alt_size = Some(3);
-        file.alt_sha1 = Some(vec![0x01, 0x23, 0x45, 0x67]);
+        file.alt_sha1 = Some(vec![
+            0x01, 0x23, 0x45, 0x67, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
         file.tree_checked = TreeSelect::Selected;
         file.set_dat_got_status(
             dat_reader::enums::DatStatus::InDatCollect,
@@ -2623,7 +2648,15 @@ fn test_fix_zip_partial_rebuild_matches_alt_sha1_source() {
     let mut total_fixed = 0;
     let crc_map = HashMap::new();
     let mut sha1_map = HashMap::new();
-    sha1_map.insert((3, vec![0x01, 0x23, 0x45, 0x67]), Rc::clone(&source_file));
+    sha1_map.insert(
+        (
+            3,
+            [
+                0x01, 0x23, 0x45, 0x67, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ],
+        ),
+        Rc::clone(&source_file),
+    );
     let md5_map = HashMap::new();
 
     assert!(Fix::rebuild_zip_archive(
@@ -2680,7 +2713,9 @@ fn test_fix_sevenzip_partial_rebuild_matches_alt_md5_source() {
         let mut file = source_file.borrow_mut();
         file.name = "missing.bin".to_string();
         file.size = Some(3);
-        file.md5 = Some(vec![0x01, 0x23, 0x45, 0x67]);
+        file.md5 = Some(vec![
+            0x01, 0x23, 0x45, 0x67, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
         file.tree_checked = TreeSelect::Selected;
         file.set_rep_status(RepStatus::NeededForFix);
         file.parent = Some(Rc::downgrade(&source_dir));
@@ -2701,7 +2736,9 @@ fn test_fix_sevenzip_partial_rebuild_matches_alt_md5_source() {
         let mut file = missing_child.borrow_mut();
         file.name = "missing.bin".to_string();
         file.alt_size = Some(3);
-        file.alt_md5 = Some(vec![0x01, 0x23, 0x45, 0x67]);
+        file.alt_md5 = Some(vec![
+            0x01, 0x23, 0x45, 0x67, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
         file.tree_checked = TreeSelect::Selected;
         file.set_dat_got_status(
             dat_reader::enums::DatStatus::InDatCollect,
@@ -2730,7 +2767,13 @@ fn test_fix_sevenzip_partial_rebuild_matches_alt_md5_source() {
     let crc_map = HashMap::new();
     let sha1_map = HashMap::new();
     let mut md5_map = HashMap::new();
-    md5_map.insert((3, vec![0x01, 0x23, 0x45, 0x67]), Rc::clone(&source_file));
+    md5_map.insert(
+        (
+            3,
+            [0x01, 0x23, 0x45, 0x67, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        ),
+        Rc::clone(&source_file),
+    );
 
     assert!(Fix::rebuild_seven_zip_archive(
         Rc::clone(&target_archive),
@@ -2780,7 +2823,9 @@ fn test_fix_zip_partial_rebuild_matches_alt_md5_source() {
         let mut file = source_file.borrow_mut();
         file.name = "missing.bin".to_string();
         file.size = Some(3);
-        file.md5 = Some(vec![0x10, 0x20, 0x30, 0x40]);
+        file.md5 = Some(vec![
+            0x10, 0x20, 0x30, 0x40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
         file.tree_checked = TreeSelect::Selected;
         file.set_rep_status(RepStatus::NeededForFix);
         file.parent = Some(Rc::downgrade(&source_dir));
@@ -2800,7 +2845,9 @@ fn test_fix_zip_partial_rebuild_matches_alt_md5_source() {
         let mut file = missing_child.borrow_mut();
         file.name = "missing.bin".to_string();
         file.alt_size = Some(3);
-        file.alt_md5 = Some(vec![0x10, 0x20, 0x30, 0x40]);
+        file.alt_md5 = Some(vec![
+            0x10, 0x20, 0x30, 0x40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
         file.tree_checked = TreeSelect::Selected;
         file.set_dat_got_status(
             dat_reader::enums::DatStatus::InDatCollect,
@@ -2831,7 +2878,13 @@ fn test_fix_zip_partial_rebuild_matches_alt_md5_source() {
     let crc_map = HashMap::new();
     let sha1_map = HashMap::new();
     let mut md5_map = HashMap::new();
-    md5_map.insert((3, vec![0x10, 0x20, 0x30, 0x40]), Rc::clone(&source_file));
+    md5_map.insert(
+        (
+            3,
+            [0x10, 0x20, 0x30, 0x40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        ),
+        Rc::clone(&source_file),
+    );
 
     assert!(Fix::rebuild_zip_archive(
         Rc::clone(&target_archive),
@@ -2887,7 +2940,9 @@ fn test_fix_sevenzip_partial_rebuild_matches_alt_sha1_source() {
         let mut file = source_file.borrow_mut();
         file.name = "missing.bin".to_string();
         file.size = Some(3);
-        file.sha1 = Some(vec![0x10, 0x20, 0x30, 0x40]);
+        file.sha1 = Some(vec![
+            0x10, 0x20, 0x30, 0x40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
         file.tree_checked = TreeSelect::Selected;
         file.set_rep_status(RepStatus::NeededForFix);
         file.parent = Some(Rc::downgrade(&source_dir));
@@ -2908,7 +2963,9 @@ fn test_fix_sevenzip_partial_rebuild_matches_alt_sha1_source() {
         let mut file = missing_child.borrow_mut();
         file.name = "missing.bin".to_string();
         file.alt_size = Some(3);
-        file.alt_sha1 = Some(vec![0x10, 0x20, 0x30, 0x40]);
+        file.alt_sha1 = Some(vec![
+            0x10, 0x20, 0x30, 0x40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
         file.tree_checked = TreeSelect::Selected;
         file.set_dat_got_status(
             dat_reader::enums::DatStatus::InDatCollect,
@@ -2936,7 +2993,15 @@ fn test_fix_sevenzip_partial_rebuild_matches_alt_sha1_source() {
     let mut total_fixed = 0;
     let crc_map = HashMap::new();
     let mut sha1_map = HashMap::new();
-    sha1_map.insert((3, vec![0x10, 0x20, 0x30, 0x40]), Rc::clone(&source_file));
+    sha1_map.insert(
+        (
+            3,
+            [
+                0x10, 0x20, 0x30, 0x40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ],
+        ),
+        Rc::clone(&source_file),
+    );
     let md5_map = HashMap::new();
 
     assert!(Fix::rebuild_seven_zip_archive(
@@ -2987,7 +3052,9 @@ fn test_fix_zip_partial_rebuild_matches_primary_md5_against_source_alt_md5() {
         let mut file = source_file.borrow_mut();
         file.name = "missing.bin".to_string();
         file.alt_size = Some(3);
-        file.alt_md5 = Some(vec![0x10, 0x20, 0x30, 0x40]);
+        file.alt_md5 = Some(vec![
+            0x10, 0x20, 0x30, 0x40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
         file.tree_checked = TreeSelect::Selected;
         file.set_rep_status(RepStatus::NeededForFix);
         file.parent = Some(Rc::downgrade(&source_dir));
@@ -3007,7 +3074,9 @@ fn test_fix_zip_partial_rebuild_matches_primary_md5_against_source_alt_md5() {
         let mut file = missing_child.borrow_mut();
         file.name = "missing.bin".to_string();
         file.size = Some(3);
-        file.md5 = Some(vec![0x10, 0x20, 0x30, 0x40]);
+        file.md5 = Some(vec![
+            0x10, 0x20, 0x30, 0x40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
         file.tree_checked = TreeSelect::Selected;
         file.set_dat_got_status(
             dat_reader::enums::DatStatus::InDatCollect,
@@ -3038,7 +3107,13 @@ fn test_fix_zip_partial_rebuild_matches_primary_md5_against_source_alt_md5() {
     let crc_map = HashMap::new();
     let sha1_map = HashMap::new();
     let mut md5_map = HashMap::new();
-    md5_map.insert((3, vec![0x10, 0x20, 0x30, 0x40]), Rc::clone(&source_file));
+    md5_map.insert(
+        (
+            3,
+            [0x10, 0x20, 0x30, 0x40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        ),
+        Rc::clone(&source_file),
+    );
 
     assert!(Fix::rebuild_zip_archive(
         Rc::clone(&target_archive),
@@ -3095,9 +3170,13 @@ fn test_fix_zip_partial_rebuild_prefers_target_primary_identity_when_target_has_
         let mut file = source_file.borrow_mut();
         file.name = "missing.bin".to_string();
         file.size = Some(3);
-        file.md5 = Some(vec![0x10, 0x20, 0x30, 0x40]);
+        file.md5 = Some(vec![
+            0x10, 0x20, 0x30, 0x40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
         file.alt_size = Some(3);
-        file.alt_md5 = Some(vec![0xAA, 0xBB, 0xCC, 0xDD]);
+        file.alt_md5 = Some(vec![
+            0xAA, 0xBB, 0xCC, 0xDD, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
         file.tree_checked = TreeSelect::Selected;
         file.set_rep_status(RepStatus::NeededForFix);
         file.parent = Some(Rc::downgrade(&source_dir));
@@ -3117,9 +3196,13 @@ fn test_fix_zip_partial_rebuild_prefers_target_primary_identity_when_target_has_
         let mut file = missing_child.borrow_mut();
         file.name = "missing.bin".to_string();
         file.size = Some(3);
-        file.md5 = Some(vec![0x10, 0x20, 0x30, 0x40]);
+        file.md5 = Some(vec![
+            0x10, 0x20, 0x30, 0x40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
         file.alt_size = Some(3);
-        file.alt_md5 = Some(vec![0xAA, 0xBB, 0xCC, 0xDD]);
+        file.alt_md5 = Some(vec![
+            0xAA, 0xBB, 0xCC, 0xDD, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
         file.tree_checked = TreeSelect::Selected;
         file.set_dat_got_status(
             dat_reader::enums::DatStatus::InDatCollect,
@@ -3150,8 +3233,20 @@ fn test_fix_zip_partial_rebuild_prefers_target_primary_identity_when_target_has_
     let crc_map = HashMap::new();
     let sha1_map = HashMap::new();
     let mut md5_map = HashMap::new();
-    md5_map.insert((3, vec![0x10, 0x20, 0x30, 0x40]), Rc::clone(&source_file));
-    md5_map.insert((3, vec![0xAA, 0xBB, 0xCC, 0xDD]), Rc::clone(&source_file));
+    md5_map.insert(
+        (
+            3,
+            [0x10, 0x20, 0x30, 0x40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        ),
+        Rc::clone(&source_file),
+    );
+    md5_map.insert(
+        (
+            3,
+            [0xAA, 0xBB, 0xCC, 0xDD, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        ),
+        Rc::clone(&source_file),
+    );
 
     assert!(Fix::rebuild_zip_archive(
         Rc::clone(&target_archive),
@@ -3279,7 +3374,7 @@ fn test_fix_zip_partial_rebuild_removes_consumed_source_entry() {
     let mut queue = Vec::new();
     let mut total_fixed = 0;
     let mut crc_map = HashMap::new();
-    crc_map.insert((4, vec![0x00, 0x00, 0x00, 0x04]), Rc::clone(&source_move));
+    crc_map.insert((4, [0x00, 0x00, 0x00, 0x04]), Rc::clone(&source_move));
     let sha1_map = HashMap::new();
     let md5_map = HashMap::new();
 
@@ -3707,7 +3802,7 @@ fn test_fix_zip_partial_rebuild_sorts_entries_for_torrentzip() {
     let mut queue = Vec::new();
     let mut total_fixed = 0;
     let mut crc_map = HashMap::new();
-    crc_map.insert((1, vec![0x00, 0x00, 0x00, 0x01]), Rc::clone(&source_file));
+    crc_map.insert((1, [0x00, 0x00, 0x00, 0x01]), Rc::clone(&source_file));
     let sha1_map = HashMap::new();
     let md5_map = HashMap::new();
 
@@ -3891,7 +3986,7 @@ fn test_fix_torrentzip_rebuild_preserves_existing_raw_streams() {
     let mut queue = Vec::new();
     let mut total_fixed = 0;
     let mut crc_map = HashMap::new();
-    crc_map.insert((4, vec![0x00, 0x00, 0x00, 0x04]), Rc::clone(&source_file));
+    crc_map.insert((4, [0x00, 0x00, 0x00, 0x04]), Rc::clone(&source_file));
     let sha1_map = HashMap::new();
     let md5_map = HashMap::new();
 
@@ -3985,7 +4080,7 @@ fn test_fix_torrentzip_rebuild_reuses_deflate_stream_from_standard_zip_source() 
     let mut queue = Vec::new();
     let mut total_fixed = 0;
     let mut crc_map = HashMap::new();
-    crc_map.insert((6, vec![0x00, 0x00, 0x00, 0x06]), Rc::clone(&source_child));
+    crc_map.insert((6, [0x00, 0x00, 0x00, 0x06]), Rc::clone(&source_child));
     let sha1_map = HashMap::new();
     let md5_map = HashMap::new();
 
@@ -4233,7 +4328,7 @@ fn test_fix_sevenzip_partial_rebuild_preserves_existing_and_adds_missing() {
     let mut queue = Vec::new();
     let mut total_fixed = 0;
     let mut crc_map = HashMap::new();
-    crc_map.insert((3, vec![0x00, 0x00, 0x00, 0x03]), Rc::clone(&source_file));
+    crc_map.insert((3, [0x00, 0x00, 0x00, 0x03]), Rc::clone(&source_file));
     let sha1_map = HashMap::new();
     let md5_map = HashMap::new();
 
@@ -4501,7 +4596,7 @@ fn test_fix_sevenzip_move_moves_whole_archive_with_nested_directory_members() {
     let mut queue = Vec::new();
     let mut total_fixed = 0;
     let mut crc_map = HashMap::new();
-    crc_map.insert((4, vec![0x12, 0x34, 0x56, 0x78]), Rc::clone(&source_child));
+    crc_map.insert((4, [0x12, 0x34, 0x56, 0x78]), Rc::clone(&source_child));
     let sha1_map = HashMap::new();
     let md5_map = HashMap::new();
 
@@ -4637,7 +4732,7 @@ fn test_fix_zip_partial_rebuild_does_not_queue_cleanup_when_source_is_same_membe
     let mut queue = Vec::new();
     let mut total_fixed = 0;
     let mut crc_map = HashMap::new();
-    crc_map.insert((4, vec![0xAD, 0xF3, 0xF3, 0x63]), Rc::clone(&child));
+    crc_map.insert((4, [0xAD, 0xF3, 0xF3, 0x63]), Rc::clone(&child));
     let sha1_map = HashMap::new();
     let md5_map = HashMap::new();
 
@@ -4856,7 +4951,7 @@ fn test_fix_sevenzip_rebuild_does_not_queue_cleanup_when_source_archive_path_dif
     let mut queue = Vec::new();
     let mut total_fixed = 0;
     let mut crc_map = HashMap::new();
-    crc_map.insert((4, vec![0x12, 0x34, 0x56, 0x78]), Rc::clone(&source_child));
+    crc_map.insert((4, [0x12, 0x34, 0x56, 0x78]), Rc::clone(&source_child));
     let sha1_map = HashMap::new();
     let md5_map = HashMap::new();
 
@@ -4924,7 +5019,7 @@ fn test_fix_sevenzip_partial_rebuild_does_not_queue_cleanup_when_source_is_same_
     let mut queue = Vec::new();
     let mut total_fixed = 0;
     let mut crc_map = HashMap::new();
-    crc_map.insert((4, vec![0xAD, 0xF3, 0xF3, 0x63]), Rc::clone(&child));
+    crc_map.insert((4, [0xAD, 0xF3, 0xF3, 0x63]), Rc::clone(&child));
     let sha1_map = HashMap::new();
     let md5_map = HashMap::new();
 
@@ -5173,7 +5268,7 @@ fn test_fix_loose_file_from_zip_source_with_existing_archive_name_and_rebuilds_s
     let mut queue = Vec::new();
     let mut total_fixed = 0;
     let mut crc_map = HashMap::new();
-    crc_map.insert((4, vec![0x00, 0x00, 0x00, 0x04]), Rc::clone(&source_move));
+    crc_map.insert((4, [0x00, 0x00, 0x00, 0x04]), Rc::clone(&source_move));
     let sha1_map = HashMap::new();
     let md5_map = HashMap::new();
 
@@ -5285,7 +5380,7 @@ fn test_fix_loose_file_from_sevenzip_source_with_existing_archive_name_and_rebui
     let mut queue = Vec::new();
     let mut total_fixed = 0;
     let mut crc_map = HashMap::new();
-    crc_map.insert((4, vec![0x00, 0x00, 0x00, 0x04]), Rc::clone(&source_move));
+    crc_map.insert((4, [0x00, 0x00, 0x00, 0x04]), Rc::clone(&source_move));
     let sha1_map = HashMap::new();
     let md5_map = HashMap::new();
 
@@ -5395,7 +5490,7 @@ fn test_fix_loose_file_from_sevenzip_source_and_rebuilds_source_archive() {
     let mut queue = Vec::new();
     let mut total_fixed = 0;
     let mut crc_map = HashMap::new();
-    crc_map.insert((4, vec![0x00, 0x00, 0x00, 0x04]), Rc::clone(&source_move));
+    crc_map.insert((4, [0x00, 0x00, 0x00, 0x04]), Rc::clone(&source_move));
     let sha1_map = HashMap::new();
     let md5_map = HashMap::new();
 

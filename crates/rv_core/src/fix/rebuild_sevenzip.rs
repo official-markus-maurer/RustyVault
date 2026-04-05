@@ -21,9 +21,9 @@ impl super::Fix {
         archive_file: Rc<RefCell<RvFile>>,
         queue: &mut Vec<Rc<RefCell<RvFile>>>,
         total_fixed: &mut i32,
-        crc_map: &HashMap<(u64, Vec<u8>), Rc<RefCell<RvFile>>>,
-        sha1_map: &HashMap<(u64, Vec<u8>), Rc<RefCell<RvFile>>>,
-        md5_map: &HashMap<(u64, Vec<u8>), Rc<RefCell<RvFile>>>,
+        crc_map: &HashMap<crate::hash_keys::CrcKey, Rc<RefCell<RvFile>>>,
+        sha1_map: &HashMap<crate::hash_keys::Sha1Key, Rc<RefCell<RvFile>>>,
+        md5_map: &HashMap<crate::hash_keys::Md5Key, Rc<RefCell<RvFile>>>,
     ) -> bool {
         let desired_zip_struct = {
             let af = archive_file.borrow();

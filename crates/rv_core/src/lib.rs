@@ -4,9 +4,6 @@
 //! interaction engines (`Scanner`, `FileScanning`), the logical fix engine (`FindFixes`),
 //! and the actual disk mutator (`Fix`). It acts as the "backend" that powers both the CLI
 //! (`rom_vault`) and the GUI (`romvault_ui`).
-//!
-//! Differences from C#:
-//! - Represents the `ROMVaultCore` project from the original C# solution.
 
 pub mod arr_byte;
 pub mod chd;
@@ -58,6 +55,7 @@ pub mod byte_sorted_list;
 /// Module containing Cache serialization
 pub mod cache;
 pub mod fast_array_sort;
+pub mod hash_keys;
 
 pub use arr_byte::{
     b_compare, copy_bytes, copy_bytes_range, e_compare, i_compare as bytes_i_compare,

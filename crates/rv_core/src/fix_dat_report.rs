@@ -16,11 +16,8 @@ use std::rc::Rc;
 /// and exports a standard XML DAT file containing only those missing files. This allows users
 /// to take the Fix DAT to other tools or sites to acquire the missing files.
 ///
-/// Differences from C#:
-/// - The C# reference calls out to `DatClean.ArchiveDirectoryFlattern` and `DatClean.RemoveUnNeededDirectories`
-///   to optimize the output structure of the Fix DATs.
-/// - The Rust version now mirrors those cleanup passes with DAT-AST transformations, while still
-///   using Rust-native tree traversal and XML serialization infrastructure.
+/// Implementation notes:
+/// - The output tree is post-processed to avoid deeply nested virtual folders when possible.
 pub struct FixDatReport;
 
 impl FixDatReport {
@@ -152,8 +149,6 @@ impl FixDatReport {
             None => return,
         };
 
-        // Align with C# `DatClean.ArchiveDirectoryFlattern` behavior
-        // The Fix DAT export shouldn't contain deeply nested virtual folders unless they are games.
         Self::archive_directory_flatten(&mut dh.base_dir);
         Self::remove_unneeded_directories(&mut dh.base_dir);
 
@@ -358,9 +353,8 @@ impl FixDatReport {
         }
     }
 
-    /// Mirrors C# `DatClean.ArchiveDirectoryFlattern`
     /// Flattens sub-directories recursively by prefixing their names to child files,
-    /// except when encountering an explicit Game node (which forms the new root).
+    /// except when encountering an explicit game node (which forms the new root).
     fn archive_directory_flatten(d_dir: &mut dat_reader::dat_store::DatDir) {
         if d_dir.d_game.is_some() {
             let mut list = Vec::new();

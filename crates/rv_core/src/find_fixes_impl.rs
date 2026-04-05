@@ -16,12 +16,8 @@ use crate::rv_file::{RvFile, TreeSelect};
 /// database. It identifies missing files in the primary `RustyRoms` and attempts to map them
 /// to available files sitting in `ToSort` using exact CRC/SHA1/MD5 hash matching.
 ///
-/// Differences from C#:
-/// - The C# reference uses standard Threads to parallelize the creation of `FileGroup` lookup indexes
-///   (`FastArraySort.SortWithFilter`).
-/// - The Rust version leverages `rayon` to safely build parallel lookup `HashMap` indexes across
-///   available CPU cores, providing equivalent or faster multi-threaded performance while maintaining
-///   memory safety without manual thread joining.
+/// Implementation notes:
+/// - Uses `rayon` to parallelize index construction across available CPU cores.
 pub struct FindFixes;
 
 include!("find_fixes/selection.rs");

@@ -206,13 +206,9 @@ pub struct EmulatorInfoWrapper {
 
 /// Global configuration state for the RomVault core.
 ///
-/// `Settings` mirrors the exact XML schema of the original C# `RomVault3cfg.xml`.
+/// `Settings` mirrors the XML schema of `RomVault3cfg.xml`.
 /// It dictates archive parsing, DAT directory mapping, compression configurations (ZSTD/7Z),
 /// and global ignore lists.
-///
-/// Differences from C#:
-/// - The Rust version uses `quick-xml` combined with custom Serde wrappers (e.g., `DatRulesWrapper`)
-///   to precisely replicate the nested XML array structure that C#'s `XmlSerializer` generates by default.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct Settings {

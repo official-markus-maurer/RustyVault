@@ -8,10 +8,8 @@ use std::rc::Rc;
 /// `RepStatus` of every individual file (e.g. `Correct`, `Missing`, `CanBeFixed`) to bubble
 /// up folder-level and global statistics. This powers the main UI counters and progress bars.
 ///
-/// Differences from C#:
-/// - The logic is nearly identical to C#'s `ReportStatus` recursive aggregation.
-/// - Rust utilizes an internal caching layer (`cached_stats` on `RvFile`) to dramatically speed up
-///   subsequent tree traversals by memoizing the `RepairStatus` of unchanged branches.
+/// Implementation notes:
+/// - Uses per-node memoization (`RvFile.cached_stats`) to avoid recalculating unchanged subtrees.
 #[derive(Clone, Copy)]
 pub struct RepairStatus {
     /// Total number of games
@@ -40,6 +38,8 @@ pub struct RepairStatus {
     pub roms_corrupt: i32,
     /// Number of files marked as `CanBeFixed`
     pub roms_fixes: i32,
+    /// Number of files currently located in `ToSort` (`RepStatus::InToSort`)
+    pub roms_in_to_sort: i32,
     /// Number of files marked as `NotCollected`
     pub roms_not_collected: i32,
     /// Number of files marked as `UnNeeded`
@@ -64,6 +64,7 @@ impl RepairStatus {
             roms_missing_mia: 0,
             roms_corrupt: 0,
             roms_fixes: 0,
+            roms_in_to_sort: 0,
             roms_not_collected: 0,
             roms_unneeded: 0,
             roms_unknown: 0,
@@ -129,13 +130,13 @@ impl RepairStatus {
             } else {
                 crate::enums::ReportStatus::NotCollected
             }
-        } else if self.roms_fixes == self.total_roms {
+        } else if self.roms_in_to_sort == self.total_roms || self.roms_fixes == self.total_roms {
             crate::enums::ReportStatus::InToSort
         } else if correct_roms == self.total_roms {
             crate::enums::ReportStatus::Correct
         } else if missing_roms > 0 {
             crate::enums::ReportStatus::Missing
-        } else if self.roms_fixes > 0 {
+        } else if self.roms_fixes > 0 || self.roms_in_to_sort > 0 {
             crate::enums::ReportStatus::InToSort
         } else {
             crate::enums::ReportStatus::Unknown
@@ -179,6 +180,7 @@ impl RepairStatus {
                 self.roms_missing_mia += cached.roms_missing_mia;
                 self.roms_corrupt += cached.roms_corrupt;
                 self.roms_fixes += cached.roms_fixes;
+                self.roms_in_to_sort += cached.roms_in_to_sort;
                 self.roms_not_collected += cached.roms_not_collected;
                 self.roms_unneeded += cached.roms_unneeded;
                 self.roms_unknown += cached.roms_unknown;
@@ -219,6 +221,7 @@ impl RepairStatus {
                 node_stats.roms_missing_mia += child_status.roms_missing_mia;
                 node_stats.roms_corrupt += child_status.roms_corrupt;
                 node_stats.roms_fixes += child_status.roms_fixes;
+                node_stats.roms_in_to_sort += child_status.roms_in_to_sort;
                 node_stats.roms_not_collected += child_status.roms_not_collected;
                 node_stats.roms_unneeded += child_status.roms_unneeded;
                 node_stats.roms_unknown += child_status.roms_unknown;
@@ -286,8 +289,6 @@ impl RepairStatus {
                 RepStatus::CanBeFixed
                 | RepStatus::CanBeFixedMIA
                 | RepStatus::CorruptCanBeFixed
-                | RepStatus::InToSort
-                | RepStatus::DirInToSort
                 | RepStatus::MoveToSort
                 | RepStatus::MoveToCorrupt
                 | RepStatus::Delete
@@ -295,6 +296,7 @@ impl RepairStatus {
                 | RepStatus::NeededForFix
                 | RepStatus::Rename
                 | RepStatus::IncompleteRemove => node_stats.roms_fixes += 1,
+                RepStatus::InToSort | RepStatus::DirInToSort => node_stats.roms_in_to_sort += 1,
                 RepStatus::NotCollected => node_stats.roms_not_collected += 1,
                 RepStatus::UnNeeded => node_stats.roms_unneeded += 1,
                 RepStatus::Unknown | RepStatus::DirUnknown | RepStatus::UnScanned => {
@@ -326,6 +328,7 @@ impl RepairStatus {
         self.roms_missing_mia += node_stats.roms_missing_mia;
         self.roms_corrupt += node_stats.roms_corrupt;
         self.roms_fixes += node_stats.roms_fixes;
+        self.roms_in_to_sort += node_stats.roms_in_to_sort;
         self.roms_not_collected += node_stats.roms_not_collected;
         self.roms_unneeded += node_stats.roms_unneeded;
         self.roms_unknown += node_stats.roms_unknown;

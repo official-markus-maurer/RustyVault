@@ -15,9 +15,6 @@ use compress::zip_file::ZipFile;
 ///
 /// `TorrentZip` acts as the entry point for the CLI and UI tools to submit files
 /// for verification and repacking.
-///
-/// Differences from C#:
-/// - Maps 1:1 to the C# `TrrntZip.TorrentZip` entry class.
 #[derive(Clone, Copy)]
 pub struct TorrentZip {
     pub force_rezip: bool,

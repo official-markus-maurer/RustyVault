@@ -5,9 +5,12 @@ use crate::RomVaultApp;
 pub fn draw_top_menu(app: &mut RomVaultApp, ctx: &egui::Context) {
     egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
         egui::menu::bar(ui, |ui| {
-            let is_idle = !app.sam_running;
+            let is_idle = app.is_idle();
             ui.menu_button("File", |ui| {
-                if ui.add_enabled(is_idle, egui::Button::new("Add ToSort")).clicked() {
+                if ui
+                    .add_enabled(is_idle, egui::Button::new("Add ToSort"))
+                    .clicked()
+                {
                     app.prompt_add_tosort();
                     ui.close_menu();
                 }
@@ -16,12 +19,18 @@ pub fn draw_top_menu(app: &mut RomVaultApp, ctx: &egui::Context) {
                 }
             });
             ui.menu_button("Update DATs", |ui| {
-                if ui.add_enabled(is_idle, egui::Button::new("Update New DATs")).clicked() {
+                if ui
+                    .add_enabled(is_idle, egui::Button::new("Update New DATs"))
+                    .clicked()
+                {
                     let is_shift = ui.input(|i| i.modifiers.shift);
                     app.update_dats(is_shift);
                     ui.close_menu();
                 }
-                if ui.add_enabled(is_idle, egui::Button::new("Refresh All DATs")).clicked() {
+                if ui
+                    .add_enabled(is_idle, egui::Button::new("Refresh All DATs"))
+                    .clicked()
+                {
                     app.update_dats(true);
                     ui.close_menu();
                 }
@@ -59,12 +68,17 @@ pub fn draw_top_menu(app: &mut RomVaultApp, ctx: &egui::Context) {
                 }
             });
             ui.menu_button("Find Fixes", |ui| {
-                if ui.add_enabled(is_idle, egui::Button::new("Find Fixes")).clicked() {
+                if ui
+                    .add_enabled(is_idle, egui::Button::new("Find Fixes"))
+                    .clicked()
+                {
                     app.launch_task("Find Fixes", |tx| {
                         let _ = tx.send("Running FindFixes...".to_string());
                         crate::GLOBAL_DB.with(|db_ref| {
                             if let Some(db) = db_ref.borrow().as_ref() {
-                                rv_core::find_fixes::FindFixes::scan_files(std::rc::Rc::clone(&db.dir_root));
+                                rv_core::find_fixes::FindFixes::scan_files(std::rc::Rc::clone(
+                                    &db.dir_root,
+                                ));
                                 db.dir_root.borrow_mut().cached_stats = None;
                             }
                         });
@@ -73,7 +87,10 @@ pub fn draw_top_menu(app: &mut RomVaultApp, ctx: &egui::Context) {
                 }
             });
             ui.menu_button("Fix ROMs", |ui| {
-                if ui.add_enabled(is_idle, egui::Button::new("Fix ROMs")).clicked() {
+                if ui
+                    .add_enabled(is_idle, egui::Button::new("Fix ROMs"))
+                    .clicked()
+                {
                     app.launch_fix_roms_task();
                     ui.close_menu();
                 }
@@ -86,19 +103,31 @@ pub fn draw_top_menu(app: &mut RomVaultApp, ctx: &egui::Context) {
                 }
             });
             ui.menu_button("Reports", |ui| {
-                if ui.add_enabled(is_idle, egui::Button::new("Fix Dat Report")).clicked() {
+                if ui
+                    .add_enabled(is_idle, egui::Button::new("Fix Dat Report"))
+                    .clicked()
+                {
                     app.prompt_fixdat_report(true);
                     ui.close_menu();
                 }
-                if ui.add_enabled(is_idle, egui::Button::new("Full Report")).clicked() {
+                if ui
+                    .add_enabled(is_idle, egui::Button::new("Full Report"))
+                    .clicked()
+                {
                     app.prompt_full_report();
                     ui.close_menu();
                 }
-                if ui.add_enabled(is_idle, egui::Button::new("Fix Report")).clicked() {
+                if ui
+                    .add_enabled(is_idle, egui::Button::new("Fix Report"))
+                    .clicked()
+                {
                     app.prompt_fix_report();
                     ui.close_menu();
                 }
-                if ui.add_enabled(is_idle, egui::Button::new("Full DAT Export")).clicked() {
+                if ui
+                    .add_enabled(is_idle, egui::Button::new("Full DAT Export"))
+                    .clicked()
+                {
                     app.prompt_fixdat_report(false);
                     ui.close_menu();
                 }
@@ -147,7 +176,7 @@ pub fn draw_top_menu(app: &mut RomVaultApp, ctx: &egui::Context) {
                 }
                 ui.separator();
                 if ui.button("Toggle Dark Mode").clicked() {
-                    app.task_logs.push("Toggled Dark Mode (Requires restart to fully apply in C#, but handled dynamically here)".to_string());
+                    app.task_logs.push("Toggled Dark Mode".to_string());
                     let mut ctx_style = (*ui.ctx().style()).clone();
                     if ctx_style.visuals.dark_mode {
                         ctx_style.visuals = egui::Visuals::light();
@@ -163,7 +192,10 @@ pub fn draw_top_menu(app: &mut RomVaultApp, ctx: &egui::Context) {
                 }
             });
             ui.menu_button("Add ToSort", |ui| {
-                if ui.add_enabled(is_idle, egui::Button::new("Add ToSort")).clicked() {
+                if ui
+                    .add_enabled(is_idle, egui::Button::new("Add ToSort"))
+                    .clicked()
+                {
                     app.prompt_add_tosort();
                     ui.close_menu();
                 }
@@ -184,7 +216,11 @@ pub fn draw_top_menu(app: &mut RomVaultApp, ctx: &egui::Context) {
                 if ui.button("Whats New").clicked() {
                     app.task_logs.push("Opening Whats New Wiki...".to_string());
                     let _ = std::process::Command::new("cmd")
-                        .args(["/C", "start", "https://wiki.romvault.com/doku.php?id=whats_new"])
+                        .args([
+                            "/C",
+                            "start",
+                            "https://wiki.romvault.com/doku.php?id=whats_new",
+                        ])
                         .spawn();
                     ui.close_menu();
                 }

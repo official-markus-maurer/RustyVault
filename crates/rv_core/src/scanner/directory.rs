@@ -21,6 +21,10 @@ impl Scanner {
             crate::settings::EScanLevel::Level2 | crate::settings::EScanLevel::Level3
         );
 
+        // TODO(perf): avoid collecting `read_dir` into an intermediate `Vec` when possible; consider a work-stealing
+        // producer/consumer that feeds entries to rayon.
+        // TODO(perf): precompile ignore patterns (or use globset) instead of repeatedly matching strings.
+        // TODO(threading): add a shared cancellation token so long scans can be interrupted from the UI.
         if let Ok(entries) = fs::read_dir(path) {
             let entry_list: Vec<_> = entries.flatten().collect();
             let mut ignore_patterns = crate::settings::get_settings().ignore_files.items.clone();

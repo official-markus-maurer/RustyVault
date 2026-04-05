@@ -1,6 +1,6 @@
 impl RomVaultApp {
     fn ui_working(&self) -> bool {
-        self.sam_running
+        self.is_busy()
     }
 
     fn expand_descendants_target(node_rc: &Rc<RefCell<RvFile>>) -> Option<bool> {

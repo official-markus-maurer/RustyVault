@@ -208,7 +208,6 @@ fn ui_fixable_count(stats: &rv_core::repair_status::RepairStatus) -> i32 {
 
 fn recompute_fix_plan(root: Rc<RefCell<RvFile>>) {
     FindFixes::scan_files(Rc::clone(&root));
-    rv_core::repair_status::RepairStatus::report_status_reset(root);
 }
 
 fn is_actionable_fix_status(status: rv_core::enums::RepStatus) -> bool {
@@ -369,6 +368,11 @@ struct RomVaultApp {
     filter_text: String,
     show_filter_panel: bool,
     task_logs: Vec<String>,
+    task_running: bool,
+    task_name: String,
+    task_worker_rx: Option<Receiver<String>>,
+    task_worker_handle: Option<std::thread::JoinHandle<()>>,
+    task_selection_chain: Vec<String>,
     pub show_dir_settings: bool,
     pub dir_settings_tab: usize,
     pub dir_settings_compact: bool,
@@ -447,6 +451,11 @@ impl RomVaultApp {
             filter_text: String::new(),
             show_filter_panel: true,
             task_logs: Vec::new(),
+            task_running: false,
+            task_name: String::new(),
+            task_worker_rx: None,
+            task_worker_handle: None,
+            task_selection_chain: Vec::new(),
             show_dir_settings: false,
             dir_settings_tab: 0,
             dir_settings_compact: false,

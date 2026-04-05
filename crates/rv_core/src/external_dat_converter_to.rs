@@ -13,12 +13,10 @@ use std::rc::Rc;
 /// a `dat_reader::DatHeader` AST representation of it. This is used by the UI's "Export DAT"
 /// functionality, as well as the underlying `FixDatReport` system.
 ///
-/// Differences from C#:
-/// - The C# implementation contains highly complex flattening rules (`DatClean.ArchiveDirectoryFlattern`)
-///   to strip empty folders from the exported DAT.
-/// - The Rust version is a more literal 1:1 translation, directly mapping the internal `RvFile`
-///   children to external `DatDir` and `DatGame` nodes based on the applied boolean filters
-///   (`filter_got`, `filter_missing`, etc).
+/// Implementation notes:
+/// - Performs a direct structural mapping from `RvFile` to `DatDir` / `DatGame`, gated by filters.
+///
+/// TODO: Add an optional cleanup pass to remove redundant empty directories from exported DATs.
 pub struct ExternalDatConverterTo {
     /// Include the XML header block.
     pub use_header: bool,

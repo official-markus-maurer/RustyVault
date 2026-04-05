@@ -52,6 +52,51 @@
     }
 
     #[test]
+    fn test_find_fixes_can_use_unselected_tosort_sources() {
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+
+        let to_sort = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        {
+            let mut dir = to_sort.borrow_mut();
+            dir.set_dat_status(DatStatus::InToSort);
+            dir.tree_checked = TreeSelect::UnSelected;
+        }
+
+        let got_rc = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut got_file = got_rc.borrow_mut();
+            got_file.name = "got_file.bin".to_string();
+            got_file.size = Some(1024);
+            got_file.crc = Some(vec![0xAA, 0xBB, 0xCC, 0xDD]);
+            got_file.set_dat_got_status(DatStatus::InToSort, GotStatus::Got);
+            got_file.tree_checked = TreeSelect::UnSelected;
+        }
+        to_sort.borrow_mut().child_add(Rc::clone(&got_rc));
+
+        let dat_root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        dat_root.borrow_mut().set_dat_status(DatStatus::InDatCollect);
+
+        let missing_rc = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+        {
+            let mut missing_file = missing_rc.borrow_mut();
+            missing_file.name = "missing_file.bin".to_string();
+            missing_file.size = Some(1024);
+            missing_file.crc = Some(vec![0xAA, 0xBB, 0xCC, 0xDD]);
+            missing_file.set_dat_got_status(DatStatus::InDatCollect, GotStatus::NotGot);
+            missing_file.tree_checked = TreeSelect::Selected;
+        }
+        dat_root.borrow_mut().child_add(Rc::clone(&missing_rc));
+
+        root.borrow_mut().child_add(to_sort);
+        root.borrow_mut().child_add(dat_root);
+
+        FindFixes::scan_files(Rc::clone(&root));
+
+        assert_eq!(missing_rc.borrow().rep_status(), RepStatus::CanBeFixed);
+        assert_eq!(got_rc.borrow().rep_status(), RepStatus::NeededForFix);
+    }
+
+    #[test]
     fn test_find_fixes_matching() {
         let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
         
@@ -120,7 +165,9 @@
             m.name = "game.rom".to_string();
             m.size = Some(1024);
             m.crc = None; // No CRC
-            m.sha1 = Some(vec![0xAA, 0xBB, 0xCC, 0xDD]);
+            m.sha1 = Some(vec![
+                0xAA, 0xBB, 0xCC, 0xDD, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ]);
             m.set_dat_got_status(DatStatus::InDatCollect, GotStatus::NotGot);
         }
         
@@ -131,7 +178,9 @@
             u.name = "random.bin".to_string();
             u.size = Some(1024);
             u.crc = None; // No CRC
-            u.sha1 = Some(vec![0xAA, 0xBB, 0xCC, 0xDD]);
+            u.sha1 = Some(vec![
+                0xAA, 0xBB, 0xCC, 0xDD, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ]);
             u.set_dat_got_status(DatStatus::NotInDat, GotStatus::Got);
         }
 
@@ -159,7 +208,7 @@
             m.size = Some(1024);
             m.crc = None;
             m.sha1 = None;
-            m.md5 = Some(vec![0x11, 0x22, 0x33, 0x44]);
+            m.md5 = Some(vec![0x11, 0x22, 0x33, 0x44, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
             m.set_dat_got_status(DatStatus::InDatCollect, GotStatus::NotGot);
         }
         
@@ -171,7 +220,7 @@
             u.size = Some(1024);
             u.crc = None;
             u.sha1 = None;
-            u.md5 = Some(vec![0x11, 0x22, 0x33, 0x44]);
+            u.md5 = Some(vec![0x11, 0x22, 0x33, 0x44, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
             u.set_dat_got_status(DatStatus::NotInDat, GotStatus::Got);
         }
 
@@ -1015,7 +1064,9 @@
             let mut f = source_file.borrow_mut();
             f.name = "source.bin".to_string();
             f.size = Some(1024);
-            f.sha1 = Some(vec![0x01, 0x23, 0x45, 0x67]);
+            f.sha1 = Some(vec![
+                0x01, 0x23, 0x45, 0x67, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ]);
             f.set_dat_got_status(DatStatus::NotInDat, GotStatus::Got);
             f.tree_checked = TreeSelect::Selected;
         }
@@ -1029,7 +1080,9 @@
             let mut f = missing_file.borrow_mut();
             f.name = "target.bin".to_string();
             f.alt_size = Some(1024);
-            f.sha1 = Some(vec![0x01, 0x23, 0x45, 0x67]);
+            f.sha1 = Some(vec![
+                0x01, 0x23, 0x45, 0x67, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ]);
             f.set_dat_got_status(DatStatus::InDatCollect, GotStatus::NotGot);
             f.tree_checked = TreeSelect::Selected;
         }
@@ -1056,7 +1109,7 @@
             let mut f = source_file.borrow_mut();
             f.name = "source.bin".to_string();
             f.size = Some(1024);
-            f.md5 = Some(vec![0x89, 0xAB, 0xCD, 0xEF]);
+            f.md5 = Some(vec![0x89, 0xAB, 0xCD, 0xEF, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
             f.set_dat_got_status(DatStatus::NotInDat, GotStatus::Got);
             f.tree_checked = TreeSelect::Selected;
         }
@@ -1070,7 +1123,8 @@
             let mut f = missing_file.borrow_mut();
             f.name = "target.bin".to_string();
             f.alt_size = Some(1024);
-            f.alt_md5 = Some(vec![0x89, 0xAB, 0xCD, 0xEF]);
+            f.alt_md5 =
+                Some(vec![0x89, 0xAB, 0xCD, 0xEF, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
             f.set_dat_got_status(DatStatus::InDatCollect, GotStatus::NotGot);
             f.tree_checked = TreeSelect::Selected;
         }
@@ -1097,7 +1151,9 @@
             let mut f = source_file.borrow_mut();
             f.name = "source.bin".to_string();
             f.size = Some(1024);
-            f.sha1 = Some(vec![0x89, 0xAB, 0xCD, 0xEF]);
+            f.sha1 = Some(vec![
+                0x89, 0xAB, 0xCD, 0xEF, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ]);
             f.set_dat_got_status(DatStatus::NotInDat, GotStatus::Got);
             f.tree_checked = TreeSelect::Selected;
         }
@@ -1111,7 +1167,9 @@
             let mut f = missing_file.borrow_mut();
             f.name = "target.bin".to_string();
             f.alt_size = Some(1024);
-            f.alt_sha1 = Some(vec![0x89, 0xAB, 0xCD, 0xEF]);
+            f.alt_sha1 = Some(vec![
+                0x89, 0xAB, 0xCD, 0xEF, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ]);
             f.set_dat_got_status(DatStatus::InDatCollect, GotStatus::NotGot);
             f.tree_checked = TreeSelect::Selected;
         }
@@ -1138,7 +1196,8 @@
             let mut f = source_file.borrow_mut();
             f.name = "source.bin".to_string();
             f.alt_size = Some(1024);
-            f.alt_md5 = Some(vec![0x98, 0x76, 0x54, 0x32]);
+            f.alt_md5 =
+                Some(vec![0x98, 0x76, 0x54, 0x32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
             f.set_dat_got_status(DatStatus::NotInDat, GotStatus::Got);
             f.tree_checked = TreeSelect::Selected;
         }
@@ -1152,7 +1211,7 @@
             let mut f = missing_file.borrow_mut();
             f.name = "target.bin".to_string();
             f.size = Some(1024);
-            f.md5 = Some(vec![0x98, 0x76, 0x54, 0x32]);
+            f.md5 = Some(vec![0x98, 0x76, 0x54, 0x32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
             f.set_dat_got_status(DatStatus::InDatCollect, GotStatus::NotGot);
             f.tree_checked = TreeSelect::Selected;
         }
@@ -1179,7 +1238,9 @@
             let mut f = source_file.borrow_mut();
             f.name = "source.bin".to_string();
             f.alt_size = Some(1024);
-            f.alt_sha1 = Some(vec![0x98, 0x76, 0x54, 0x32]);
+            f.alt_sha1 = Some(vec![
+                0x98, 0x76, 0x54, 0x32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ]);
             f.set_dat_got_status(DatStatus::NotInDat, GotStatus::Got);
             f.tree_checked = TreeSelect::Selected;
         }
@@ -1193,7 +1254,9 @@
             let mut f = missing_file.borrow_mut();
             f.name = "target.bin".to_string();
             f.size = Some(1024);
-            f.sha1 = Some(vec![0x98, 0x76, 0x54, 0x32]);
+            f.sha1 = Some(vec![
+                0x98, 0x76, 0x54, 0x32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ]);
             f.set_dat_got_status(DatStatus::InDatCollect, GotStatus::NotGot);
             f.tree_checked = TreeSelect::Selected;
         }
@@ -1730,7 +1793,7 @@
             let mut file = missing_member.borrow_mut();
             file.name = "rom.a78".to_string();
             file.size = Some(3);
-            file.md5 = Some(vec![0x10, 0x20, 0x30, 0x40]);
+            file.md5 = Some(vec![0x10, 0x20, 0x30, 0x40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
             file.set_dat_got_status(DatStatus::InDatCollect, GotStatus::NotGot);
             file.tree_checked = TreeSelect::Selected;
             file.parent = Some(Rc::downgrade(&target_archive));
@@ -1757,7 +1820,7 @@
             let mut file = kept_member.borrow_mut();
             file.name = "rom.a78".to_string();
             file.size = Some(3);
-            file.md5 = Some(vec![0x10, 0x20, 0x30, 0x40]);
+            file.md5 = Some(vec![0x10, 0x20, 0x30, 0x40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
             file.set_dat_got_status(DatStatus::InDatCollect, GotStatus::Got);
             file.tree_checked = TreeSelect::Selected;
             file.parent = Some(Rc::downgrade(&archive_a));
@@ -1785,7 +1848,7 @@
             let mut file = shared_view.borrow_mut();
             file.name = "rom.a78".to_string();
             file.size = Some(3);
-            file.md5 = Some(vec![0x10, 0x20, 0x30, 0x40]);
+            file.md5 = Some(vec![0x10, 0x20, 0x30, 0x40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
             file.set_dat_got_status(DatStatus::InDatMerged, GotStatus::Got);
             file.tree_checked = TreeSelect::Selected;
             file.parent = Some(Rc::downgrade(&archive_b));
@@ -1806,7 +1869,8 @@
             let mut file = tosort_source.borrow_mut();
             file.name = "rom_headered.a78".to_string();
             file.alt_size = Some(3);
-            file.alt_md5 = Some(vec![0x10, 0x20, 0x30, 0x40]);
+            file.alt_md5 =
+                Some(vec![0x10, 0x20, 0x30, 0x40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
             file.set_dat_got_status(DatStatus::InToSort, GotStatus::Got);
             file.tree_checked = TreeSelect::Selected;
             file.parent = Some(Rc::downgrade(&tosort_dir));

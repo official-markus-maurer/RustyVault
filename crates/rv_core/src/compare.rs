@@ -8,11 +8,11 @@ use dat_reader::enums::FileType;
 /// `FileCompare` evaluates whether a `ScannedFile` (physical) correctly matches an `RvFile` (logical)
 /// based on name, size, timestamps, and cryptographic hashes.
 ///
-/// Differences from C#:
-/// - The C# implementation contains deep logic for `Phase2Test`, which attempts to fuzzy-match files
-///   that might have incorrect names or be stripped of extraneous headers.
-/// - The Rust version currently implements `phase_1_test` for exact matches, and `phase_2_test` for CHD
-///   version mismatch fallbacks and size-only exact-name matching.
+/// Implementation notes:
+/// - `phase_1_test` performs exact matching.
+/// - `phase_2_test` contains a limited set of fallback heuristics.
+///
+/// TODO: Expand phase-2 heuristics to handle more header/rename recovery cases safely.
 pub struct FileCompare;
 
 /// Performs a basic alphabetical name comparison between a DB file and a scanned file.
@@ -334,10 +334,10 @@ impl FileCompare {
         }
     }
 
-    /// Evaluates "Phase 2" equivalence: This mimics the C# deep scan fallback.
-    /// In C#, if Phase 1 fails, the scanner will execute `Populate.FromAFile` to perform
-    /// a deep cryptographic hash of the loose file on disk right then and there.
-    /// In our Rust version, if we get here, we check if the file needs deep scanning.
+    /// Evaluates "Phase 2" equivalence using on-demand deep scanning.
+    ///
+    /// If Phase 1 fails but the name matches, this may compute missing hashes from disk
+    /// and re-check equality against the expected DB identity.
     pub fn phase_2_test(
         db_file: &RvFile,
         test_file: &mut ScannedFile,

@@ -72,10 +72,8 @@ pub struct GameMetaData {
 /// the internal database. It holds metadata such as the game's Description, CloneOf
 /// relationships, Manufacturer, and Year.
 ///
-/// Differences from C#:
-/// - Similar to `RvDat`, the C# version utilizes an array-based string packing mechanism.
-/// - The Rust version dynamically pushes to a `Vec<GameMetaData>` to drastically reduce
-///   memory and serialization footprint, since most sets only use `Description`.
+/// Storage notes:
+/// - Metadata is stored as a sparse `Vec<GameMetaData>` (most sets only use a small subset).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RvGame {
     /// List of key-value metadata pairs

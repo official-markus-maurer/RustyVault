@@ -191,7 +191,7 @@ pub(super) fn draw_sam_dialog(app: &mut RomVaultApp, ctx: &egui::Context) {
 
             ui.separator();
             ui.horizontal(|ui| {
-                let can_start = !app.sam_running
+                let can_start = app.is_idle()
                     && !app.sam_source_items.is_empty()
                     && app.sam_has_usable_output_target()
                     && crate::RomVaultApp::sam_output_kind_supported(app.sam_output_kind);

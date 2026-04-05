@@ -20,9 +20,6 @@ struct Detector {
 /// `FileHeaders` defines byte-pattern detectors for various emulator file types.
 /// It reads the first block of bytes from a physical file stream and identifies if
 /// the file contains a recognizable console header (e.g. `NES`, `A78`, `LYNX`).
-///
-/// Differences from C#:
-/// - Identical 1:1 logic and byte signatures to `FileHeaderReader.cs`.
 pub struct FileHeaders;
 
 impl FileHeaders {

@@ -10,6 +10,8 @@ pub fn draw_left_panel(
     info_frame_fill: egui::Color32,
     info_frame_stroke: egui::Stroke,
 ) {
+    // TODO(perf): stats calculation can be expensive on large trees. Consider a background stats job with cached results,
+    // or incrementally maintained counters per subtree.
     egui::SidePanel::left("left_panel")
         .resizable(true)
         .default_width(400.0)
@@ -222,7 +224,7 @@ pub fn draw_left_panel(
                             got = stats.count_correct();
                             missing = crate::ui_missing_count(stats);
                             fixable = crate::ui_fixable_count(stats);
-                            unknown = stats.roms_unknown;
+                            unknown = stats.roms_unknown + stats.roms_in_to_sort;
                         } else {
                             drop(node);
                             let mut stats = rv_core::repair_status::RepairStatus::new();
@@ -233,7 +235,7 @@ pub fn draw_left_panel(
                             got = stats.count_correct();
                             missing = crate::ui_missing_count(&stats);
                             fixable = crate::ui_fixable_count(&stats);
-                            unknown = stats.roms_unknown;
+                            unknown = stats.roms_unknown + stats.roms_in_to_sort;
                         }
                     }
 

@@ -30,12 +30,9 @@ pub use xml_writer::*;
 /// ClrMamePro (CMP) DAT, DOSCenter DAT, or RomCenter DAT, and routes it to
 /// the appropriate highly optimized parser.
 ///
-/// Differences from C#:
-/// - C# uses a stream-based parser architecture (`DatReader`) that reads files line-by-line
-///   or block-by-block.
-/// - The Rust version takes advantage of zero-copy (or low-copy) full-file buffers `Cow<str>`,
-///   rapidly searching for signatures (`<!DOCTYPE`, `<datafile>`) and feeding them to specialized
-///   parsers (`quick-xml` for XML, custom iterators for CMP) to achieve massively higher throughput.
+/// Implementation notes:
+/// - Uses a borrowed-or-owned `Cow<str>` to avoid allocations when inputs are valid UTF-8.
+/// - Sniffs format using lightweight signature checks, then dispatches to specialized parsers.
 pub fn read_dat(buffer: &[u8], filename: &str) -> Result<DatHeader, String> {
     use std::borrow::Cow;
     // Avoid an unconditional allocation: borrow when UTF-8 is valid, else fallback to lossy String

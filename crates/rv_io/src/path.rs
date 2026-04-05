@@ -4,12 +4,7 @@ use crate::name_fix::NameFix;
 
 /// Cross-platform wrapper for path string manipulation.
 ///
-/// `Path` mimics the static methods of the C# `System.IO.Path` class,
-/// providing standard wrappers for extracting file extensions, names, and directories
-/// from string paths.
-///
-/// Differences from C#:
-/// - Internally utilizes Rust's highly robust `std::path::Path` rather than raw string splitting.
+/// Provides helpers for extracting file extensions, names, and directories from string paths.
 pub struct Path;
 
 impl Path {

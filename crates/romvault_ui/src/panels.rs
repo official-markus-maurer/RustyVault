@@ -6,10 +6,8 @@ use eframe::egui;
 /// `panels.rs` manages the structural layout of the main window, separating the left tree
 /// from the right grids, and drawing the bottom status logs and progress bars.
 ///
-/// Differences from C#:
-/// - C# uses `SplitContainer` components configured via the Visual Studio designer.
-/// - The Rust version dynamically calculates `egui::SidePanel` and `egui::CentralPanel`
-///   widths to achieve a responsive split layout.
+/// Implementation notes:
+/// - Uses `egui` panels to create a responsive split layout.
 pub fn draw_info_and_filters(app: &mut RomVaultApp, ui: &mut egui::Ui) {
     fn group_box<H: FnOnce(&mut egui::Ui), B: FnOnce(&mut egui::Ui)>(
         ui: &mut egui::Ui,

@@ -83,13 +83,15 @@ fn tree_color_from_stats(stats: &rv_core::repair_status::RepairStatus) -> egui::
             && (unknown_roms(stats) == stats.total_roms || merged_roms(stats) == stats.total_roms))
     {
         egui::Color32::from_rgb(150, 150, 150)
-    } else if stats.roms_fixes == stats.total_roms && stats.total_roms > 0 {
+    } else if (stats.roms_fixes == stats.total_roms || stats.roms_in_to_sort == stats.total_roms)
+        && stats.total_roms > 0
+    {
         egui::Color32::from_rgb(0, 200, 200)
     } else if correct_roms(stats) == stats.total_roms && stats.total_roms > 0 {
         egui::Color32::from_rgb(0, 200, 0)
     } else if missing_roms(stats) == stats.total_roms && stats.total_roms > 0 {
         egui::Color32::from_rgb(200, 0, 0)
-    } else if correct_roms(stats) > 0 || stats.roms_fixes > 0 {
+    } else if correct_roms(stats) > 0 || stats.roms_fixes > 0 || stats.roms_in_to_sort > 0 {
         egui::Color32::from_rgb(200, 200, 0)
     } else {
         egui::Color32::WHITE
@@ -102,6 +104,7 @@ fn tree_icon_idx_from_stats(stats: &rv_core::repair_status::RepairStatus) -> i32
     } else if unknown_roms(stats) == stats.total_roms
         || merged_roms(stats) == stats.total_roms
         || stats.roms_fixes > 0
+        || stats.roms_in_to_sort > 0
     {
         4
     } else if correct_plain(stats) == 0 && missing_plain(stats) > 0 {

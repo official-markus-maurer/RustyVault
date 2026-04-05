@@ -2,9 +2,6 @@
 ///
 /// `ZipStructure` tracks whether a file is a standard archive or if it has been formatted
 /// to a deterministic standard like `TorrentZip` or `RVZSTD`.
-///
-/// Differences from C#:
-/// - Identical 1:1 mapping to the C# `Compress.ZipStructure` enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ZipStructure {
     None = 0,           // No structure

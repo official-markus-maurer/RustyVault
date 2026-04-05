@@ -10,9 +10,8 @@ use crate::cache::Cache;
 
 /// Represents the global database state for the RomVault core.
 ///
-/// In the C# reference, this is managed as a static `DB` class containing the `dirTree`.
-/// In Rust, this is managed as a `thread_local!` instance of `DB` holding the root node of the file tree.
-/// The `dir_root` is a hierarchical tree of `RvFile` nodes representing physical and virtual (DAT) directories.
+/// This is managed as a `thread_local!` `DB` that owns the root node of the file tree.
+/// `dir_root` is a hierarchical tree of `RvFile` nodes representing physical and virtual (DAT) directories.
 pub struct DB {
     /// The root node of the internal file tree.
     pub dir_root: Rc<RefCell<RvFile>>,
@@ -65,8 +64,7 @@ impl DB {
 
     /// Checks for and creates essential physical root directories (`DatRoot`, `RustyVault`, `ToSort`).
     ///
-    /// This mimics the C# initialization behavior where physical paths are generated
-    /// based on the global configuration upon starting up the DB.
+    /// Ensures physical paths exist based on the global configuration.
     pub fn check_create_root_dirs() {
         // Create DatRoot
         let dat_root = crate::settings::get_settings().dat_root;
@@ -152,7 +150,6 @@ impl Default for DB {
 
 thread_local! {
     /// Global, thread-local database instance.
-    /// Mimics the C# static `DB` class structure while abiding by Rust's safety guarantees.
     pub static GLOBAL_DB: RefCell<Option<DB>> = const { RefCell::new(None) };
 }
 

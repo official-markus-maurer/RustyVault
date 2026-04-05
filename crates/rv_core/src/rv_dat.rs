@@ -82,10 +82,8 @@ pub struct DatMetaData {
 /// (e.g. `AutoAddedDirectory`, `MultiDatOverride`) extracted from a `.dat` file.
 /// It is usually bound to an `RvFile` representing the root directory of that DAT's games.
 ///
-/// Differences from C#:
-/// - The C# version tightly packs `DatData` strings into an array indexed by the enum.
-/// - The Rust version stores them dynamically in a `Vec<DatMetaData>` to optimize serialization
-///   size, as most DATs only populate a few of the 18 possible metadata fields.
+/// Storage notes:
+/// - Metadata is stored as a sparse `Vec<DatMetaData>` (most DATs only populate a subset of fields).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RvDat {
     /// List of key-value metadata pairs

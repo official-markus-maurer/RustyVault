@@ -1,8 +1,8 @@
 # RustyRoms (RustyVault)
 
-**RustyRoms** is a high-performance, cross-platform Rust port of the popular **RomVault** ROM management utility. 
+**RustyRoms** is a high-performance, cross-platform Rust port of the popular **RomVault** ROM management utility.
 
-It provides an extremely fast engine for scanning, verifying, and organizing massive collections of emulation files using industry-standard DAT files (Logiqx XML, ClrMamePro, RomCenter). By leveraging Rust's memory safety and zero-copy abstractions, RustyRoms aims to significantly accelerate the ROM auditing pipeline while remaining structurally compatible with the original C# RomVault implementation.
+It provides an extremely fast engine for scanning, verifying, and organizing massive collections of emulation files using industry-standard DAT files (Logiqx XML, ClrMamePro, RomCenter). By leveraging Rust's memory safety and zero-copy abstractions, RustyRoms aims to significantly accelerate the ROM auditing pipeline while remaining structurally compatible with the upstream RomVault behavior and file formats.
 
 ## Features
 
@@ -56,18 +56,18 @@ cargo run -p trrntzip_cmd --release -- <path_to_zip>
 
 ### Documentation
 
-The entire codebase is extensively documented using `rustdoc`. Every module and architectural decision is cross-referenced with its C# RomVault counterpart.
+The codebase is documented using `rustdoc`.
 
 To generate and view the local documentation:
 ```bash
 cargo doc --no-deps --document-private-items --open
 ```
 
-You can also view the complete architectural comparison between this Rust port and the original C# application in [PARITY_DIFFERENCES.md](PARITY_DIFFERENCES.md).
+Parity notes and missing features are tracked as `TODO:` items in the codebase.
 
 ## Development Status
 
-RustyRoms is actively under development. Currently, it acts as an extremely fast DAT parser and file scanner. Full parity with the C# `TorrentZipRebuild` in-place byte modification logic is currently being implemented.
+RustyRoms is actively under development. Currently, it acts as an extremely fast DAT parser and file scanner. Full parity with the upstream TorrentZip rebuild behavior is still being implemented.
 
 ## License
 

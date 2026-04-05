@@ -3,6 +3,7 @@ name = "romvault_ui"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+build = "build.rs"
 
 [dependencies]
 eframe = "0.27"

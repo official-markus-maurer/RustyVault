@@ -23,12 +23,10 @@ use std::path::Path;
 /// zip in strict alphabetical order, forces the Deflate compression parameters,
 /// sets timestamps to the TorrentZip epoch, and recomputes the structural hashes.
 ///
-/// Differences from C#:
-/// - The C# `TorrentZipRebuild` relies on a highly specialized `Compress.ZipFile` writer that handles
-///   raw DEFLATE streams and deterministic TorrentZip local header offsets.
-/// - The Rust version currently implements the structure and sorting pipeline, but relies on standard
-///   file I/O writing streams that simulate the `ICompress` interface. Full TorrentZip deterministic
-///   byte alignment is still pending a robust Rust Zip-streaming replacement crate.
+/// Implementation notes:
+/// - Rebuilds the archive in a deterministic order and applies standardized timestamps/flags.
+///
+/// TODO: Guarantee full byte-for-byte deterministic layout for strict TorrentZip validation.
 pub struct TorrentZipRebuild;
 
 struct RawZipEntry {

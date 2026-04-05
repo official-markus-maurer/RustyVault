@@ -8,11 +8,9 @@ pub const TRRNTZIP_DOS_DATETIME: i64 = ((8600u32 as i64) << 16) | 48128i64;
 /// that represent the raw parsed contents of an XML/CMP DAT file before it is folded into the
 /// core `rv_core::DB` file tree.
 ///
-/// Differences from C#:
-/// - The C# `DatReader` directly interacts with the core `RvFile` and `RvDir` database nodes.
-/// - The Rust version completely decouples the parsing phase from the database representation,
-///   constructing an intermediate AST (`DatNode`) which is later safely merged by `rv_core::read_dat::DatUpdate`.
-///   This decoupling is what enables the Rust port to parse multiple DAT files entirely in parallel!
+/// Implementation notes:
+/// - Parsing produces a standalone AST (`DatNode`) that is later merged into the DB tree.
+/// - This separation allows parsing multiple DATs in parallel without sharing DB state.
 #[derive(Debug, Clone)]
 pub struct DatNode {
     pub name: String,

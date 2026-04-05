@@ -9,10 +9,8 @@ use std::rc::Rc;
 /// of `RvFile` nodes from the `dir_root` tree, such as generating flat lists
 /// of all currently selected directories.
 ///
-/// Differences from C#:
-/// - The C# `DB` class includes many of these helper functions directly within it.
-/// - The Rust version splits them into a dedicated `DbHelper` module to keep `db.rs` clean
-///   and prevent `RefCell` borrowing collisions during recursive queries.
+/// This module keeps common traversal/query helpers separate from the core DB struct to reduce
+/// borrow complexity during recursive walks.
 pub struct DbHelper;
 
 impl DbHelper {

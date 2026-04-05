@@ -17,12 +17,9 @@ use std::rc::Rc;
 /// parses them using `dat_reader`, and translates the resulting `DatNode` hierarchies into
 /// `RvFile` nodes within the `dir_root` DB tree.
 ///
-/// Differences from C#:
-/// - The C# implementation uses background workers for XML parsing but integrates into the UI thread synchronously.
-/// - The Rust version implements highly scalable parallelization via `rayon`. It first reads and parses
-///   ALL `.dat` files simultaneously in parallel (since XML/CMP parsing is CPU bound and independent).
-///   It then sequentially integrates the parsed ASTs into the `Rc<RefCell<RvFile>>` tree, dramatically
-///   reducing the "Update DATs" time for large `DatRoot` setups.
+/// Implementation notes:
+/// - Parsing is parallelized with `rayon` (I/O + parse is independent per DAT).
+/// - Integration into the shared `Rc<RefCell<RvFile>>` tree is performed sequentially.
 pub struct DatUpdate;
 
 impl DatUpdate {

@@ -4,6 +4,10 @@ impl FindFixes {
         info!("Starting FindFixes pass...");
         Self::reset_status(Rc::clone(&root));
 
+        // TODO(perf): avoid collecting whole-tree vectors when possible; build indexes incrementally during traversal.
+        // TODO(threading): parallelize expensive steps (hash-index construction, redundant-match checks) with careful Rc/RefCell boundaries.
+        // TODO(threading): consider splitting FindFixes into phases with progress reporting/cancellation.
+        // TODO(perf): reduce repeated allocations in the candidate-building path (seen HashSets, candidate Vecs).
         let mut all_dat_files = Vec::new();
         Self::get_all_dat_files(Rc::clone(&root), &mut all_dat_files);
         Self::hydrate_physical_dat_files(&all_dat_files);
@@ -37,6 +41,8 @@ impl FindFixes {
             let mut missing_ref = missing.borrow_mut();
             let size = missing_ref.size.unwrap_or(0);
 
+            // TODO(perf): stop cloning `Vec<u8>` keys for HashMap lookups. Consider storing hashes as fixed arrays
+            // and using borrowed-key lookups, or interning hash bytes to share allocations.
             if matches!(
                 missing_ref.dat_status(),
                 DatStatus::InDatMerged | DatStatus::InDatNoDump
@@ -50,15 +56,23 @@ impl FindFixes {
             let mut crc_candidates = Vec::new();
             let mut crc_seen = HashSet::new();
 
-            if let Some(ref crc) = missing_ref.crc {
-                if let Some(got_list) = crc_map.get(&(size, crc.clone())) {
+            if let Some(crc) = missing_ref
+                .crc
+                .as_deref()
+                .and_then(|b| <[u8; 4]>::try_from(b).ok())
+            {
+                if let Some(got_list) = crc_map.get(&(size, crc)) {
                     Self::extend_unique_got_candidates(&mut crc_candidates, got_list, &mut crc_seen);
                 }
             }
-            if let Some(ref crc) = missing_ref.crc {
+            if let Some(crc) = missing_ref
+                .crc
+                .as_deref()
+                .and_then(|b| <[u8; 4]>::try_from(b).ok())
+            {
                 let alt_size = missing_ref.alt_size.unwrap_or(size);
                 if alt_size != size {
-                    if let Some(got_list) = crc_map.get(&(alt_size, crc.clone())) {
+                    if let Some(got_list) = crc_map.get(&(alt_size, crc)) {
                         Self::extend_unique_got_candidates(
                             &mut crc_candidates,
                             got_list,
@@ -67,9 +81,13 @@ impl FindFixes {
                     }
                 }
             }
-            if let Some(ref alt_crc) = missing_ref.alt_crc {
+            if let Some(alt_crc) = missing_ref
+                .alt_crc
+                .as_deref()
+                .and_then(|b| <[u8; 4]>::try_from(b).ok())
+            {
                 let alt_size = missing_ref.alt_size.unwrap_or(size);
-                if let Some(got_list) = crc_map.get(&(alt_size, alt_crc.clone())) {
+                if let Some(got_list) = crc_map.get(&(alt_size, alt_crc)) {
                     Self::extend_unique_got_candidates(&mut crc_candidates, got_list, &mut crc_seen);
                 }
             }
@@ -80,8 +98,12 @@ impl FindFixes {
             if found_got_idx.is_none() {
                 let mut sha1_candidates = Vec::new();
                 let mut sha1_seen = HashSet::new();
-                if let Some(ref sha1) = missing_ref.sha1 {
-                    if let Some(got_list) = sha1_map.get(&(size, sha1.clone())) {
+                if let Some(sha1) = missing_ref
+                    .sha1
+                    .as_deref()
+                    .and_then(|b| <[u8; 20]>::try_from(b).ok())
+                {
+                    if let Some(got_list) = sha1_map.get(&(size, sha1)) {
                         Self::extend_unique_got_candidates(
                             &mut sha1_candidates,
                             got_list,
@@ -89,10 +111,14 @@ impl FindFixes {
                         );
                     }
                 }
-                if let Some(ref sha1) = missing_ref.sha1 {
+                if let Some(sha1) = missing_ref
+                    .sha1
+                    .as_deref()
+                    .and_then(|b| <[u8; 20]>::try_from(b).ok())
+                {
                     let alt_size = missing_ref.alt_size.unwrap_or(size);
                     if alt_size != size {
-                        if let Some(got_list) = sha1_map.get(&(alt_size, sha1.clone())) {
+                        if let Some(got_list) = sha1_map.get(&(alt_size, sha1)) {
                             Self::extend_unique_got_candidates(
                                 &mut sha1_candidates,
                                 got_list,
@@ -101,9 +127,13 @@ impl FindFixes {
                         }
                     }
                 }
-                if let Some(ref alt_sha1) = missing_ref.alt_sha1 {
+                if let Some(alt_sha1) = missing_ref
+                    .alt_sha1
+                    .as_deref()
+                    .and_then(|b| <[u8; 20]>::try_from(b).ok())
+                {
                     let alt_size = missing_ref.alt_size.unwrap_or(size);
-                    if let Some(got_list) = sha1_map.get(&(alt_size, alt_sha1.clone())) {
+                    if let Some(got_list) = sha1_map.get(&(alt_size, alt_sha1)) {
                         Self::extend_unique_got_candidates(
                             &mut sha1_candidates,
                             got_list,
@@ -120,15 +150,23 @@ impl FindFixes {
             if found_got_idx.is_none() {
                 let mut md5_candidates = Vec::new();
                 let mut md5_seen = HashSet::new();
-                if let Some(ref md5) = missing_ref.md5 {
-                    if let Some(got_list) = md5_map.get(&(size, md5.clone())) {
+                if let Some(md5) = missing_ref
+                    .md5
+                    .as_deref()
+                    .and_then(|b| <[u8; 16]>::try_from(b).ok())
+                {
+                    if let Some(got_list) = md5_map.get(&(size, md5)) {
                         Self::extend_unique_got_candidates(&mut md5_candidates, got_list, &mut md5_seen);
                     }
                 }
-                if let Some(ref md5) = missing_ref.md5 {
+                if let Some(md5) = missing_ref
+                    .md5
+                    .as_deref()
+                    .and_then(|b| <[u8; 16]>::try_from(b).ok())
+                {
                     let alt_size = missing_ref.alt_size.unwrap_or(size);
                     if alt_size != size {
-                        if let Some(got_list) = md5_map.get(&(alt_size, md5.clone())) {
+                        if let Some(got_list) = md5_map.get(&(alt_size, md5)) {
                             Self::extend_unique_got_candidates(
                                 &mut md5_candidates,
                                 got_list,
@@ -137,9 +175,13 @@ impl FindFixes {
                         }
                     }
                 }
-                if let Some(ref alt_md5) = missing_ref.alt_md5 {
+                if let Some(alt_md5) = missing_ref
+                    .alt_md5
+                    .as_deref()
+                    .and_then(|b| <[u8; 16]>::try_from(b).ok())
+                {
                     let alt_size = missing_ref.alt_size.unwrap_or(size);
-                    if let Some(got_list) = md5_map.get(&(alt_size, alt_md5.clone())) {
+                    if let Some(got_list) = md5_map.get(&(alt_size, alt_md5)) {
                         Self::extend_unique_got_candidates(&mut md5_candidates, got_list, &mut md5_seen);
                     }
                 }
@@ -361,15 +403,23 @@ impl FindFixes {
             let mut found_got_idx = None;
             let mut crc_candidates = Vec::new();
             let mut crc_seen = HashSet::new();
-            if let Some(ref crc) = missing_ref.crc {
-                if let Some(got_list) = crc_map.get(&(size, crc.clone())) {
+            if let Some(crc) = missing_ref
+                .crc
+                .as_deref()
+                .and_then(|b| <[u8; 4]>::try_from(b).ok())
+            {
+                if let Some(got_list) = crc_map.get(&(size, crc)) {
                     Self::extend_unique_got_candidates(&mut crc_candidates, got_list, &mut crc_seen);
                 }
             }
-            if let Some(ref crc) = missing_ref.crc {
+            if let Some(crc) = missing_ref
+                .crc
+                .as_deref()
+                .and_then(|b| <[u8; 4]>::try_from(b).ok())
+            {
                 let alt_size = missing_ref.alt_size.unwrap_or(size);
                 if alt_size != size {
-                    if let Some(got_list) = crc_map.get(&(alt_size, crc.clone())) {
+                    if let Some(got_list) = crc_map.get(&(alt_size, crc)) {
                         Self::extend_unique_got_candidates(
                             &mut crc_candidates,
                             got_list,
@@ -378,9 +428,13 @@ impl FindFixes {
                     }
                 }
             }
-            if let Some(ref alt_crc) = missing_ref.alt_crc {
+            if let Some(alt_crc) = missing_ref
+                .alt_crc
+                .as_deref()
+                .and_then(|b| <[u8; 4]>::try_from(b).ok())
+            {
                 let alt_size = missing_ref.alt_size.unwrap_or(size);
-                if let Some(got_list) = crc_map.get(&(alt_size, alt_crc.clone())) {
+                if let Some(got_list) = crc_map.get(&(alt_size, alt_crc)) {
                     Self::extend_unique_got_candidates(&mut crc_candidates, got_list, &mut crc_seen);
                 }
             }
@@ -391,8 +445,12 @@ impl FindFixes {
             if found_got_idx.is_none() {
                 let mut sha1_candidates = Vec::new();
                 let mut sha1_seen = HashSet::new();
-                if let Some(ref sha1) = missing_ref.sha1 {
-                    if let Some(got_list) = sha1_map.get(&(size, sha1.clone())) {
+                if let Some(sha1) = missing_ref
+                    .sha1
+                    .as_deref()
+                    .and_then(|b| <[u8; 20]>::try_from(b).ok())
+                {
+                    if let Some(got_list) = sha1_map.get(&(size, sha1)) {
                         Self::extend_unique_got_candidates(
                             &mut sha1_candidates,
                             got_list,
@@ -400,10 +458,14 @@ impl FindFixes {
                         );
                     }
                 }
-                if let Some(ref sha1) = missing_ref.sha1 {
+                if let Some(sha1) = missing_ref
+                    .sha1
+                    .as_deref()
+                    .and_then(|b| <[u8; 20]>::try_from(b).ok())
+                {
                     let alt_size = missing_ref.alt_size.unwrap_or(size);
                     if alt_size != size {
-                        if let Some(got_list) = sha1_map.get(&(alt_size, sha1.clone())) {
+                        if let Some(got_list) = sha1_map.get(&(alt_size, sha1)) {
                             Self::extend_unique_got_candidates(
                                 &mut sha1_candidates,
                                 got_list,
@@ -412,9 +474,13 @@ impl FindFixes {
                         }
                     }
                 }
-                if let Some(ref alt_sha1) = missing_ref.alt_sha1 {
+                if let Some(alt_sha1) = missing_ref
+                    .alt_sha1
+                    .as_deref()
+                    .and_then(|b| <[u8; 20]>::try_from(b).ok())
+                {
                     let alt_size = missing_ref.alt_size.unwrap_or(size);
-                    if let Some(got_list) = sha1_map.get(&(alt_size, alt_sha1.clone())) {
+                    if let Some(got_list) = sha1_map.get(&(alt_size, alt_sha1)) {
                         Self::extend_unique_got_candidates(
                             &mut sha1_candidates,
                             got_list,
@@ -431,15 +497,23 @@ impl FindFixes {
             if found_got_idx.is_none() {
                 let mut md5_candidates = Vec::new();
                 let mut md5_seen = HashSet::new();
-                if let Some(ref md5) = missing_ref.md5 {
-                    if let Some(got_list) = md5_map.get(&(size, md5.clone())) {
+                if let Some(md5) = missing_ref
+                    .md5
+                    .as_deref()
+                    .and_then(|b| <[u8; 16]>::try_from(b).ok())
+                {
+                    if let Some(got_list) = md5_map.get(&(size, md5)) {
                         Self::extend_unique_got_candidates(&mut md5_candidates, got_list, &mut md5_seen);
                     }
                 }
-                if let Some(ref md5) = missing_ref.md5 {
+                if let Some(md5) = missing_ref
+                    .md5
+                    .as_deref()
+                    .and_then(|b| <[u8; 16]>::try_from(b).ok())
+                {
                     let alt_size = missing_ref.alt_size.unwrap_or(size);
                     if alt_size != size {
-                        if let Some(got_list) = md5_map.get(&(alt_size, md5.clone())) {
+                        if let Some(got_list) = md5_map.get(&(alt_size, md5)) {
                             Self::extend_unique_got_candidates(
                                 &mut md5_candidates,
                                 got_list,
@@ -448,9 +522,13 @@ impl FindFixes {
                         }
                     }
                 }
-                if let Some(ref alt_md5) = missing_ref.alt_md5 {
+                if let Some(alt_md5) = missing_ref
+                    .alt_md5
+                    .as_deref()
+                    .and_then(|b| <[u8; 16]>::try_from(b).ok())
+                {
                     let alt_size = missing_ref.alt_size.unwrap_or(size);
-                    if let Some(got_list) = md5_map.get(&(alt_size, alt_md5.clone())) {
+                    if let Some(got_list) = md5_map.get(&(alt_size, alt_md5)) {
                         Self::extend_unique_got_candidates(&mut md5_candidates, got_list, &mut md5_seen);
                     }
                 }

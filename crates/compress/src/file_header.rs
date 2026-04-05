@@ -2,9 +2,6 @@
 ///
 /// `FileHeader` is a unified structure that stores metadata (filename, size, CRC, timestamps)
 /// for any file, regardless of whether it was extracted from a Zip, 7z, Gz, or is a raw file.
-///
-/// Differences from C#:
-/// - Maps 1:1 to the C# `Compress.FileHeader` class.
 #[derive(Debug, Clone, Default)]
 pub struct FileHeader {
     pub filename: String,

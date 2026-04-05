@@ -1,4 +1,12 @@
 impl ZipFile {
+    /// Opens a buffered write stream for a single ZIP entry.
+    ///
+    /// The returned writer buffers data into memory until [`close_write_stream_impl`] is called.
+    /// Depending on `raw`, the buffered content is treated as already-compressed payload bytes
+    /// (raw) or as uncompressed data that will be compressed during close.
+    ///
+    /// For structured ZIP formats (`zip_struct != None`), this enforces additional invariants
+    /// such as filename ordering, timestamp normalization, and required compression methods.
     pub(crate) fn open_write_stream_impl(
         &mut self,
         raw: bool,
@@ -67,6 +75,10 @@ impl ZipFile {
         Ok(Box::new(SharedBufferWriter { buffer }))
     }
 
+    /// Closes the currently open buffered write stream and writes its entry into the archive.
+    ///
+    /// When `raw` was `false`, CRC is computed from the uncompressed bytes unless explicitly
+    /// provided. When `raw` was `true`, `crc32` must be provided as 4 big-endian bytes.
     pub(crate) fn close_write_stream_impl(&mut self, crc32: &[u8]) -> ZipReturn {
         let Some(pending_write) = self.pending_write.take() else {
             return ZipReturn::ZipErrorOpeningFile;

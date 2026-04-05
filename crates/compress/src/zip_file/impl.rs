@@ -28,19 +28,18 @@ use zip_file_internal::{
     ManualZipWriter, PendingWrite, ReadSeek, SharedBufferWriter, ZipWriterFile,
 };
 
-/// ICompress wrapper for `.zip` files.
+/// [`ICompress`](crate::i_compress::ICompress) wrapper for `.zip` archives.
 ///
-/// `ZipFile` implements the `ICompress` trait for standard ZIP archives using the ecosystem
-/// `zip` crate. It handles opening the archive, reading its internal Central Directory headers,
-/// and streaming out the uncompressed byte payloads for the scanner.
+/// `ZipFile` supports both reading and writing ZIPs:
+/// - Read mode uses the ecosystem [`zip`] crate to enumerate entries and extract payloads.
+/// - Write mode uses a manual writer to support validator-oriented constraints such as
+///   deterministic ordering and structure normalization.
 ///
-/// Differences from C#:
-/// - The C# `Compress.ZipFile` is a fully custom, hand-rolled ZIP parser. It allows for
-///   arbitrary byte-level injection, custom header formatting, and zero-copy streaming
-///   directly into a newly formatted `TorrentZip` output stream.
-/// - This Rust implementation delegates to the standard `zip` crate. It perfectly supports
-///   extraction and hashing (`ZipFileOpenReadStream`), but does not yet implement the highly
-///   specialized in-place TorrentZip repacking APIs (`ZipFileOpenWriteStream`).
+/// The same type can also operate on in-memory ZIP data via [`ZipFile::zip_file_open_stream`],
+/// which is useful for scanners that already have the archive bytes available.
+///
+/// In write paths, the `zip_struct` field may be set to a non-`None` value to enforce extra
+/// invariants (compression method, timestamps, and directory ordering rules).
 pub struct ZipFile {
     zip_filename: String,
     zip_open_type: ZipOpenType,
@@ -66,6 +65,11 @@ impl ZipFile {
     const TORRENTZIP_DOS_TIME: u16 = 48128;
     const TORRENTZIP_DOS_DATE: u16 = 8600;
 
+    /// Creates a new `ZipFile` in the `Closed` state.
+    ///
+    /// This constructor does not open any backing file or allocate archive state beyond a few
+    /// empty vectors. Use the [`ICompress`](crate::i_compress::ICompress) methods (or
+    /// [`ZipFile::zip_file_open_stream`]) to open an archive for reading/writing.
     pub fn new() -> Self {
         Self {
             zip_filename: String::new(),
@@ -84,6 +88,11 @@ impl ZipFile {
         }
     }
 
+    /// Creates a new ZIP file on disk and assigns an expected structure profile.
+    ///
+    /// This is equivalent to calling `zip_file_create(new_filename)` via the
+    /// [`ICompress`](crate::i_compress::ICompress) implementation and, on success, setting
+    /// `self.zip_struct` to `zip_struct` so subsequent writes can be validated against it.
     pub fn zip_file_create_with_structure(
         &mut self,
         new_filename: &str,
@@ -160,6 +169,12 @@ impl ZipFile {
         true
     }
 
+    /// Opens a ZIP archive from a seekable stream by buffering it into memory.
+    ///
+    /// This method reads the entire stream into a `Vec<u8>`, constructs a [`zip::ZipArchive`]
+    /// over an in-memory cursor, and transitions the instance into `OpenRead`.
+    ///
+    /// When `read_headers` is `true`, file headers are parsed immediately.
     pub fn zip_file_open_stream<R: Read + Seek + 'static>(
         &mut self,
         mut stream: R,
@@ -194,6 +209,15 @@ impl ZipFile {
         }
     }
 
+    /// Computes the CRC32 of the central directory for "clean" ZIPs.
+    ///
+    /// This is used as a lightweight fingerprint for validator workflows. The CRC is only
+    /// returned when:
+    /// - The End of Central Directory can be located
+    /// - There is no trailing extra data
+    /// - No offset correction is needed
+    ///
+    /// The returned string is an uppercase 8-hex-digit value (e.g. `"1A2B3C4D"`).
     pub fn get_crc(&self) -> Option<String> {
         let bytes = if let Some(b) = self.zip_memory.as_deref() {
             b.to_vec()

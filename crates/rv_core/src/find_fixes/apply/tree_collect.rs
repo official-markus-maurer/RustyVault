@@ -11,13 +11,15 @@ impl FindFixes {
         let n = node.borrow();
         let selected = Self::is_tree_selected(&n);
 
-        if selected && !n.is_directory() {
+        if !n.is_directory() {
             match n.got_status() {
                 GotStatus::Got | GotStatus::Corrupt => {
-                    got_files.push(Rc::clone(&node));
+                    if selected || n.dat_status() == DatStatus::InToSort {
+                        got_files.push(Rc::clone(&node));
+                    }
                 }
                 GotStatus::NotGot => {
-                    if !matches!(n.dat_status(), DatStatus::NotInDat | DatStatus::InToSort) {
+                    if selected && !matches!(n.dat_status(), DatStatus::NotInDat | DatStatus::InToSort) {
                         missing_files.push(Rc::clone(&node));
                     }
                 }

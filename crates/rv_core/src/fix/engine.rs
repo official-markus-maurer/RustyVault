@@ -258,63 +258,93 @@ impl Fix {
 
     fn find_source_file(
         file: &RvFile,
-        crc_map: &HashMap<(u64, Vec<u8>), Rc<RefCell<RvFile>>>,
-        sha1_map: &HashMap<(u64, Vec<u8>), Rc<RefCell<RvFile>>>,
-        md5_map: &HashMap<(u64, Vec<u8>), Rc<RefCell<RvFile>>>,
+        crc_map: &HashMap<crate::hash_keys::CrcKey, Rc<RefCell<RvFile>>>,
+        sha1_map: &HashMap<crate::hash_keys::Sha1Key, Rc<RefCell<RvFile>>>,
+        md5_map: &HashMap<crate::hash_keys::Md5Key, Rc<RefCell<RvFile>>>,
     ) -> Option<Rc<RefCell<RvFile>>> {
         let size = file.size.unwrap_or(0);
         let alt_size = file.alt_size.unwrap_or(size);
 
-        if let Some(ref crc) = file.crc {
-            if let Some(found) = crc_map.get(&(size, crc.clone())) {
+        if let Some(key) = file.crc.as_deref().and_then(|b| crate::hash_keys::crc_key(size, b)) {
+            if let Some(found) = crc_map.get(&key) {
                 return Some(Rc::clone(found));
             }
         }
-        if let Some(ref crc) = file.crc {
-            if alt_size != size {
-                if let Some(found) = crc_map.get(&(alt_size, crc.clone())) {
+        if alt_size != size {
+            if let Some(key) =
+                file.crc.as_deref().and_then(|b| crate::hash_keys::crc_key(alt_size, b))
+            {
+                if let Some(found) = crc_map.get(&key) {
                     return Some(Rc::clone(found));
                 }
             }
         }
-        if let Some(ref alt_crc) = file.alt_crc {
-            if let Some(found) = crc_map.get(&(alt_size, alt_crc.clone())) {
+        if let Some(key) = file
+            .alt_crc
+            .as_deref()
+            .and_then(|b| crate::hash_keys::crc_key(alt_size, b))
+        {
+            if let Some(found) = crc_map.get(&key) {
                 return Some(Rc::clone(found));
             }
         }
 
-        if let Some(ref sha1) = file.sha1 {
-            if let Some(found) = sha1_map.get(&(size, sha1.clone())) {
+        if let Some(key) = file
+            .sha1
+            .as_deref()
+            .and_then(|b| crate::hash_keys::sha1_key(size, b))
+        {
+            if let Some(found) = sha1_map.get(&key) {
                 return Some(Rc::clone(found));
             }
         }
-        if let Some(ref sha1) = file.sha1 {
-            if alt_size != size {
-                if let Some(found) = sha1_map.get(&(alt_size, sha1.clone())) {
+        if alt_size != size {
+            if let Some(key) = file
+                .sha1
+                .as_deref()
+                .and_then(|b| crate::hash_keys::sha1_key(alt_size, b))
+            {
+                if let Some(found) = sha1_map.get(&key) {
                     return Some(Rc::clone(found));
                 }
             }
         }
-        if let Some(ref alt_sha1) = file.alt_sha1 {
-            if let Some(found) = sha1_map.get(&(alt_size, alt_sha1.clone())) {
+        if let Some(key) = file
+            .alt_sha1
+            .as_deref()
+            .and_then(|b| crate::hash_keys::sha1_key(alt_size, b))
+        {
+            if let Some(found) = sha1_map.get(&key) {
                 return Some(Rc::clone(found));
             }
         }
 
-        if let Some(ref md5) = file.md5 {
-            if let Some(found) = md5_map.get(&(size, md5.clone())) {
+        if let Some(key) = file
+            .md5
+            .as_deref()
+            .and_then(|b| crate::hash_keys::md5_key(size, b))
+        {
+            if let Some(found) = md5_map.get(&key) {
                 return Some(Rc::clone(found));
             }
         }
-        if let Some(ref md5) = file.md5 {
-            if alt_size != size {
-                if let Some(found) = md5_map.get(&(alt_size, md5.clone())) {
+        if alt_size != size {
+            if let Some(key) = file
+                .md5
+                .as_deref()
+                .and_then(|b| crate::hash_keys::md5_key(alt_size, b))
+            {
+                if let Some(found) = md5_map.get(&key) {
                     return Some(Rc::clone(found));
                 }
             }
         }
-        if let Some(ref alt_md5) = file.alt_md5 {
-            if let Some(found) = md5_map.get(&(alt_size, alt_md5.clone())) {
+        if let Some(key) = file
+            .alt_md5
+            .as_deref()
+            .and_then(|b| crate::hash_keys::md5_key(alt_size, b))
+        {
+            if let Some(found) = md5_map.get(&key) {
                 return Some(Rc::clone(found));
             }
         }
@@ -527,9 +557,9 @@ impl Fix {
         zip_file: Rc<RefCell<RvFile>>,
         queue: &mut Vec<Rc<RefCell<RvFile>>>,
         total_fixed: &mut i32,
-        crc_map: &HashMap<(u64, Vec<u8>), Rc<RefCell<RvFile>>>,
-        sha1_map: &HashMap<(u64, Vec<u8>), Rc<RefCell<RvFile>>>,
-        md5_map: &HashMap<(u64, Vec<u8>), Rc<RefCell<RvFile>>>,
+        crc_map: &HashMap<crate::hash_keys::CrcKey, Rc<RefCell<RvFile>>>,
+        sha1_map: &HashMap<crate::hash_keys::Sha1Key, Rc<RefCell<RvFile>>>,
+        md5_map: &HashMap<crate::hash_keys::Md5Key, Rc<RefCell<RvFile>>>,
     ) {
         if Self::try_zip_move(
             Rc::clone(&zip_file),
@@ -569,10 +599,15 @@ impl Fix {
         file: Rc<RefCell<RvFile>>,
         queue: &mut Vec<Rc<RefCell<RvFile>>>,
         total_fixed: &mut i32,
-        crc_map: &HashMap<(u64, Vec<u8>), Rc<RefCell<RvFile>>>,
-        sha1_map: &HashMap<(u64, Vec<u8>), Rc<RefCell<RvFile>>>,
-        md5_map: &HashMap<(u64, Vec<u8>), Rc<RefCell<RvFile>>>,
+        crc_map: &HashMap<crate::hash_keys::CrcKey, Rc<RefCell<RvFile>>>,
+        sha1_map: &HashMap<crate::hash_keys::Sha1Key, Rc<RefCell<RvFile>>>,
+        md5_map: &HashMap<crate::hash_keys::Md5Key, Rc<RefCell<RvFile>>>,
     ) {
+        // TODO(threading): consider parallelizing independent file fixes, but guard against:
+        // - multiple targets writing into the same directory
+        // - sources that share the same physical backing
+        // - archive rebuild steps that must be serialized per-archive
+        // TODO(perf): avoid repeated full reads of source bytes for large archives by streaming and/or using OS copy APIs.
         let (rep_status, name, current_path, target_path, is_read_only) = {
             let file_ref = file.borrow();
             let current_path = Self::build_physical_path(Rc::clone(&file), true);

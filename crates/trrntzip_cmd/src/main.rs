@@ -11,8 +11,7 @@ use trrntzip::torrent_zip::TorrentZip;
 
 /// CLI tool for verifying and rebuilding `.zip` files into `TorrentZip` format.
 ///
-/// `trrntzip_cmd` mirrors the exact command-line arguments and capabilities of the C#
-/// `TrrntZip.Net` utility, allowing users to normalize archive file metadata (like timestamps
+/// `trrntzip_cmd` normalizes archive file metadata (like timestamps
 /// and file ordering) so their CRCs are deterministic across all computers.
 fn main() {
     let args: Vec<String> = env::args().collect();

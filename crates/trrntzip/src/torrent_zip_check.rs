@@ -7,9 +7,8 @@ use crate::zipped_file::ZippedFile;
 /// its contents. It verifies file ordering, directory separators, compression methods,
 /// timestamps, and file name casings to determine if a repack is required.
 ///
-/// Differences from C#:
-/// - Functionally maps 1:1 to the C# `TrrntZip.TorrentZipCheck` logic.
-/// - The `TrrntZipStatus` bitflag accumulation has been strictly typed.
+/// Implementation notes:
+/// - Accumulates failures into a typed `TrrntZipStatus` bitflag set.
 pub struct TorrentZipCheck;
 
 impl TorrentZipCheck {

@@ -130,12 +130,6 @@ fn rescan_selected_roots(root: Rc<RefCell<RvFile>>, scan_level: EScanLevel) {
 ///
 /// `rom_vault` provides a fully text-based command line interface to interact with the
 /// core `RustyVault` engine (`rv_core`) without needing to launch the `egui` desktop application.
-///
-/// Differences from C#:
-/// - The original C# application (`RomVault`) only shipped as a WinForms desktop application
-///   without a dedicated interactive CLI headless loop.
-/// - This Rust port includes this CLI binary specifically to allow the engine to run on headless
-///   servers (e.g. Linux Docker containers, NAS systems) for automated ROM management.
 fn main() {
     rv_core::settings::load_settings_from_file();
     let settings = rv_core::settings::get_settings();

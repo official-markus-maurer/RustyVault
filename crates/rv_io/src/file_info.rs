@@ -5,11 +5,7 @@ use crate::name_fix::NameFix;
 
 /// Object-oriented wrapper representing a specific file on disk.
 ///
-/// `FileInfo` mimics the C# `System.IO.FileInfo` class. It encapsulates
-/// a file path and provides methods to query its metadata (size, last modified time).
-///
-/// Differences from C#:
-/// - Internally delegates to `std::fs::metadata`.
+/// Encapsulates a file path and provides access to common metadata (size, timestamps).
 #[derive(Debug, Clone)]
 pub struct FileInfo {
     pub name: String,

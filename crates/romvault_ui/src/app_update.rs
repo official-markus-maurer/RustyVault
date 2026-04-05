@@ -5,11 +5,14 @@ use crate::RomVaultApp;
 impl eframe::App for RomVaultApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         crate::assets::set_dark_mode(ctx.style().visuals.dark_mode);
+        // TODO(perf): consider lowering repaint frequency when idle; right now tasks/SAM force frequent repaints.
+        // TODO(threading): consider pushing task log events via a bounded channel to avoid unbounded growth.
         if crate::startup_ui::draw_startup(self, ctx) {
             return;
         }
         self.poll_sam_worker();
-        if self.sam_running {
+        self.poll_task_worker();
+        if self.sam_running || self.task_running {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         self.update_artwork();

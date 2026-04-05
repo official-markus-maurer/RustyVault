@@ -9,10 +9,9 @@ use std::io::{Read, Write};
 /// through a single API. It defines methods for opening archives, iterating over
 /// their headers, and extracting read/write streams.
 ///
-/// Differences from C#:
-/// - Maps exactly to the C# `Compress.ICompress` interface. The stream returns are
-///   wrapped in `Result<(Box<dyn Read>, u64), ZipReturn>` to handle dynamic stream
-///   types safely in Rust.
+/// Design notes:
+/// - Read streams return `(Read, uncompressed_size)` to allow callers to report progress without
+///   needing to inspect format-specific metadata.
 pub trait ICompress {
     fn local_files_count(&self) -> usize;
 

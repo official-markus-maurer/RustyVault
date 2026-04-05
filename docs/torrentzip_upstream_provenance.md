@@ -15,7 +15,7 @@
   - https://github.com/jstedfast/Ionic.Zlib
 - jzlib reference tree:
   - https://github.com/ymnk/jzlib
-- Public C# mirror showing the DotNetZip / jzlib / zlib-1.1.3 lineage in source headers:
+- Public managed-code mirror showing the DotNetZip / jzlib / zlib-1.1.3 lineage in source headers:
   - http://fangmiaokeji.cn:30000/linweizhu/emergencysystem/-/raw/515faba137383f0503ca4ff487e55d2756798dae/Assets/Plugins/Best%20HTTP/Source/Decompression/ZTree.cs
 
 ## Meaning For RustyRoms

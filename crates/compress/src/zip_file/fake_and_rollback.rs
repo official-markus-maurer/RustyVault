@@ -1,4 +1,12 @@
 impl ZipFile {
+    /// Mutates a validator-tagged ZIP file so that it no longer validates as "clean".
+    ///
+    /// This helper looks for a trailing `TORRENTZIPPED-...` or `RVZSTD-...` comment and, when
+    /// present, overwrites the last 8 bytes of the file with ASCII `0` bytes. The intent is to
+    /// force downstream tools to treat the file as changed.
+    ///
+    /// If the file is not recognized as using a supported validator comment layout, this is a
+    /// no-op that returns `Ok(())`.
     pub fn break_trrntzip(path: &str) -> std::io::Result<()> {
         let mut file = File::options().read(true).write(true).open(path)?;
         let mut bytes = Vec::new();
@@ -44,6 +52,10 @@ impl ZipFile {
         Ok(())
     }
 
+    /// Puts the instance into "fake write" mode.
+    ///
+    /// Fake write mode allows building a ZIP in memory (via [`zip_file_fake_open_memory_stream`]
+    /// and related APIs) without opening a physical output file.
     pub fn zip_create_fake(&mut self) {
         if self.zip_open_type != ZipOpenType::Closed {
             return;
@@ -52,6 +64,9 @@ impl ZipFile {
         self.fake_write = true;
     }
 
+    /// Starts a fake in-memory ZIP writer session.
+    ///
+    /// Returns [`ZipReturn::ZipWritingToInputFile`] if the instance is not in fake write mode.
     pub fn zip_file_fake_open_memory_stream(&mut self) -> ZipReturn {
         if self.zip_open_type != ZipOpenType::OpenFakeWrite {
             return ZipReturn::ZipWritingToInputFile;
@@ -62,6 +77,9 @@ impl ZipFile {
         ZipReturn::ZipGood
     }
 
+    /// Finishes a fake in-memory ZIP writer session and returns the produced bytes.
+    ///
+    /// Returns `None` when fake write mode is not active or when finalization fails.
     pub fn zip_file_fake_close_memory_stream(&mut self) -> Option<Vec<u8>> {
         if !self.fake_write {
             return None;
@@ -76,6 +94,12 @@ impl ZipFile {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Builds a local file header for a "fake" entry and records minimal metadata.
+    ///
+    /// This does not write any compressed payload. Callers provide the `file_offset`,
+    /// sizes, CRC, and compression method to synthesize the header bytes.
+    ///
+    /// On success, returns the raw local-header bytes that should be written to the output stream.
     pub fn zip_file_add_fake(
         &mut self,
         filename: &str,
@@ -164,6 +188,10 @@ impl ZipFile {
         Ok(out)
     }
 
+    /// Rolls back the most recent write operation.
+    ///
+    /// If a write stream is currently pending, it is discarded. Otherwise the underlying writer
+    /// is truncated back to the previous local header offset.
     pub fn zip_file_roll_back(&mut self) -> ZipReturn {
         if self.zip_open_type != ZipOpenType::OpenWrite {
             return ZipReturn::ZipWritingToInputFile;

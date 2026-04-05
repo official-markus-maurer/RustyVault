@@ -10,13 +10,10 @@ pub mod torrent_zip_rebuild;
 /// and converting them into deterministic `TorrentZip` format (where file ordering,
 /// timestamps, and compression methods are strictly standardized).
 ///
-/// Differences from C#:
-/// - The C# `TrrntZip` library natively wraps `Compress.ZipFile` to execute raw byte-level
-///   repacking without extracting files to the physical disk.
-/// - The Rust version currently implements the status checking logic (`TorrentZipCheck`)
-///   but relies on a simplified or incomplete rebuilding pass (`TorrentZipRebuild`),
-///   as the `zip` crate does not expose the same low-level stream injection capabilities
-///   as the custom C# library.
+/// Implementation notes:
+/// - Provides validation and rebuild utilities for deterministic ZIP formatting.
+///
+/// TODO: Implement a fully deterministic rebuild path that preserves byte-level ZIP invariants.
 pub mod trrntzip_status;
 pub mod zipped_file;
 

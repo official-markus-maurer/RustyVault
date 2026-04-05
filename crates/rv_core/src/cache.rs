@@ -1,9 +1,11 @@
+use crate::enums::ToSortDirType;
 use crate::rv_file::RvFile;
 use bincode;
+use crc32fast::Hasher;
 use memmap2::MmapOptions;
 use std::cell::RefCell;
 use std::fs::{self, File};
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::rc::{Rc, Weak};
 
 /// Cache management system for serializing and deserializing the RomVault database.
@@ -12,14 +14,10 @@ use std::rc::{Rc, Weak};
 /// (`DB::dir_root`) to a local binary file, allowing instantaneous startup times
 /// without having to re-parse all DATs and re-scan the entire physical disk.
 ///
-/// Differences from C#:
-/// - The C# reference uses a highly optimized, manually packed `BinaryWriter`/`BinaryReader`
-///   stream implementation (`DB.Write` / `DB.Read`). It manually walks the tree and packs
-///   enums into bit-fields.
-/// - The Rust implementation delegates serialization entirely to the `serde` framework
-///   via the `bincode` format, which offers near-native performance automatically.
-/// - Rust utilizes `memmap2` for zero-copy memory-mapped file loading during cache reads,
-///   massively accelerating deserialization of large trees compared to standard buffered I/O.
+/// Implementation notes:
+/// - Serialization uses `bincode` (serde-based) for compact, fast binary encoding.
+/// - Reads prefer memory-mapped I/O (`memmap2`) when possible to reduce copies.
+/// - A small header (magic/version/encoding) is written to detect incompatible caches early.
 pub struct Cache;
 
 impl Cache {
@@ -27,9 +25,11 @@ impl Cache {
     const BACKUP_FILE: &'static str = "RustyVault3_3.CacheBackup";
     const TMP_FILE: &'static str = "RustyVault3_3.Cache_tmp";
     const CACHE_MAGIC: &'static [u8; 8] = b"RVDBIN\0\0";
-    const CACHE_VERSION: u32 = 1;
+    const CACHE_VERSION: u32 = 2;
     const CACHE_ENCODING_VARINT: u8 = 1;
     const CACHE_ENCODING_FIXED: u8 = 2;
+    const CACHE_WRITE_ENCODING: u8 = Self::CACHE_ENCODING_VARINT;
+    const CACHE_FLAGS_NONE: u8 = 0;
 
     pub fn cache_path() -> std::path::PathBuf {
         let (cache_path, _backup_path, _tmp_path) = Self::cache_paths();
@@ -79,6 +79,10 @@ impl Cache {
     /// it falls back to a standard buffered reader. After deserialization, it invokes
     /// `relink_parents` to reconstruct the `Weak` pointer tree hierarchy that `serde` skips.
     pub fn read_cache() -> Option<Rc<RefCell<RvFile>>> {
+        // TODO(perf): cache read/write is full-tree serialization. Consider incremental updates or chunked storage to avoid
+        // rewriting the entire DB on every change.
+        // TODO(threading): move cache writes off the UI thread with a single background writer and atomic swap.
+        // TODO(perf): consider compressing large portions of the serialized tree and/or using zstd frames per chunk.
         let (cache_path, backup_path, tmp_path) = Self::cache_paths();
         let candidates = [cache_path.as_path(), backup_path.as_path()];
 
@@ -87,7 +91,12 @@ impl Cache {
                 continue;
             }
             match Self::read_cache_from_path(path) {
-                Ok(r) => return Some(r),
+                Ok((r, version)) => {
+                    if version != Self::CACHE_VERSION {
+                        Self::write_cache(Rc::clone(&r));
+                    }
+                    return Some(r);
+                }
                 Err(e) => {
                     if e.contains("AnyNotSupported") {
                         Self::quarantine_cache_files(&cache_path, &backup_path, &tmp_path);
@@ -109,6 +118,16 @@ impl Cache {
             let _ = fs::remove_file(&tmp_path);
         }
 
+        // TODO(perf): keep a dirty flag and avoid full cache writes when nothing changed.
+        // TODO(perf): avoid writing cache twice per UI task (pre + post). Prefer a single atomic write when the task completes.
+        // TODO(threading): move cache writes to a single background writer thread so tasks can enqueue "write requests"
+        // without blocking scan/fix work.
+        // TODO(perf): store cache as chunked data (e.g. per top-level root) to avoid serializing the entire tree on small changes.
+        // TODO(perf): consider interning repeated strings (names/paths/status strings) to reduce serialized size and encode time.
+        // TODO(perf): consider fixed-int encoding for bincode again, but only behind a bumped cache version + migration and/or
+        // a strict write+read-back validation gate (already present below).
+        // TODO(perf): avoid `prepare_for_serialize` walking the full tree on every write; maintain `dat_index_for_serde`
+        // incrementally as nodes are mutated.
         if let Some(parent) = cache_path.parent() {
             if !parent.as_os_str().is_empty() {
                 let _ = fs::create_dir_all(parent);
@@ -126,31 +145,108 @@ impl Cache {
 
             let mut writer = BufWriter::with_capacity(16 * 1024 * 1024, file);
 
-            let config = bincode::config::standard().with_variable_int_encoding();
+            let config = match Self::CACHE_WRITE_ENCODING {
+                Self::CACHE_ENCODING_VARINT => {
+                    bincode::config::standard().with_variable_int_encoding()
+                }
+                Self::CACHE_ENCODING_FIXED => bincode::config::standard(),
+                _ => bincode::config::standard(),
+            };
+
+            let payload_len_offset = Self::CACHE_MAGIC.len() + 4 + 1 + 1;
+            let payload_crc_offset = payload_len_offset + 8;
 
             if writer.write_all(Self::CACHE_MAGIC).is_err()
                 || writer
                     .write_all(&Self::CACHE_VERSION.to_le_bytes())
                     .is_err()
-                || writer.write_all(&[Self::CACHE_ENCODING_VARINT]).is_err()
+                || writer.write_all(&[Self::CACHE_WRITE_ENCODING]).is_err()
+                || writer.write_all(&[Self::CACHE_FLAGS_NONE]).is_err()
+                || writer.write_all(&0u64.to_le_bytes()).is_err()
+                || writer.write_all(&0u32.to_le_bytes()).is_err()
             {
                 println!("Error writing cache: could not write header");
                 return;
             }
 
-            if let Err(e) = bincode::serde::encode_into_std_write(&root, &mut writer, config) {
+            struct CountingCrcWriter<W: Write> {
+                inner: W,
+                hasher: Hasher,
+                bytes_written: u64,
+            }
+
+            impl<W: Write> CountingCrcWriter<W> {
+                fn new(inner: W) -> Self {
+                    Self {
+                        inner,
+                        hasher: Hasher::new(),
+                        bytes_written: 0,
+                    }
+                }
+            }
+
+            impl<W: Write> Write for CountingCrcWriter<W> {
+                fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                    let n = self.inner.write(buf)?;
+                    if n > 0 {
+                        self.hasher.update(&buf[..n]);
+                        self.bytes_written = self.bytes_written.saturating_add(n as u64);
+                    }
+                    Ok(n)
+                }
+
+                fn flush(&mut self) -> std::io::Result<()> {
+                    self.inner.flush()
+                }
+            }
+
+            let mut payload_writer = CountingCrcWriter::new(writer);
+            if let Err(e) =
+                bincode::serde::encode_into_std_write(&root, &mut payload_writer, config)
+            {
                 println!("Error writing cache: {:?}", e);
                 return;
             }
 
-            if writer.flush().is_err() {
+            if payload_writer.flush().is_err() {
                 println!("Error writing cache: flush failed");
                 return;
             }
-            if writer.get_ref().sync_all().is_err() {
+
+            let payload_len = payload_writer.bytes_written;
+            let payload_crc32 = payload_writer.hasher.finalize();
+
+            let mut file = match payload_writer.inner.into_inner() {
+                Ok(f) => f,
+                Err(e) => {
+                    println!("Error writing cache: finalize writer failed: {:?}", e);
+                    return;
+                }
+            };
+
+            if file
+                .seek(SeekFrom::Start(payload_len_offset as u64))
+                .is_err()
+                || file.write_all(&payload_len.to_le_bytes()).is_err()
+                || file
+                    .seek(SeekFrom::Start(payload_crc_offset as u64))
+                    .is_err()
+                || file.write_all(&payload_crc32.to_le_bytes()).is_err()
+            {
+                println!("Error writing cache: could not finalize header");
+                return;
+            }
+
+            if file.sync_all().is_err() {
                 println!("Error writing cache: sync failed");
                 return;
             }
+        }
+
+        if let Err(e) = Self::validate_cache_file(&tmp_path) {
+            println!("Error writing cache: validation failed: {e}");
+            let _ = fs::remove_file(&tmp_path);
+            return;
         }
 
         if cache_path.exists() {
@@ -192,8 +288,8 @@ impl Cache {
     }
 
     fn parse_cache_header(bytes: &[u8]) -> Option<(usize, u32, u8)> {
-        let header_len = Self::CACHE_MAGIC.len() + 4 + 1;
-        if bytes.len() < header_len {
+        let base_len = Self::CACHE_MAGIC.len() + 4 + 1;
+        if bytes.len() < base_len {
             return None;
         }
         if &bytes[..Self::CACHE_MAGIC.len()] != Self::CACHE_MAGIC {
@@ -205,7 +301,86 @@ impl Cache {
                 .ok()?,
         );
         let encoding = bytes[Self::CACHE_MAGIC.len() + 4];
-        Some((header_len, version, encoding))
+        if version == Self::CACHE_VERSION {
+            let header_len = base_len + 1 + 8 + 4;
+            if bytes.len() < header_len {
+                return None;
+            }
+            Some((header_len, version, encoding))
+        } else {
+            Some((base_len, version, encoding))
+        }
+    }
+
+    fn parse_cache_v2_meta(bytes: &[u8]) -> Option<(u64, u32)> {
+        let header_len = Self::CACHE_MAGIC.len() + 4 + 1 + 1 + 8 + 4;
+        if bytes.len() < header_len {
+            return None;
+        }
+        if &bytes[..Self::CACHE_MAGIC.len()] != Self::CACHE_MAGIC {
+            return None;
+        }
+        let version = u32::from_le_bytes(
+            bytes[Self::CACHE_MAGIC.len()..Self::CACHE_MAGIC.len() + 4]
+                .try_into()
+                .ok()?,
+        );
+        if version != Self::CACHE_VERSION {
+            return None;
+        }
+        let payload_len_offset = Self::CACHE_MAGIC.len() + 4 + 1 + 1;
+        let payload_crc_offset = payload_len_offset + 8;
+        let payload_len = u64::from_le_bytes(
+            bytes[payload_len_offset..payload_len_offset + 8]
+                .try_into()
+                .ok()?,
+        );
+        let payload_crc = u32::from_le_bytes(
+            bytes[payload_crc_offset..payload_crc_offset + 4]
+                .try_into()
+                .ok()?,
+        );
+        Some((payload_len, payload_crc))
+    }
+
+    fn validate_cache_file(path: &std::path::Path) -> Result<(), String> {
+        let file = File::open(path).map_err(|e| format!("{:?}", e))?;
+        let mmap = unsafe { MmapOptions::new().map(&file) }.map_err(|e| format!("{:?}", e))?;
+        let Some((offset, version, encoding)) = Self::parse_cache_header(&mmap) else {
+            return Err("invalid cache header".to_string());
+        };
+
+        if version == Self::CACHE_VERSION {
+            let Some((payload_len, payload_crc32)) = Self::parse_cache_v2_meta(&mmap) else {
+                return Err("invalid v2 cache meta".to_string());
+            };
+            let end = offset
+                .checked_add(payload_len as usize)
+                .ok_or_else(|| "invalid v2 cache length".to_string())?;
+            if end > mmap.len() {
+                return Err("truncated v2 cache payload".to_string());
+            }
+            let mut hasher = Hasher::new();
+            hasher.update(&mmap[offset..end]);
+            let actual = hasher.finalize();
+            if actual != payload_crc32 {
+                return Err(format!(
+                    "v2 cache checksum mismatch (expected {payload_crc32:08X}, got {actual:08X})"
+                ));
+            }
+            return Ok(());
+        }
+
+        let config_varint = bincode::config::standard().with_variable_int_encoding();
+        let config_fixed = bincode::config::standard();
+        let config = match encoding {
+            Self::CACHE_ENCODING_VARINT => config_varint,
+            Self::CACHE_ENCODING_FIXED => config_fixed,
+            _ => return Err(format!("unsupported cache encoding {encoding}")),
+        };
+
+        let _ = Self::decode_root_from_bytes(&mmap[offset..], config)?;
+        Ok(())
     }
 
     fn decode_root_from_bytes(
@@ -224,7 +399,7 @@ impl Cache {
         bincode::serde::decode_from_std_read(reader, config).map_err(|e| format!("{:?}", e))
     }
 
-    fn read_cache_from_path(path: &std::path::Path) -> Result<Rc<RefCell<RvFile>>, String> {
+    fn read_cache_from_path(path: &std::path::Path) -> Result<(Rc<RefCell<RvFile>>, u32), String> {
         let config_varint = bincode::config::standard().with_variable_int_encoding();
         let config_fixed = bincode::config::standard();
 
@@ -234,7 +409,7 @@ impl Cache {
         if let Ok(file) = File::open(path) {
             if let Ok(mmap) = unsafe { MmapOptions::new().map(&file) } {
                 if let Some((offset, version, encoding)) = Self::parse_cache_header(&mmap) {
-                    if version != Self::CACHE_VERSION {
+                    if version > Self::CACHE_VERSION {
                         return Err(format!("unsupported cache version {version}"));
                     }
                     let config = match encoding {
@@ -242,12 +417,27 @@ impl Cache {
                         Self::CACHE_ENCODING_FIXED => config_fixed,
                         _ => return Err(format!("unsupported cache encoding {encoding}")),
                     };
-                    let r = Self::decode_root_from_bytes(&mmap[offset..], config)?;
+                    let payload = if version == Self::CACHE_VERSION {
+                        if let Some((payload_len, _)) = Self::parse_cache_v2_meta(&mmap) {
+                            let end = offset
+                                .checked_add(payload_len as usize)
+                                .ok_or_else(|| "invalid v2 cache length".to_string())?;
+                            if end > mmap.len() {
+                                return Err("truncated v2 cache payload".to_string());
+                            }
+                            &mmap[offset..end]
+                        } else {
+                            &mmap[offset..]
+                        }
+                    } else {
+                        &mmap[offset..]
+                    };
+                    let r = Self::decode_root_from_bytes(payload, config)?;
                     println!("Deserialized cache via mmap in {:?}", start_time.elapsed());
                     let relink_start = std::time::Instant::now();
                     Self::relink_parents(Rc::clone(&r), None, None);
                     println!("Relinked parents in {:?}", relink_start.elapsed());
-                    return Ok(r);
+                    return Ok((r, version));
                 }
 
                 match Self::decode_root_from_bytes(&mmap, config_varint) {
@@ -256,7 +446,7 @@ impl Cache {
                         let relink_start = std::time::Instant::now();
                         Self::relink_parents(Rc::clone(&r), None, None);
                         println!("Relinked parents in {:?}", relink_start.elapsed());
-                        return Ok(r);
+                        return Ok((r, 0));
                     }
                     Err(e) => mmap_error = Some(e),
                 }
@@ -266,7 +456,7 @@ impl Cache {
                         let relink_start = std::time::Instant::now();
                         Self::relink_parents(Rc::clone(&r), None, None);
                         println!("Relinked parents in {:?}", relink_start.elapsed());
-                        return Ok(r);
+                        return Ok((r, 0));
                     }
                     Err(e) => {
                         mmap_error = Some(match mmap_error.take() {
@@ -281,17 +471,17 @@ impl Cache {
         let mut buffered_error: Option<String> = None;
         if let Ok(file) = File::open(path) {
             let mut reader = BufReader::with_capacity(16 * 1024 * 1024, file);
-            let mut header = [0u8; 13];
-            if reader.read_exact(&mut header).is_ok()
-                && &header[..Self::CACHE_MAGIC.len()] == Self::CACHE_MAGIC
+            let mut base = [0u8; 13];
+            if reader.read_exact(&mut base).is_ok()
+                && &base[..Self::CACHE_MAGIC.len()] == Self::CACHE_MAGIC
             {
                 let version = u32::from_le_bytes(
-                    header[Self::CACHE_MAGIC.len()..Self::CACHE_MAGIC.len() + 4]
+                    base[Self::CACHE_MAGIC.len()..Self::CACHE_MAGIC.len() + 4]
                         .try_into()
                         .unwrap(),
                 );
-                let encoding = header[Self::CACHE_MAGIC.len() + 4];
-                if version != Self::CACHE_VERSION {
+                let encoding = base[Self::CACHE_MAGIC.len() + 4];
+                if version > Self::CACHE_VERSION {
                     return Err(format!("unsupported cache version {version}"));
                 }
                 let config = match encoding {
@@ -299,12 +489,18 @@ impl Cache {
                     Self::CACHE_ENCODING_FIXED => config_fixed,
                     _ => return Err(format!("unsupported cache encoding {encoding}")),
                 };
+                if version == Self::CACHE_VERSION {
+                    let mut extra = [0u8; 13];
+                    if reader.read_exact(&mut extra).is_err() {
+                        return Err("truncated v2 cache header".to_string());
+                    }
+                }
                 let r = Self::decode_root_from_reader(&mut reader, config)?;
                 println!("Deserialized cache in {:?}", start_time.elapsed());
                 let relink_start = std::time::Instant::now();
                 Self::relink_parents(Rc::clone(&r), None, None);
                 println!("Relinked parents in {:?}", relink_start.elapsed());
-                return Ok(r);
+                return Ok((r, version));
             }
         }
 
@@ -316,7 +512,7 @@ impl Cache {
                     let relink_start = std::time::Instant::now();
                     Self::relink_parents(Rc::clone(&r), None, None);
                     println!("Relinked parents in {:?}", relink_start.elapsed());
-                    return Ok(r);
+                    return Ok((r, 0));
                 }
                 Err(e) => buffered_error = Some(e),
             }
@@ -330,7 +526,7 @@ impl Cache {
                     let relink_start = std::time::Instant::now();
                     Self::relink_parents(Rc::clone(&r), None, None);
                     println!("Relinked parents in {:?}", relink_start.elapsed());
-                    return Ok(r);
+                    return Ok((r, 0));
                 }
                 Err(e) => {
                     buffered_error = Some(match buffered_error.take() {
@@ -377,6 +573,13 @@ impl Cache {
                         n.set_dat_status(dat_reader::enums::DatStatus::InToSort);
                     }
                 }
+            }
+            if n.to_sort_type.intersects(
+                ToSortDirType::TO_SORT_PRIMARY
+                    | ToSortDirType::TO_SORT_CACHE
+                    | ToSortDirType::TO_SORT_FILE_ONLY,
+            ) {
+                n.set_dat_status(dat_reader::enums::DatStatus::InToSort);
             }
 
             if (n.file_type == dat_reader::enums::FileType::Dir

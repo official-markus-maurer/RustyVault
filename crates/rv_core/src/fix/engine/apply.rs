@@ -21,6 +21,7 @@ impl Fix {
         info!("Starting Fix execution pass...");
         Self::report_action("Fix pass started");
         let mut file_process_queue = Vec::new();
+        let mut file_process_queue_head = 0usize;
         let mut total_fixed = 0;
         let settings = crate::settings::get_settings();
         let mut cache_timer = if settings.cache_save_timer_enabled {
@@ -32,31 +33,48 @@ impl Fix {
         let mut needed_files = Vec::new();
         Self::gather_needed_files(Rc::clone(&root), &mut needed_files);
 
-        let mut crc_map: HashMap<(u64, Vec<u8>), Rc<RefCell<RvFile>>> = HashMap::new();
-        let mut sha1_map: HashMap<(u64, Vec<u8>), Rc<RefCell<RvFile>>> = HashMap::new();
-        let mut md5_map: HashMap<(u64, Vec<u8>), Rc<RefCell<RvFile>>> = HashMap::new();
+        use crate::hash_keys::{crc_key, md5_key, sha1_key, CrcKey, Md5Key, Sha1Key};
+
+        let mut crc_map: HashMap<CrcKey, Rc<RefCell<RvFile>>> =
+            HashMap::with_capacity(needed_files.len() * 2);
+        let mut sha1_map: HashMap<Sha1Key, Rc<RefCell<RvFile>>> =
+            HashMap::with_capacity(needed_files.len() * 2);
+        let mut md5_map: HashMap<Md5Key, Rc<RefCell<RvFile>>> =
+            HashMap::with_capacity(needed_files.len() * 2);
 
         for needed in needed_files {
             let n_ref = needed.borrow();
             let size = n_ref.size.unwrap_or(0);
             let alt_size = n_ref.alt_size.unwrap_or(size);
-            if let Some(ref crc) = n_ref.crc {
-                crc_map.insert((size, crc.clone()), Rc::clone(&needed));
+            if let Some(crc) = n_ref.crc.as_deref().and_then(|b| crc_key(size, b)) {
+                crc_map.insert(crc, Rc::clone(&needed));
             }
-            if let Some(ref crc) = n_ref.alt_crc {
-                crc_map.insert((alt_size, crc.clone()), Rc::clone(&needed));
+            if let Some(crc) = n_ref
+                .alt_crc
+                .as_deref()
+                .and_then(|b| crc_key(alt_size, b))
+            {
+                crc_map.insert(crc, Rc::clone(&needed));
             }
-            if let Some(ref sha1) = n_ref.sha1 {
-                sha1_map.insert((size, sha1.clone()), Rc::clone(&needed));
+            if let Some(sha1) = n_ref.sha1.as_deref().and_then(|b| sha1_key(size, b)) {
+                sha1_map.insert(sha1, Rc::clone(&needed));
             }
-            if let Some(ref sha1) = n_ref.alt_sha1 {
-                sha1_map.insert((alt_size, sha1.clone()), Rc::clone(&needed));
+            if let Some(sha1) = n_ref
+                .alt_sha1
+                .as_deref()
+                .and_then(|b| sha1_key(alt_size, b))
+            {
+                sha1_map.insert(sha1, Rc::clone(&needed));
             }
-            if let Some(ref md5) = n_ref.md5 {
-                md5_map.insert((size, md5.clone()), Rc::clone(&needed));
+            if let Some(md5) = n_ref.md5.as_deref().and_then(|b| md5_key(size, b)) {
+                md5_map.insert(md5, Rc::clone(&needed));
             }
-            if let Some(ref md5) = n_ref.alt_md5 {
-                md5_map.insert((alt_size, md5.clone()), Rc::clone(&needed));
+            if let Some(md5) = n_ref
+                .alt_md5
+                .as_deref()
+                .and_then(|b| md5_key(alt_size, b))
+            {
+                md5_map.insert(md5, Rc::clone(&needed));
             }
         }
 
@@ -71,8 +89,9 @@ impl Fix {
                 &sha1_map,
                 &md5_map,
             );
-            while !file_process_queue.is_empty() {
-                let queued_file = file_process_queue.remove(0);
+            while file_process_queue_head < file_process_queue.len() {
+                let queued_file = Rc::clone(&file_process_queue[file_process_queue_head]);
+                file_process_queue_head += 1;
                 Self::fix_base(
                     queued_file,
                     true,
@@ -84,6 +103,7 @@ impl Fix {
                 );
                 if let Some(last) = cache_timer {
                     if last.elapsed().as_secs_f64() / 60.0 > settings.cache_save_time_period as f64 {
+                        // TODO(perf): cache writes serialize the full DB; use incremental writes or a background writer.
                         crate::cache::Cache::write_cache(Rc::clone(&root));
                         cache_timer = Some(std::time::Instant::now());
                     } else {
@@ -91,6 +111,8 @@ impl Fix {
                     }
                 }
             }
+            file_process_queue.clear();
+            file_process_queue_head = 0;
             if let Some(last) = cache_timer {
                 if last.elapsed().as_secs_f64() / 60.0 > settings.cache_save_time_period as f64 {
                     crate::cache::Cache::write_cache(Rc::clone(&root));
@@ -109,9 +131,9 @@ impl Fix {
         dir: Rc<RefCell<RvFile>>,
         queue: &mut Vec<Rc<RefCell<RvFile>>>,
         total_fixed: &mut i32,
-        crc_map: &HashMap<(u64, Vec<u8>), Rc<RefCell<RvFile>>>,
-        sha1_map: &HashMap<(u64, Vec<u8>), Rc<RefCell<RvFile>>>,
-        md5_map: &HashMap<(u64, Vec<u8>), Rc<RefCell<RvFile>>>,
+        crc_map: &HashMap<crate::hash_keys::CrcKey, Rc<RefCell<RvFile>>>,
+        sha1_map: &HashMap<crate::hash_keys::Sha1Key, Rc<RefCell<RvFile>>>,
+        md5_map: &HashMap<crate::hash_keys::Md5Key, Rc<RefCell<RvFile>>>,
     ) {
         let children = dir.borrow().children.clone();
 
@@ -126,10 +148,13 @@ impl Fix {
                 md5_map,
             );
 
-            while !queue.is_empty() {
-                let queued_file = queue.remove(0);
+            let mut head = 0usize;
+            while head < queue.len() {
+                let queued_file = Rc::clone(&queue[head]);
+                head += 1;
                 Self::fix_base(queued_file, true, queue, total_fixed, crc_map, sha1_map, md5_map);
             }
+            queue.clear();
         }
     }
 
@@ -138,9 +163,9 @@ impl Fix {
         force_selected: bool,
         queue: &mut Vec<Rc<RefCell<RvFile>>>,
         total_fixed: &mut i32,
-        crc_map: &HashMap<(u64, Vec<u8>), Rc<RefCell<RvFile>>>,
-        sha1_map: &HashMap<(u64, Vec<u8>), Rc<RefCell<RvFile>>>,
-        md5_map: &HashMap<(u64, Vec<u8>), Rc<RefCell<RvFile>>>,
+        crc_map: &HashMap<crate::hash_keys::CrcKey, Rc<RefCell<RvFile>>>,
+        sha1_map: &HashMap<crate::hash_keys::Sha1Key, Rc<RefCell<RvFile>>>,
+        md5_map: &HashMap<crate::hash_keys::Md5Key, Rc<RefCell<RvFile>>>,
     ) {
         if child.borrow().rep_status() == RepStatus::Deleted {
             return;

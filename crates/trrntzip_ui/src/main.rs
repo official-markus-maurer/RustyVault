@@ -1,12 +1,8 @@
 /// Graphical User Interface for TorrentZip.
 ///
-/// `trrntzip_ui` acts as the GUI wrapper for the `trrntzip` engine, mimicking the standalone
-/// TorrentZip.Net graphical application.
+/// `trrntzip_ui` is a GUI wrapper for the `trrntzip` engine.
 ///
-/// Differences from C#:
-/// - The original application uses WinForms for drag-and-drop zip processing.
-/// - This Rust implementation is currently a placeholder pending a full `egui` port
-///   of the TorrentZip specific UI.
+/// TODO: Implement the TorrentZip-specific UI using `egui`.
 fn main() {
     println!("Hello from trrntzip_ui");
 }

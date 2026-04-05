@@ -8,10 +8,8 @@ use crate::var_fix;
 /// `rom_center_reader.rs` parses the legacy RomCenter INI-style text DAT format
 /// (sections denoted by `[games]`, `[credits]`, etc.).
 ///
-/// Differences from C#:
-/// - Re-uses the zero-copy `DatFileLoader` tokenizer originally built for `cmp_reader.rs`,
-///   allowing it to share the same highly optimized string slicing logic rather than
-///   relying on generic `StreamReader.ReadLine()` calls.
+/// Implementation notes:
+/// - Reuses the `DatFileLoader` tokenizer from `cmp_reader.rs` to keep allocations low.
 pub fn read_rom_center_dat(input: &str, filename: &str) -> Result<DatHeader, String> {
     let mut dfl = DatFileLoader::new(input);
     let mut dat_header = DatHeader {

@@ -1,12 +1,10 @@
 /// Asset loading macros and utilities.
 ///
-/// `assets.rs` provides macros like `include_asset!` and `include_toolbar_image!`
-/// to embed static image resources directly into the Rust binary at compile time.
-///
-/// Differences from C#:
-/// - C# uses `.resx` files and Visual Studio's built-in resource manager.
-/// - Rust utilizes `include_bytes!` and an internal `egui` caching layer to embed
-///   and serve raw PNG/SVG bytes efficiently to the immediate-mode UI renderer.
+/// Provides the `include_asset!` and `include_toolbar_image!` macros used throughout the UI.
+/// Assets are resolved in this order:
+/// - Environment overrides (`RUSTYROMS_ASSETS_DARK` / `RUSTYROMS_ASSETS_LIGHT`)
+/// - Embedded bytes (compiled into the binary)
+/// - Files on disk next to the executable or working directory (development convenience)
 static DARK_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 pub(crate) static FALLBACK_PNG_1X1_TRANSPARENT: &[u8] = &[
     0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
@@ -15,6 +13,10 @@ pub(crate) static FALLBACK_PNG_1X1_TRANSPARENT: &[u8] = &[
     0x03, 0x03, 0x01, 0xFF, 0xA5, 0xFC, 0x91, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
     0x42, 0x60, 0x82,
 ];
+
+mod embedded_assets {
+    include!(concat!(env!("OUT_DIR"), "/embedded_assets.rs"));
+}
 
 #[macro_export]
 macro_rules! include_asset {
@@ -50,6 +52,10 @@ fn try_read_asset_file(is_dark: bool, name: &str) -> Option<Vec<u8>> {
         if let Ok(bytes) = std::fs::read(&p) {
             return Some(bytes);
         }
+    }
+
+    if let Some(bytes) = embedded_assets::embedded_asset_bytes(is_dark, name) {
+        return Some(bytes.to_vec());
     }
 
     let mut roots: Vec<std::path::PathBuf> = Vec::new();

@@ -5,13 +5,7 @@ use std::path::Path as StdPath;
 
 /// Cross-platform wrapper for directory operations.
 ///
-/// `Directory` mimics the static methods of the C# `System.IO.Directory` class,
-/// providing standard wrappers for checking existence, creating directories, and
-/// enumerating files/folders.
-///
-/// Differences from C#:
-/// - Internally delegates to `std::fs` rather than requiring P/Invoke `kernel32.dll`
-///   long-path hacks, since Rust supports modern Windows `\\?\` natively.
+/// Provides wrappers for checking existence, creating directories, and enumerating entries.
 pub struct Directory;
 
 impl Directory {

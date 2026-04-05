@@ -26,13 +26,11 @@ use internals::{SevenZipPendingWrite, SharedFileWriter};
 /// `SevenZipFile` implements the `ICompress` trait for 7z files, allowing the scanner to
 /// open, read headers, and extract payloads from 7-Zip archives.
 ///
-/// Differences from C#:
-/// - The C# `Compress.SevenZip` library is a massively complex custom LZMA decoder built
-///   specifically to handle solid-block streaming and chunked hashing without extracting
-///   the entire solid block to disk.
-/// - The Rust version utilizes the `sevenz-rust` crate. It successfully reads and extracts
-///   files, but currently lacks the granular solid-block stream-hashing optimizations present
-///   in the custom C# engine, meaning it may use more memory when extracting very large solid 7z files.
+/// Implementation notes:
+/// - Uses the `sevenz-rust` crate for archive reading/writing.
+/// - Extraction currently materializes the file payload into memory for read streams.
+///
+/// TODO: Support streaming extraction for solid archives to reduce peak memory usage.
 pub struct SevenZipFile {
     zip_filename: String,
     zip_open_type: ZipOpenType,

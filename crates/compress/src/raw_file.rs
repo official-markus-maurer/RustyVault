@@ -12,9 +12,6 @@ use crate::zip_enums::{ZipOpenType, ZipReturn};
 /// `RawFile` tricks the scanner into treating a standard file on disk as an "archive"
 /// containing exactly 1 file (itself). This allows the engine to use identical
 /// streaming and hashing logic regardless of whether a file is compressed or loose.
-///
-/// Differences from C#:
-/// - Functionally identical to the C# `Compress.RawFile` implementation.
 pub struct RawFile {
     filename: String,
     zip_open_type: ZipOpenType,

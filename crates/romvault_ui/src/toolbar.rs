@@ -10,10 +10,8 @@ use rv_core::find_fixes::FindFixes;
 /// `toolbar.rs` contains the top-level `egui::TopBottomPanel` rendering for the main
 /// application, drawing buttons like `Update DATs`, `Scan ROMs`, and `Fix ROMs`.
 ///
-/// Differences from C#:
-/// - C# uses `ToolStrip` and `MenuStrip` objects bound to internal event handlers.
-/// - Rust utilizes `egui::menu::bar` and directly triggers state transitions (or worker threads)
-///   when the immediate-mode buttons report a `.clicked()` event.
+/// Implementation notes:
+/// - Uses `egui` immediate-mode widgets; actions are triggered on `.clicked()`.
 pub fn draw_left_toolbar(app: &mut RomVaultApp, ctx: &egui::Context) {
     let dark_mode = ctx.style().visuals.dark_mode;
     let panel_fill = if dark_mode {
@@ -173,7 +171,7 @@ pub fn draw_left_toolbar(app: &mut RomVaultApp, ctx: &egui::Context) {
                 .show_inside(ui, |ui| {
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         ui.vertical_centered_justified(|ui| {
-                            let is_idle = !app.sam_running;
+                            let is_idle = app.is_idle();
                             ui.add_enabled_ui(is_idle, |ui| {
                                 let btn_update_img = if is_idle {
                                     include_toolbar_image!("btnUpdateDats_Enabled.png")
@@ -255,7 +253,6 @@ pub fn draw_left_toolbar(app: &mut RomVaultApp, ctx: &egui::Context) {
                                         GLOBAL_DB.with(|db_ref| {
                                             if let Some(db) = db_ref.borrow().as_ref() {
                                                 FindFixes::scan_files(Rc::clone(&db.dir_root));
-                                                rv_core::repair_status::RepairStatus::report_status_reset(Rc::clone(&db.dir_root));
                                                 db.write_cache();
                                             }
                                         });

@@ -40,6 +40,46 @@ fn test_cache_serialization_and_relinking() {
 }
 
 #[test]
+fn test_cache_relink_forces_tosort_dat_status_from_tosort_flags() {
+    let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+    root.borrow_mut().name = "Root".to_string();
+
+    let cache_dir = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+    {
+        let mut d = cache_dir.borrow_mut();
+        d.name = "Cache".to_string();
+        d.dat_status = dat_reader::enums::DatStatus::NotInDat;
+        d.to_sort_type = crate::enums::ToSortDirType::TO_SORT_CACHE;
+    }
+
+    let cached_file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+    {
+        let mut f = cached_file.borrow_mut();
+        f.name = "from_cache.bin".to_string();
+        f.dat_status = dat_reader::enums::DatStatus::NotInDat;
+        f.got_status = dat_reader::enums::GotStatus::Got;
+        f.rep_status_reset();
+    }
+    cache_dir.borrow_mut().child_add(Rc::clone(&cached_file));
+
+    root.borrow_mut().child_add(Rc::clone(&cache_dir));
+
+    cached_file.borrow_mut().parent = None;
+    cache_dir.borrow_mut().parent = None;
+
+    Cache::relink_parents(Rc::clone(&root), None, None);
+
+    assert_eq!(
+        cache_dir.borrow().dat_status(),
+        dat_reader::enums::DatStatus::InToSort
+    );
+    assert_eq!(
+        cached_file.borrow().dat_status(),
+        dat_reader::enums::DatStatus::InToSort
+    );
+}
+
+#[test]
 fn test_cache_write_then_read_roundtrip() {
     let original_settings = crate::settings::get_settings();
     let temp = tempdir().unwrap();
@@ -59,7 +99,7 @@ fn test_cache_write_then_read_roundtrip() {
     Cache::write_cache(Rc::clone(&root));
     assert!(cache_file.exists());
 
-    let loaded = Cache::read_cache_from_path(&cache_file)
+    let (loaded, _) = Cache::read_cache_from_path(&cache_file)
         .unwrap_or_else(|e| panic!("cache should deserialize: {e}"));
     assert_eq!(loaded.borrow().name, "Root");
     assert_eq!(loaded.borrow().children.len(), 1);

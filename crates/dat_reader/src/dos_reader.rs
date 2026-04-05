@@ -8,10 +8,8 @@ use crate::var_fix;
 /// `dos_reader.rs` parses the legacy DOSCenter DAT format, which structurally resembles
 /// ClrMamePro (CMP) but uses parentheses `( )` instead of curly braces for blocks.
 ///
-/// Differences from C#:
-/// - Like `rom_center_reader`, this heavily leverages the zero-copy `DatFileLoader`
-///   tokenizer from `cmp_reader.rs` for extreme speed and memory efficiency compared
-///   to standard C# `StreamReader` loops.
+/// Implementation notes:
+/// - Uses the `DatFileLoader` tokenizer from `cmp_reader.rs` to keep parsing allocations low.
 pub fn read_dos_dat(input: &str, filename: &str) -> Result<DatHeader, String> {
     let mut dfl = DatFileLoader::new(input);
     let mut dat_header = DatHeader {

@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::mpsc::{channel, Sender};
+use std::sync::mpsc::{channel, Sender, TryRecvError};
+use std::thread;
 
 use dat_reader::enums::FileType;
 use eframe::egui;
@@ -14,6 +15,14 @@ use rv_core::scanner::Scanner;
 use crate::RomVaultApp;
 
 impl RomVaultApp {
+    pub(crate) fn is_busy(&self) -> bool {
+        self.sam_running || self.task_running
+    }
+
+    pub(crate) fn is_idle(&self) -> bool {
+        !self.is_busy()
+    }
+
     pub(crate) fn persist_filter_settings(&mut self) {
         let mut settings = rv_core::settings::get_settings();
         settings.chk_box_show_complete = self.show_complete;
@@ -33,6 +42,8 @@ impl RomVaultApp {
             return;
         }
 
+        // TODO(threading): run this as a background task and debounce cache writes when many folders are added.
+        // TODO(perf): avoid full `RepairStatus::report_status_reset` on the entire tree for a single insertion.
         let Some(folder) = rfd::FileDialog::new()
             .set_title("Select new ToSort Folder")
             .pick_folder()
@@ -217,11 +228,27 @@ impl RomVaultApp {
             } else {
                 "Generate FixDATs (All)"
             },
-            move |tx| {
-                let _ = tx.send(format!("Generating FixDATs to {out_dir}..."));
-                rv_core::fix_dat_report::FixDatReport::recursive_dat_tree(
-                    &out_dir, base_dir, red_only,
-                );
+            {
+                let base_dir_key =
+                    crate::normalize_full_name_key(&base_dir.borrow().get_full_name());
+                move |tx| {
+                    let _ = tx.send(format!("Generating FixDATs to {out_dir}..."));
+                    crate::GLOBAL_DB.with(|db_ref| {
+                        if let Some(db) = db_ref.borrow().as_ref() {
+                            if let Some(base_dir) =
+                                crate::find_node_by_full_name_key(&db.dir_root, &base_dir_key)
+                            {
+                                rv_core::fix_dat_report::FixDatReport::recursive_dat_tree(
+                                    &out_dir, base_dir, red_only,
+                                );
+                            } else {
+                                let _ = tx.send(
+                                    "FixDAT base directory no longer exists in DB.".to_string(),
+                                );
+                            }
+                        }
+                    });
+                }
             },
         );
     }
@@ -252,14 +279,21 @@ impl RomVaultApp {
         };
 
         let path_str = path.to_string_lossy().to_string();
+        let node_key = crate::normalize_full_name_key(&node_rc.borrow().get_full_name());
         self.launch_task("Make DAT", move |tx| {
             let _ = tx.send(format!("Writing DAT to {path_str}..."));
             let converter = rv_core::external_dat_converter_to::ExternalDatConverterTo {
                 filter_merged: true,
                 ..rv_core::external_dat_converter_to::ExternalDatConverterTo::new()
             };
-            let Some(dh) = converter.convert_to_external_dat(Rc::clone(&node_rc)) else {
-                let _ = tx.send("Make DAT failed: not a directory node".to_string());
+            let dh = crate::GLOBAL_DB.with(|db_ref| {
+                let binding = db_ref.borrow();
+                let db = binding.as_ref()?;
+                let node_rc = crate::find_node_by_full_name_key(&db.dir_root, &node_key)?;
+                converter.convert_to_external_dat(node_rc)
+            });
+            let Some(dh) = dh else {
+                let _ = tx.send("Make DAT failed: directory not found in DB.".to_string());
                 return;
             };
 
@@ -314,7 +348,7 @@ impl RomVaultApp {
     }
 
     pub(crate) fn flush_db_cache_if_needed(&mut self) {
-        if self.sam_running {
+        if self.is_busy() {
             return;
         }
         if !self.db_cache_dirty {
@@ -363,29 +397,95 @@ impl RomVaultApp {
 
     pub(crate) fn launch_task<F>(&mut self, task_name: &str, f: F)
     where
-        F: FnOnce(Sender<String>) + 'static,
+        F: FnOnce(Sender<String>) + Send + 'static,
     {
-        let (tx, rx) = channel();
+        if self.task_running {
+            return;
+        }
+
+        // TODO(threading): support task cancellation (soft/hard) similar to SAM's ProcessControl.
+        // TODO(threading): allow multiple concurrent tasks with a scheduler (scan/find/fix/report), keeping UI responsive.
+        // TODO(perf): avoid writing cache twice per task (pre + post). Prefer a single, atomic write on success.
+        // TODO(perf): instead of worker-thread-local DB + reload, consider a shared DB (Arc<Mutex/RwLock>) and apply diffs.
         let selection_chain = self
             .selected_node
             .as_ref()
             .map(crate::full_name_chain_from_node)
             .unwrap_or_default();
 
+        let (tx, rx) = channel();
+
+        self.task_running = true;
+        self.task_name = task_name.to_string();
+        self.task_worker_rx = Some(rx);
+        self.task_selection_chain = selection_chain;
         self.task_logs.push(format!("Starting {}...", task_name));
 
-        f(tx.clone());
+        self.task_worker_handle = Some(thread::spawn(move || {
+            rv_core::settings::load_settings_from_file();
+            rv_core::db::init_db();
+            rv_core::task_reporter::set_task_reporter(tx.clone());
+            f(tx.clone());
+            rv_core::task_reporter::clear_task_reporter();
+            GLOBAL_DB.with(|db_ref| {
+                if let Some(db) = db_ref.borrow().as_ref() {
+                    db.write_cache();
+                }
+            });
+        }));
+    }
 
-        while let Ok(msg) = rx.try_recv() {
-            self.task_logs.push(msg);
+    pub(crate) fn poll_task_worker(&mut self) {
+        if !self.task_running {
+            return;
         }
 
-        if !selection_chain.is_empty() {
+        // TODO(perf): bound the number of messages drained per frame to avoid UI hitching when tasks spam logs.
+        // TODO(perf): consider coalescing duplicate progress messages (e.g. "Scanning..." lines) before pushing to `task_logs`.
+        if let Some(rx) = self.task_worker_rx.as_ref() {
+            let mut drained = 0usize;
+            loop {
+                if drained >= 200 {
+                    break;
+                }
+                match rx.try_recv() {
+                    Ok(msg) => {
+                        self.task_logs.push(msg);
+                        drained += 1;
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => break,
+                }
+            }
+        }
+
+        let done = self
+            .task_worker_handle
+            .as_ref()
+            .is_some_and(|h| h.is_finished());
+        if !done {
+            return;
+        }
+
+        if let Some(handle) = self.task_worker_handle.take() {
+            let _ = handle.join();
+        }
+
+        if let Some(rx) = self.task_worker_rx.as_ref() {
+            while let Ok(msg) = rx.try_recv() {
+                self.task_logs.push(msg);
+            }
+        }
+
+        rv_core::settings::load_settings_from_file();
+        rv_core::db::init_db();
+
+        if !self.task_selection_chain.is_empty() {
             let mut found_any = false;
             GLOBAL_DB.with(|db_ref| {
                 let binding = db_ref.borrow();
                 let Some(db) = binding.as_ref() else { return };
-                for key in &selection_chain {
+                for key in &self.task_selection_chain {
                     if let Some(found) = crate::find_node_by_full_name_key(&db.dir_root, key) {
                         found_any = true;
                         self.select_node(found);
@@ -398,17 +498,24 @@ impl RomVaultApp {
             }
         }
 
-        self.task_logs.push("Saving DB Cache...".to_string());
-        GLOBAL_DB.with(|db_ref| {
-            if let Some(db) = db_ref.borrow().as_ref() {
-                db.write_cache();
-            }
-        });
+        self.tree_rows_dirty = true;
+        self.tree_rows_cache.clear();
+        self.tree_stats_queue.clear();
+        self.tree_stats_queued.clear();
+
+        self.task_worker_rx = None;
+        self.task_selection_chain.clear();
+        self.task_name.clear();
+        self.task_running = false;
 
         self.task_logs.push("Task completed.".to_string());
     }
 
-    fn scan_selected_roots(tx: &Sender<String>, scan_level: rv_core::settings::EScanLevel) {
+    fn scan_roots(
+        tx: &Sender<String>,
+        scan_level: rv_core::settings::EScanLevel,
+        include_tosort: bool,
+    ) {
         GLOBAL_DB.with(|db_ref| {
             if let Some(db) = db_ref.borrow().as_ref() {
                 let settings = rv_core::settings::get_settings();
@@ -421,12 +528,22 @@ impl RomVaultApp {
                 let root_children = db.dir_root.borrow().children.clone();
 
                 for child in root_children {
-                    let (name, is_selected) = {
+                    let (name, is_selected, is_tosort_root) = {
                         let node = child.borrow();
-                        (node.name.clone(), Self::branch_has_selected_nodes(&node))
+                        (
+                            node.name.clone(),
+                            Self::branch_has_selected_nodes(&node),
+                            node.to_sort_type.intersects(
+                                rv_core::enums::ToSortDirType::TO_SORT_PRIMARY
+                                    | rv_core::enums::ToSortDirType::TO_SORT_CACHE
+                                    | rv_core::enums::ToSortDirType::TO_SORT_FILE_ONLY,
+                            ),
+                        )
                     };
 
-                    if !is_selected {
+                    let include_by_name = include_tosort && name.eq_ignore_ascii_case("ToSort");
+                    let include_by_flag = include_tosort && is_tosort_root;
+                    if !is_selected && !include_by_name && !include_by_flag {
                         continue;
                     }
 
@@ -468,6 +585,17 @@ impl RomVaultApp {
         });
     }
 
+    fn scan_selected_roots(tx: &Sender<String>, scan_level: rv_core::settings::EScanLevel) {
+        Self::scan_roots(tx, scan_level, false);
+    }
+
+    fn scan_selected_roots_and_tosort(
+        tx: &Sender<String>,
+        scan_level: rv_core::settings::EScanLevel,
+    ) {
+        Self::scan_roots(tx, scan_level, true);
+    }
+
     pub(crate) fn branch_has_selected_nodes(node: &RvFile) -> bool {
         if matches!(node.tree_checked, TreeSelect::Selected | TreeSelect::Locked) {
             return true;
@@ -497,7 +625,7 @@ impl RomVaultApp {
     pub(crate) fn launch_fix_roms_task(&mut self) {
         self.launch_task("Fix ROMs", |tx| {
             let _ = tx.send("Rescanning to refresh fix plan...".to_string());
-            Self::scan_selected_roots(&tx, rv_core::settings::EScanLevel::Level2);
+            Self::scan_selected_roots_and_tosort(&tx, rv_core::settings::EScanLevel::Level2);
 
             for pass in 1..=4 {
                 let _ = tx.send(format!("Finding Fixes (pass {pass}/4)..."));
@@ -526,7 +654,7 @@ impl RomVaultApp {
                 let _ = tx.send(format!(
                     "Rescanning to sync DB with disk (pass {pass}/4)..."
                 ));
-                Self::scan_selected_roots(&tx, rv_core::settings::EScanLevel::Level2);
+                Self::scan_selected_roots_and_tosort(&tx, rv_core::settings::EScanLevel::Level2);
             }
 
             let _ = tx.send("Refreshing final repair state...".to_string());
@@ -546,7 +674,7 @@ impl RomVaultApp {
             let _ = tx.send("Full automated fix routine started...".to_string());
 
             let _ = tx.send("Scanning...".to_string());
-            Self::scan_selected_roots(&tx, rv_core::settings::EScanLevel::Level2);
+            Self::scan_selected_roots_and_tosort(&tx, rv_core::settings::EScanLevel::Level2);
 
             for pass in 1..=4 {
                 let _ = tx.send(format!("Finding Fixes (pass {pass}/4)..."));
@@ -575,7 +703,7 @@ impl RomVaultApp {
                 let _ = tx.send(format!(
                     "Rescanning to sync DB with disk (pass {pass}/4)..."
                 ));
-                Self::scan_selected_roots(&tx, rv_core::settings::EScanLevel::Level2);
+                Self::scan_selected_roots_and_tosort(&tx, rv_core::settings::EScanLevel::Level2);
             }
 
             let _ = tx.send("Refreshing final repair state...".to_string());

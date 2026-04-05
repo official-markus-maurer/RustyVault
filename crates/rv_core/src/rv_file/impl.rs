@@ -75,16 +75,10 @@ bitflags::bitflags! {
 
 /// Core data structure representing a node in the RomVault file tree.
 ///
-/// This is the Rust equivalent of the C# `RvFile` class. It unifies properties for
-/// both directories (`RvDir` in C# logic) and files into a single struct, using
-/// `FileType` to distinguish behavior.
+/// `RvFile` is used for both directories and files; `FileType` determines the node's role.
+/// The tree structure is represented with `Rc<RefCell<_>>` nodes and `Weak` parent links.
 ///
-/// Differences from C#:
-/// - Tree pointers (`parent`, `children`) are modeled using `Rc<RefCell<RvFile>>` and
-///   `Weak<RefCell<RvFile>>` to ensure memory safety without leaking memory.
-/// - Serde logic replaces C#'s `BinaryReader`/`BinaryWriter` for cache saving.
-/// - UI state (e.g. `tree_expanded`, `tree_checked`) is embedded directly to support egui,
-///   whereas C# often binds these to separate UI control objects (`RvTreeRow`).
+/// UI state (e.g. selection/expansion) is stored on the node to keep view-model updates local.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct RvFile {
     /// The canonical name of the file or directory.
@@ -340,6 +334,30 @@ impl RvFile {
     /// Sets a specific `ToSortDirType` bitflag on this node.
     pub fn to_sort_status_set(&mut self, status: ToSortDirType) {
         self.to_sort_type |= status;
+        if status.intersects(
+            ToSortDirType::TO_SORT_PRIMARY | ToSortDirType::TO_SORT_CACHE | ToSortDirType::TO_SORT_FILE_ONLY,
+        ) {
+            self.set_dat_status(DatStatus::InToSort);
+            let children = self.children.clone();
+            for child in children {
+                Self::force_tosort_dat_status(Rc::clone(&child));
+            }
+        }
+    }
+
+    fn force_tosort_dat_status(node: Rc<RefCell<RvFile>>) {
+        let children = {
+            let mut n = node.borrow_mut();
+            if matches!(n.dat_status, DatStatus::NotInDat | DatStatus::InToSort) {
+                n.set_dat_status(DatStatus::InToSort);
+                n.rep_status_reset();
+            }
+            n.children.clone()
+        };
+
+        for child in children {
+            Self::force_tosort_dat_status(child);
+        }
     }
 
     /// Checks if a specific `ToSortDirType` bitflag is set on this node.

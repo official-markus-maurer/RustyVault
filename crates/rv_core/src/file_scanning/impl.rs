@@ -12,12 +12,10 @@ use std::rc::Rc;
 /// (e.g. `Got`, `NotGot`, `Corrupt`) based on whether the physical files still exist and match
 /// their expected cryptographic hashes.
 ///
-/// Differences from C#:
-/// - The C# `FileScanning` algorithm contains extensive `Phase2` deep-scan matching, CHD format
-///   validation, and highly complex status propagation rules.
-/// - The Rust version implements a simplified 3-way merge algorithm (DB <-> FS). It correctly
-///   handles basic matching (`Phase 1`), marking files as `Got` or inserting `NotInDat` orphans,
-///   but skips some of the advanced header/CHD deep scan recoveries.
+/// Implementation notes:
+/// - Uses a 3-way merge strategy (DB ↔ filesystem) and prioritizes deterministic name ordering.
+///
+/// TODO: Implement deep-scan recovery for header-derived hashes and CHD verification paths.
 pub struct FileScanning;
 
 impl FileScanning {
@@ -131,6 +129,8 @@ impl FileScanning {
         file_dir: &mut ScannedFile,
         scan_level: crate::settings::EScanLevel,
     ) {
+        // TODO(perf): reduce repeated sorting and repeated `.borrow()` calls in hot loops.
+        // TODO(threading): consider parallelizing per-subdirectory integration where the DB tree does not share nodes.
         file_dir.sort();
         let container_type = db_dir.borrow().file_type;
         {

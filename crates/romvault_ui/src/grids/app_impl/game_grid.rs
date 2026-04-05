@@ -3,9 +3,9 @@ impl RomVaultApp {
         let selection_color = ui.style().visuals.selection.bg_fill;
 
         enum GridAction {
-            ScanQuick(Rc<RefCell<RvFile>>),
-            ScanNormal(Rc<RefCell<RvFile>>),
-            ScanFull(Rc<RefCell<RvFile>>),
+            ScanQuick { target_key: String, name: String, logical: String },
+            ScanNormal { target_key: String, name: String, logical: String },
+            ScanFull { target_key: String, name: String, logical: String },
             NavigateUp,
             NavigateDown(Rc<RefCell<RvFile>>),
             LaunchEmulator(Rc<RefCell<RvFile>>),
@@ -382,23 +382,44 @@ impl RomVaultApp {
                                             label_resp.context_menu(|ui| {
                                                 let mut has_open_target = false;
 
-                                                if child.file_type == FileType::Dir && !self.sam_running {
+                                                if child.file_type == FileType::Dir && self.is_idle() {
                                                     if ui.button("Scan").clicked() {
-                                                        pending_action = Some(GridAction::ScanNormal(
-                                                            Rc::clone(child_rc),
-                                                        ));
+                                                        let name = child_rc.borrow().name.clone();
+                                                        let logical = get_full_node_path(Rc::clone(child_rc));
+                                                        let target_key = crate::normalize_full_name_key(
+                                                            &child_rc.borrow().get_full_name(),
+                                                        );
+                                                        pending_action = Some(GridAction::ScanNormal {
+                                                            target_key,
+                                                            name,
+                                                            logical,
+                                                        });
                                                         ui.close_menu();
                                                     }
                                                     if ui.button("Scan Quick (Headers Only)").clicked() {
-                                                        pending_action = Some(GridAction::ScanQuick(
-                                                            Rc::clone(child_rc),
-                                                        ));
+                                                        let name = child_rc.borrow().name.clone();
+                                                        let logical = get_full_node_path(Rc::clone(child_rc));
+                                                        let target_key = crate::normalize_full_name_key(
+                                                            &child_rc.borrow().get_full_name(),
+                                                        );
+                                                        pending_action = Some(GridAction::ScanQuick {
+                                                            target_key,
+                                                            name,
+                                                            logical,
+                                                        });
                                                         ui.close_menu();
                                                     }
                                                     if ui.button("Scan Full (Complete Re-Scan)").clicked() {
-                                                        pending_action = Some(GridAction::ScanFull(
-                                                            Rc::clone(child_rc),
-                                                        ));
+                                                        let name = child_rc.borrow().name.clone();
+                                                        let logical = get_full_node_path(Rc::clone(child_rc));
+                                                        let target_key = crate::normalize_full_name_key(
+                                                            &child_rc.borrow().get_full_name(),
+                                                        );
+                                                        pending_action = Some(GridAction::ScanFull {
+                                                            target_key,
+                                                            name,
+                                                            logical,
+                                                        });
                                                         ui.close_menu();
                                                     }
                                                     ui.separator();
@@ -640,13 +661,16 @@ impl RomVaultApp {
 
         if let Some(action) = pending_action {
             match action {
-                GridAction::ScanQuick(target_rc) => {
-                    let name = target_rc.borrow().name.clone();
-                    let logical = get_full_node_path(Rc::clone(&target_rc));
-                    let np = rv_core::settings::find_dir_mapping(&logical).unwrap_or(logical.clone());
-                    let rule = rv_core::settings::find_rule(&logical);
+                GridAction::ScanQuick {
+                    target_key,
+                    name,
+                    logical,
+                } => {
+                    let np =
+                        rv_core::settings::find_dir_mapping(&logical).unwrap_or(logical.clone());
                     self.launch_task("Scan ROMs (Quick)", move |tx| {
                         let _ = tx.send(format!("Scanning {} (Headers Only)...", name));
+                        let rule = rv_core::settings::find_rule(&logical);
                         let files = Scanner::scan_directory_with_level_and_ignore(
                             &np,
                             rv_core::settings::EScanLevel::Level1,
@@ -655,20 +679,34 @@ impl RomVaultApp {
                         let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
                         root_scan.children = files;
                         let _ = tx.send("Integrating files into DB...".to_string());
-                        FileScanning::scan_dir_with_level(
-                            target_rc,
-                            &mut root_scan,
-                            rv_core::settings::EScanLevel::Level1,
-                        );
+                        crate::GLOBAL_DB.with(|db_ref| {
+                            if let Some(db) = db_ref.borrow().as_ref() {
+                                if let Some(target_rc) =
+                                    crate::find_node_by_full_name_key(&db.dir_root, &target_key)
+                                {
+                                    FileScanning::scan_dir_with_level(
+                                        target_rc,
+                                        &mut root_scan,
+                                        rv_core::settings::EScanLevel::Level1,
+                                    );
+                                } else {
+                                    let _ =
+                                        tx.send("Scan target no longer exists in DB.".to_string());
+                                }
+                            }
+                        });
                     });
                 }
-                GridAction::ScanNormal(target_rc) => {
-                    let name = target_rc.borrow().name.clone();
-                    let logical = get_full_node_path(Rc::clone(&target_rc));
-                    let np = rv_core::settings::find_dir_mapping(&logical).unwrap_or(logical.clone());
-                    let rule = rv_core::settings::find_rule(&logical);
+                GridAction::ScanNormal {
+                    target_key,
+                    name,
+                    logical,
+                } => {
+                    let np =
+                        rv_core::settings::find_dir_mapping(&logical).unwrap_or(logical.clone());
                     self.launch_task("Scan ROMs", move |tx| {
                         let _ = tx.send(format!("Scanning {}...", name));
+                        let rule = rv_core::settings::find_rule(&logical);
                         let files = Scanner::scan_directory_with_level_and_ignore(
                             &np,
                             rv_core::settings::EScanLevel::Level2,
@@ -677,20 +715,34 @@ impl RomVaultApp {
                         let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
                         root_scan.children = files;
                         let _ = tx.send("Integrating files into DB...".to_string());
-                        FileScanning::scan_dir_with_level(
-                            target_rc,
-                            &mut root_scan,
-                            rv_core::settings::EScanLevel::Level2,
-                        );
+                        crate::GLOBAL_DB.with(|db_ref| {
+                            if let Some(db) = db_ref.borrow().as_ref() {
+                                if let Some(target_rc) =
+                                    crate::find_node_by_full_name_key(&db.dir_root, &target_key)
+                                {
+                                    FileScanning::scan_dir_with_level(
+                                        target_rc,
+                                        &mut root_scan,
+                                        rv_core::settings::EScanLevel::Level2,
+                                    );
+                                } else {
+                                    let _ =
+                                        tx.send("Scan target no longer exists in DB.".to_string());
+                                }
+                            }
+                        });
                     });
                 }
-                GridAction::ScanFull(target_rc) => {
-                    let name = target_rc.borrow().name.clone();
-                    let logical = get_full_node_path(Rc::clone(&target_rc));
-                    let np = rv_core::settings::find_dir_mapping(&logical).unwrap_or(logical.clone());
-                    let rule = rv_core::settings::find_rule(&logical);
+                GridAction::ScanFull {
+                    target_key,
+                    name,
+                    logical,
+                } => {
+                    let np =
+                        rv_core::settings::find_dir_mapping(&logical).unwrap_or(logical.clone());
                     self.launch_task("Scan ROMs (Full)", move |tx| {
                         let _ = tx.send(format!("Scanning {} (Full Re-Scan)...", name));
+                        let rule = rv_core::settings::find_rule(&logical);
                         let files = Scanner::scan_directory_with_level_and_ignore(
                             &np,
                             rv_core::settings::EScanLevel::Level3,
@@ -699,11 +751,22 @@ impl RomVaultApp {
                         let mut root_scan = rv_core::scanned_file::ScannedFile::new(FileType::Dir);
                         root_scan.children = files;
                         let _ = tx.send("Integrating files into DB...".to_string());
-                        FileScanning::scan_dir_with_level(
-                            target_rc,
-                            &mut root_scan,
-                            rv_core::settings::EScanLevel::Level3,
-                        );
+                        crate::GLOBAL_DB.with(|db_ref| {
+                            if let Some(db) = db_ref.borrow().as_ref() {
+                                if let Some(target_rc) =
+                                    crate::find_node_by_full_name_key(&db.dir_root, &target_key)
+                                {
+                                    FileScanning::scan_dir_with_level(
+                                        target_rc,
+                                        &mut root_scan,
+                                        rv_core::settings::EScanLevel::Level3,
+                                    );
+                                } else {
+                                    let _ =
+                                        tx.send("Scan target no longer exists in DB.".to_string());
+                                }
+                            }
+                        });
                     });
                 }
                 GridAction::NavigateUp => {

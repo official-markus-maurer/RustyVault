@@ -152,41 +152,53 @@ impl FindFixes {
         current: Rc<RefCell<RvFile>>,
         file: &RvFile,
         files_got: &[Rc<RefCell<RvFile>>],
-        crc_map: &HashMap<(u64, Vec<u8>), Vec<usize>>,
-        sha1_map: &HashMap<(u64, Vec<u8>), Vec<usize>>,
-        md5_map: &HashMap<(u64, Vec<u8>), Vec<usize>>,
+        crc_map: &HashMap<(u64, [u8; 4]), Vec<usize>>,
+        sha1_map: &HashMap<(u64, [u8; 20]), Vec<usize>>,
+        md5_map: &HashMap<(u64, [u8; 16]), Vec<usize>>,
     ) -> bool {
         let size = file.size.unwrap_or(0);
         let alt_size = file.alt_size.unwrap_or(size);
         let mut candidates = Vec::new();
         let mut seen = HashSet::new();
 
-        if let Some(ref crc) = file.crc {
-            if let Some(got_list) = crc_map.get(&(size, crc.clone())) {
+        if let Some(crc) = file
+            .crc
+            .as_deref()
+            .and_then(|b| <[u8; 4]>::try_from(b).ok())
+        {
+            if let Some(got_list) = crc_map.get(&(size, crc)) {
                 Self::extend_unique_got_candidates(&mut candidates, got_list, &mut seen);
             }
             if alt_size != size {
-                if let Some(got_list) = crc_map.get(&(alt_size, crc.clone())) {
+                if let Some(got_list) = crc_map.get(&(alt_size, crc)) {
                     Self::extend_unique_got_candidates(&mut candidates, got_list, &mut seen);
                 }
             }
         }
-        if let Some(ref sha1) = file.sha1 {
-            if let Some(got_list) = sha1_map.get(&(size, sha1.clone())) {
+        if let Some(sha1) = file
+            .sha1
+            .as_deref()
+            .and_then(|b| <[u8; 20]>::try_from(b).ok())
+        {
+            if let Some(got_list) = sha1_map.get(&(size, sha1)) {
                 Self::extend_unique_got_candidates(&mut candidates, got_list, &mut seen);
             }
             if alt_size != size {
-                if let Some(got_list) = sha1_map.get(&(alt_size, sha1.clone())) {
+                if let Some(got_list) = sha1_map.get(&(alt_size, sha1)) {
                     Self::extend_unique_got_candidates(&mut candidates, got_list, &mut seen);
                 }
             }
         }
-        if let Some(ref md5) = file.md5 {
-            if let Some(got_list) = md5_map.get(&(size, md5.clone())) {
+        if let Some(md5) = file
+            .md5
+            .as_deref()
+            .and_then(|b| <[u8; 16]>::try_from(b).ok())
+        {
+            if let Some(got_list) = md5_map.get(&(size, md5)) {
                 Self::extend_unique_got_candidates(&mut candidates, got_list, &mut seen);
             }
             if alt_size != size {
-                if let Some(got_list) = md5_map.get(&(alt_size, md5.clone())) {
+                if let Some(got_list) = md5_map.get(&(alt_size, md5)) {
                     Self::extend_unique_got_candidates(&mut candidates, got_list, &mut seen);
                 }
             }
