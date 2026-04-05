@@ -1,16 +1,4 @@
 impl FindFixes {
-    fn extend_unique_got_candidates(
-        candidates: &mut Vec<usize>,
-        got_list: &[usize],
-        seen: &mut HashSet<usize>,
-    ) {
-        for idx in got_list {
-            if seen.insert(*idx) {
-                candidates.push(*idx);
-            }
-        }
-    }
-
     fn has_redundant_romroot_match(
         current: Rc<RefCell<RvFile>>,
         file: &RvFile,
@@ -22,75 +10,83 @@ impl FindFixes {
         let size = file.size.unwrap_or(0);
         let alt_size = file.alt_size.unwrap_or(size);
         let mut candidates = Vec::new();
-        let mut seen = HashSet::new();
+        let mut seen_epoch = vec![0u32; files_got.len()];
+        let mut epoch = 1u32;
 
-        if let Some(crc) = file
-            .crc
-            .as_deref()
-            .and_then(|b| <[u8; 4]>::try_from(b).ok())
-        {
+        fn extend_unique_epoch(
+            candidates: &mut Vec<usize>,
+            idxs: &[usize],
+            seen_epoch: &mut [u32],
+            epoch: u32,
+        ) {
+            for &idx in idxs {
+                if idx < seen_epoch.len() && seen_epoch[idx] != epoch {
+                    seen_epoch[idx] = epoch;
+                    candidates.push(idx);
+                }
+            }
+        }
+
+        let crc: Option<[u8; 4]> = file.crc.as_deref().and_then(|b| b.try_into().ok());
+        let alt_crc: Option<[u8; 4]> = file.alt_crc.as_deref().and_then(|b| b.try_into().ok());
+        let sha1: Option<[u8; 20]> = file.sha1.as_deref().and_then(|b| b.try_into().ok());
+        let alt_sha1: Option<[u8; 20]> = file.alt_sha1.as_deref().and_then(|b| b.try_into().ok());
+        let md5: Option<[u8; 16]> = file.md5.as_deref().and_then(|b| b.try_into().ok());
+        let alt_md5: Option<[u8; 16]> = file.alt_md5.as_deref().and_then(|b| b.try_into().ok());
+
+        if let Some(crc) = crc {
             if let Some(got_list) = crc_map.get(&(size, crc)) {
-                Self::extend_unique_got_candidates(&mut candidates, got_list, &mut seen);
+                extend_unique_epoch(&mut candidates, got_list, &mut seen_epoch, epoch);
             }
             if alt_size != size {
                 if let Some(got_list) = crc_map.get(&(alt_size, crc)) {
-                    Self::extend_unique_got_candidates(&mut candidates, got_list, &mut seen);
+                    extend_unique_epoch(&mut candidates, got_list, &mut seen_epoch, epoch);
                 }
             }
         }
-        if let Some(alt_crc) = file
-            .alt_crc
-            .as_deref()
-            .and_then(|b| <[u8; 4]>::try_from(b).ok())
-        {
+        if let Some(alt_crc) = alt_crc {
             if let Some(got_list) = crc_map.get(&(alt_size, alt_crc)) {
-                Self::extend_unique_got_candidates(&mut candidates, got_list, &mut seen);
+                extend_unique_epoch(&mut candidates, got_list, &mut seen_epoch, epoch);
             }
         }
-        if let Some(sha1) = file
-            .sha1
-            .as_deref()
-            .and_then(|b| <[u8; 20]>::try_from(b).ok())
-        {
+        epoch = epoch.wrapping_add(1);
+        if epoch == 0 {
+            seen_epoch.fill(0);
+            epoch = 1;
+        }
+        if let Some(sha1) = sha1 {
             if let Some(got_list) = sha1_map.get(&(size, sha1)) {
-                Self::extend_unique_got_candidates(&mut candidates, got_list, &mut seen);
+                extend_unique_epoch(&mut candidates, got_list, &mut seen_epoch, epoch);
             }
             if alt_size != size {
                 if let Some(got_list) = sha1_map.get(&(alt_size, sha1)) {
-                    Self::extend_unique_got_candidates(&mut candidates, got_list, &mut seen);
+                    extend_unique_epoch(&mut candidates, got_list, &mut seen_epoch, epoch);
                 }
             }
         }
-        if let Some(alt_sha1) = file
-            .alt_sha1
-            .as_deref()
-            .and_then(|b| <[u8; 20]>::try_from(b).ok())
-        {
+        if let Some(alt_sha1) = alt_sha1 {
             if let Some(got_list) = sha1_map.get(&(alt_size, alt_sha1)) {
-                Self::extend_unique_got_candidates(&mut candidates, got_list, &mut seen);
+                extend_unique_epoch(&mut candidates, got_list, &mut seen_epoch, epoch);
             }
         }
-        if let Some(md5) = file
-            .md5
-            .as_deref()
-            .and_then(|b| <[u8; 16]>::try_from(b).ok())
-        {
+        epoch = epoch.wrapping_add(1);
+        if epoch == 0 {
+            seen_epoch.fill(0);
+            epoch = 1;
+        }
+        if let Some(md5) = md5 {
             if let Some(got_list) = md5_map.get(&(size, md5)) {
-                Self::extend_unique_got_candidates(&mut candidates, got_list, &mut seen);
+                extend_unique_epoch(&mut candidates, got_list, &mut seen_epoch, epoch);
             }
             if alt_size != size {
                 if let Some(got_list) = md5_map.get(&(alt_size, md5)) {
-                    Self::extend_unique_got_candidates(&mut candidates, got_list, &mut seen);
+                    extend_unique_epoch(&mut candidates, got_list, &mut seen_epoch, epoch);
                 }
             }
         }
-        if let Some(alt_md5) = file
-            .alt_md5
-            .as_deref()
-            .and_then(|b| <[u8; 16]>::try_from(b).ok())
-        {
+        if let Some(alt_md5) = alt_md5 {
             if let Some(got_list) = md5_map.get(&(alt_size, alt_md5)) {
-                Self::extend_unique_got_candidates(&mut candidates, got_list, &mut seen);
+                extend_unique_epoch(&mut candidates, got_list, &mut seen_epoch, epoch);
             }
         }
 
@@ -120,75 +116,83 @@ impl FindFixes {
         let size = file.size.unwrap_or(0);
         let alt_size = file.alt_size.unwrap_or(size);
         let mut candidates = Vec::new();
-        let mut seen = HashSet::new();
+        let mut seen_epoch = vec![0u32; files_missing.len()];
+        let mut epoch = 1u32;
 
-        if let Some(crc) = file
-            .crc
-            .as_deref()
-            .and_then(|b| <[u8; 4]>::try_from(b).ok())
-        {
+        fn extend_unique_epoch(
+            candidates: &mut Vec<usize>,
+            idxs: &[usize],
+            seen_epoch: &mut [u32],
+            epoch: u32,
+        ) {
+            for &idx in idxs {
+                if idx < seen_epoch.len() && seen_epoch[idx] != epoch {
+                    seen_epoch[idx] = epoch;
+                    candidates.push(idx);
+                }
+            }
+        }
+
+        let crc: Option<[u8; 4]> = file.crc.as_deref().and_then(|b| b.try_into().ok());
+        let alt_crc: Option<[u8; 4]> = file.alt_crc.as_deref().and_then(|b| b.try_into().ok());
+        let sha1: Option<[u8; 20]> = file.sha1.as_deref().and_then(|b| b.try_into().ok());
+        let alt_sha1: Option<[u8; 20]> = file.alt_sha1.as_deref().and_then(|b| b.try_into().ok());
+        let md5: Option<[u8; 16]> = file.md5.as_deref().and_then(|b| b.try_into().ok());
+        let alt_md5: Option<[u8; 16]> = file.alt_md5.as_deref().and_then(|b| b.try_into().ok());
+
+        if let Some(crc) = crc {
             if let Some(missing_list) = crc_map.get(&(size, crc)) {
-                Self::extend_unique_got_candidates(&mut candidates, missing_list, &mut seen);
+                extend_unique_epoch(&mut candidates, missing_list, &mut seen_epoch, epoch);
             }
             if alt_size != size {
                 if let Some(missing_list) = crc_map.get(&(alt_size, crc)) {
-                    Self::extend_unique_got_candidates(&mut candidates, missing_list, &mut seen);
+                    extend_unique_epoch(&mut candidates, missing_list, &mut seen_epoch, epoch);
                 }
             }
         }
-        if let Some(alt_crc) = file
-            .alt_crc
-            .as_deref()
-            .and_then(|b| <[u8; 4]>::try_from(b).ok())
-        {
+        if let Some(alt_crc) = alt_crc {
             if let Some(missing_list) = crc_map.get(&(alt_size, alt_crc)) {
-                Self::extend_unique_got_candidates(&mut candidates, missing_list, &mut seen);
+                extend_unique_epoch(&mut candidates, missing_list, &mut seen_epoch, epoch);
             }
         }
-        if let Some(sha1) = file
-            .sha1
-            .as_deref()
-            .and_then(|b| <[u8; 20]>::try_from(b).ok())
-        {
+        epoch = epoch.wrapping_add(1);
+        if epoch == 0 {
+            seen_epoch.fill(0);
+            epoch = 1;
+        }
+        if let Some(sha1) = sha1 {
             if let Some(missing_list) = sha1_map.get(&(size, sha1)) {
-                Self::extend_unique_got_candidates(&mut candidates, missing_list, &mut seen);
+                extend_unique_epoch(&mut candidates, missing_list, &mut seen_epoch, epoch);
             }
             if alt_size != size {
                 if let Some(missing_list) = sha1_map.get(&(alt_size, sha1)) {
-                    Self::extend_unique_got_candidates(&mut candidates, missing_list, &mut seen);
+                    extend_unique_epoch(&mut candidates, missing_list, &mut seen_epoch, epoch);
                 }
             }
         }
-        if let Some(alt_sha1) = file
-            .alt_sha1
-            .as_deref()
-            .and_then(|b| <[u8; 20]>::try_from(b).ok())
-        {
+        if let Some(alt_sha1) = alt_sha1 {
             if let Some(missing_list) = sha1_map.get(&(alt_size, alt_sha1)) {
-                Self::extend_unique_got_candidates(&mut candidates, missing_list, &mut seen);
+                extend_unique_epoch(&mut candidates, missing_list, &mut seen_epoch, epoch);
             }
         }
-        if let Some(md5) = file
-            .md5
-            .as_deref()
-            .and_then(|b| <[u8; 16]>::try_from(b).ok())
-        {
+        epoch = epoch.wrapping_add(1);
+        if epoch == 0 {
+            seen_epoch.fill(0);
+            epoch = 1;
+        }
+        if let Some(md5) = md5 {
             if let Some(missing_list) = md5_map.get(&(size, md5)) {
-                Self::extend_unique_got_candidates(&mut candidates, missing_list, &mut seen);
+                extend_unique_epoch(&mut candidates, missing_list, &mut seen_epoch, epoch);
             }
             if alt_size != size {
                 if let Some(missing_list) = md5_map.get(&(alt_size, md5)) {
-                    Self::extend_unique_got_candidates(&mut candidates, missing_list, &mut seen);
+                    extend_unique_epoch(&mut candidates, missing_list, &mut seen_epoch, epoch);
                 }
             }
         }
-        if let Some(alt_md5) = file
-            .alt_md5
-            .as_deref()
-            .and_then(|b| <[u8; 16]>::try_from(b).ok())
-        {
+        if let Some(alt_md5) = alt_md5 {
             if let Some(missing_list) = md5_map.get(&(alt_size, alt_md5)) {
-                Self::extend_unique_got_candidates(&mut candidates, missing_list, &mut seen);
+                extend_unique_epoch(&mut candidates, missing_list, &mut seen_epoch, epoch);
             }
         }
 

@@ -1,6 +1,7 @@
 impl RvFile {
     fn invalidate_cached_stats_with_ancestors(&mut self) {
         self.cached_stats = None;
+        self.cache_dirty = true;
         if self.dir_status.is_some() {
             self.dir_status = Some(ReportStatus::Unknown);
         }
@@ -11,6 +12,7 @@ impl RvFile {
                     break;
                 };
                 node.cached_stats = None;
+                node.cache_dirty = true;
                 if node.dir_status.is_some() {
                     node.dir_status = Some(ReportStatus::Unknown);
                 }

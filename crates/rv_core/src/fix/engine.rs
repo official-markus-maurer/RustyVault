@@ -553,6 +553,7 @@ impl Fix {
         0x0002 | if name.is_ascii() { 0 } else { 0x0800 }
     }
 
+    #[cfg(test)]
     fn fix_a_zip(
         zip_file: Rc<RefCell<RvFile>>,
         queue: &mut Vec<Rc<RefCell<RvFile>>>,
@@ -560,6 +561,27 @@ impl Fix {
         crc_map: &HashMap<crate::hash_keys::CrcKey, Rc<RefCell<RvFile>>>,
         sha1_map: &HashMap<crate::hash_keys::Sha1Key, Rc<RefCell<RvFile>>>,
         md5_map: &HashMap<crate::hash_keys::Md5Key, Rc<RefCell<RvFile>>>,
+    ) {
+        let mut retained_physical_counts = HashMap::new();
+        Self::fix_a_zip_with_counts(
+            zip_file,
+            queue,
+            total_fixed,
+            crc_map,
+            sha1_map,
+            md5_map,
+            &mut retained_physical_counts,
+        );
+    }
+
+    fn fix_a_zip_with_counts(
+        zip_file: Rc<RefCell<RvFile>>,
+        queue: &mut Vec<Rc<RefCell<RvFile>>>,
+        total_fixed: &mut i32,
+        crc_map: &HashMap<crate::hash_keys::CrcKey, Rc<RefCell<RvFile>>>,
+        sha1_map: &HashMap<crate::hash_keys::Sha1Key, Rc<RefCell<RvFile>>>,
+        md5_map: &HashMap<crate::hash_keys::Md5Key, Rc<RefCell<RvFile>>>,
+        retained_physical_counts: &mut HashMap<String, u32>,
     ) {
         if Self::try_zip_move(
             Rc::clone(&zip_file),
@@ -591,10 +613,19 @@ impl Fix {
 
         let children = zip_file.borrow().children.clone();
         for child in children {
-            Self::fix_a_file(Rc::clone(&child), queue, total_fixed, crc_map, sha1_map, md5_map);
+            Self::fix_a_file_with_counts(
+                Rc::clone(&child),
+                queue,
+                total_fixed,
+                crc_map,
+                sha1_map,
+                md5_map,
+                retained_physical_counts,
+            );
         }
     }
 
+    #[cfg(test)]
     fn fix_a_file(
         file: Rc<RefCell<RvFile>>,
         queue: &mut Vec<Rc<RefCell<RvFile>>>,
@@ -602,6 +633,27 @@ impl Fix {
         crc_map: &HashMap<crate::hash_keys::CrcKey, Rc<RefCell<RvFile>>>,
         sha1_map: &HashMap<crate::hash_keys::Sha1Key, Rc<RefCell<RvFile>>>,
         md5_map: &HashMap<crate::hash_keys::Md5Key, Rc<RefCell<RvFile>>>,
+    ) {
+        let mut retained_physical_counts = HashMap::new();
+        Self::fix_a_file_with_counts(
+            file,
+            queue,
+            total_fixed,
+            crc_map,
+            sha1_map,
+            md5_map,
+            &mut retained_physical_counts,
+        );
+    }
+
+    fn fix_a_file_with_counts(
+        file: Rc<RefCell<RvFile>>,
+        queue: &mut Vec<Rc<RefCell<RvFile>>>,
+        total_fixed: &mut i32,
+        crc_map: &HashMap<crate::hash_keys::CrcKey, Rc<RefCell<RvFile>>>,
+        sha1_map: &HashMap<crate::hash_keys::Sha1Key, Rc<RefCell<RvFile>>>,
+        md5_map: &HashMap<crate::hash_keys::Md5Key, Rc<RefCell<RvFile>>>,
+        retained_physical_counts: &mut HashMap<String, u32>,
     ) {
         // TODO(threading): consider parallelizing independent file fixes, but guard against:
         // - multiple targets writing into the same directory
@@ -629,8 +681,8 @@ impl Fix {
             RepStatus::Delete | RepStatus::UnNeeded => {
                 debug!("Deleting file: {}", current_path.display());
                 Self::report_action(format!("Delete: {}", current_path.display()));
-                let root = Self::find_tree_root(Rc::clone(&file));
-                if Self::has_retained_shared_physical_path(root, Rc::clone(&file), &current_path) {
+                let shared_refs = Self::physical_path_ref_count(retained_physical_counts, &current_path);
+                if shared_refs > 0 {
                     let mut file_mut = file.borrow_mut();
                     file_mut.set_got_status(GotStatus::NotGot);
                     file_mut.rep_status_reset();
@@ -667,7 +719,11 @@ impl Fix {
                 debug!("Moving to ToSort: {} -> {}", current_path.display(), tosort_path.display());
                 Self::report_action(format!("MoveToSort: {} -> {}", current_path.display(), tosort_path.display()));
                 if current_path.exists() {
-                    let _ = Self::rename_path_if_needed(&current_path, &tosort_path, "tmptosort");
+                    let shared_refs =
+                        Self::physical_path_ref_count(retained_physical_counts, &current_path);
+                    if shared_refs == 0 {
+                        let _ = Self::rename_path_if_needed(&current_path, &tosort_path, "tmptosort");
+                    }
                 }
                 Self::maybe_delete_old_cue_zip_in_tosort(&tosort_path);
                 let mut file_mut = file.borrow_mut();
@@ -689,7 +745,11 @@ impl Fix {
                     tosort_path.display()
                 ));
                 if current_path.exists() {
-                    let _ = Self::rename_path_if_needed(&current_path, &tosort_path, "tmptosort");
+                    let shared_refs =
+                        Self::physical_path_ref_count(retained_physical_counts, &current_path);
+                    if shared_refs == 0 {
+                        let _ = Self::rename_path_if_needed(&current_path, &tosort_path, "tmptosort");
+                    }
                 }
                 Self::maybe_delete_old_cue_zip_in_tosort(&tosort_path);
                 let mut file_mut = file.borrow_mut();
@@ -724,9 +784,19 @@ impl Fix {
                             let _ = fs::create_dir_all(parent);
                         }
 
-                        if let Some(bytes) = Self::read_source_file_bytes(Rc::clone(&src)) {
-                            let _ = fs::write(&target_path, bytes);
+                        let copied = if Self::find_containing_archive(Rc::clone(&src)).is_none() {
+                            let _ = fs::remove_file(&target_path);
+                            fs::copy(&src_path, &target_path).is_ok()
+                        } else {
+                            false
+                        };
+
+                        if !copied {
+                            if let Some(bytes) = Self::read_source_file_bytes(Rc::clone(&src)) {
+                                let _ = fs::write(&target_path, bytes);
+                            }
                         }
+                        Self::increment_physical_path_ref(retained_physical_counts, &target_path);
 
                         let source_is_read_only = {
                             let src_ref = src.borrow();
@@ -750,6 +820,10 @@ impl Fix {
                 debug!("Renaming file: {} -> {}", current_path.display(), target_path.display());
                 Self::report_action(format!("Rename: {} -> {}", current_path.display(), target_path.display()));
                 let _ = Self::rename_path_if_needed(&current_path, &target_path, "tmpfile");
+                if !Self::physical_path_eq_for_rename(&current_path, &target_path) {
+                    Self::decrement_physical_path_ref(retained_physical_counts, &current_path);
+                    Self::increment_physical_path_ref(retained_physical_counts, &target_path);
+                }
                 {
                     let mut file_mut = file.borrow_mut();
                     file_mut.file_name = file_mut.name.clone();

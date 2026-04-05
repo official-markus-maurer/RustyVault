@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 pub fn extract_scan_pattern(raw: &str) -> Option<&str> {
     let s = raw.trim();
     if s.len() < 7 {
@@ -36,6 +38,97 @@ pub fn matches_pattern(name: &str, pattern: &str) -> bool {
         wildcard_match(p, name)
     } else {
         p == name
+    }
+}
+
+pub struct PatternMatcher {
+    regex: Vec<regex::Regex>,
+    literal: HashSet<String>,
+    wildcard: Vec<String>,
+}
+
+impl PatternMatcher {
+    pub fn from_scan_ignore_patterns(patterns: &[String]) -> Self {
+        let mut regex = Vec::new();
+        let mut literal = HashSet::new();
+        let mut wildcard = Vec::new();
+
+        for raw in patterns {
+            let Some(pat) = extract_scan_pattern(raw) else {
+                continue;
+            };
+            let p = pat.trim();
+            if p.is_empty() {
+                continue;
+            }
+            if p.len() >= 6 && p[..6].eq_ignore_ascii_case("regex:") {
+                let expr = p[6..].trim();
+                if expr.is_empty() {
+                    continue;
+                }
+                if let Ok(re) = regex::RegexBuilder::new(expr)
+                    .case_insensitive(true)
+                    .build()
+                {
+                    regex.push(re);
+                }
+                continue;
+            }
+
+            #[cfg(windows)]
+            let p = p.to_ascii_lowercase();
+            #[cfg(not(windows))]
+            let p = p.to_string();
+
+            if p.contains('*') || p.contains('?') {
+                wildcard.push(p);
+            } else {
+                literal.insert(p);
+            }
+        }
+
+        Self {
+            regex,
+            literal,
+            wildcard,
+        }
+    }
+
+    pub fn is_match(&self, name: &str) -> bool {
+        for re in &self.regex {
+            if re.is_match(name) {
+                return true;
+            }
+        }
+
+        if self.literal.is_empty() && self.wildcard.is_empty() {
+            return false;
+        }
+
+        #[cfg(windows)]
+        let n = name.to_ascii_lowercase();
+        #[cfg(not(windows))]
+        let n = name;
+
+        #[cfg(windows)]
+        let is_literal_match = self.literal.contains(n.as_str());
+        #[cfg(not(windows))]
+        let is_literal_match = self.literal.contains(n);
+        if is_literal_match {
+            return true;
+        }
+
+        for pat in &self.wildcard {
+            #[cfg(windows)]
+            let is_match = wildcard_match(pat, n.as_str());
+            #[cfg(not(windows))]
+            let is_match = wildcard_match(pat, n);
+            if is_match {
+                return true;
+            }
+        }
+
+        false
     }
 }
 

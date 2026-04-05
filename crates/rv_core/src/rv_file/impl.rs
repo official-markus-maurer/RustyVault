@@ -182,6 +182,10 @@ pub struct RvFile {
     #[serde(skip)]
     pub cached_stats: Option<RepairStatus>,
 
+    /// Transient in-memory flag used to skip unnecessary full cache writes.
+    #[serde(skip)]
+    pub cache_dirty: bool,
+
     // Legacy cache fields
     /// Legacy tmp_dat_index
     #[serde(default)]
@@ -250,6 +254,7 @@ impl RvFile {
             tree_expanded: false,
             tree_checked: TreeSelect::Selected,
             cached_stats: None,
+            cache_dirty: true,
             tmp_dat_index: None,
             db_id: None,
             parent_index: -1,
@@ -277,6 +282,7 @@ impl RvFile {
     /// Appends a child `RvFile` to this node's internal children vector.
     pub fn child_add(&mut self, child: Rc<RefCell<RvFile>>) {
         self.invalidate_cached_stats_with_ancestors();
+        self.cache_dirty = true;
         let insert_index = {
             let child_ref = child.borrow();
             self.child_insert_index(&child_ref)
@@ -287,6 +293,7 @@ impl RvFile {
     /// Inserts a child `RvFile` into this node's internal children vector at a specific index.
     pub fn child_insert(&mut self, index: usize, child: Rc<RefCell<RvFile>>) {
         self.invalidate_cached_stats_with_ancestors();
+        self.cache_dirty = true;
         self.children.insert(index, child);
     }
 
@@ -294,6 +301,7 @@ impl RvFile {
     pub fn child_remove(&mut self, index: usize) {
         if index < self.children.len() {
             self.invalidate_cached_stats_with_ancestors();
+            self.cache_dirty = true;
             self.children.remove(index);
         }
     }

@@ -214,7 +214,9 @@ impl Fix {
             }
         } else {
             source_file.borrow_mut().set_rep_status(RepStatus::Delete);
-            queue.push(source_file);
+            if !queue.iter().any(|queued| Rc::ptr_eq(queued, &source_file)) {
+                queue.push(source_file);
+            }
         }
     }
 

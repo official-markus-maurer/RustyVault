@@ -111,6 +111,9 @@ impl Cache {
 
     /// Serializes the entire `RvFile` tree back to disk using `bincode` into the standard `RustyVault3_3.Cache` file format.
     pub fn write_cache(root: Rc<RefCell<RvFile>>) {
+        if !root.borrow().cache_dirty {
+            return;
+        }
         Self::prepare_for_serialize(Rc::clone(&root));
 
         let (cache_path, backup_path, tmp_path) = Self::cache_paths();
@@ -118,7 +121,6 @@ impl Cache {
             let _ = fs::remove_file(&tmp_path);
         }
 
-        // TODO(perf): keep a dirty flag and avoid full cache writes when nothing changed.
         // TODO(perf): avoid writing cache twice per UI task (pre + post). Prefer a single atomic write when the task completes.
         // TODO(threading): move cache writes to a single background writer thread so tasks can enqueue "write requests"
         // without blocking scan/fix work.
@@ -548,6 +550,7 @@ impl Cache {
         let mut stack = vec![Rc::clone(&root)];
         while let Some(node) = stack.pop() {
             let mut n = node.borrow_mut();
+            n.cache_dirty = false;
             n.dat_index_for_serde = n.dat.as_ref().map(|d| d.borrow().dat_index);
             for child in &n.children {
                 stack.push(Rc::clone(child));
@@ -565,12 +568,13 @@ impl Cache {
         while let Some((node, p, p_dats)) = stack.pop() {
             let mut n = node.borrow_mut();
             n.parent = p.clone();
+            n.cache_dirty = false;
 
             // Fixup: any item in ToSort should have a datStatus of InToSort
             if let Some(parent_weak) = &p {
                 if let Some(parent_rc) = parent_weak.upgrade() {
                     if parent_rc.borrow().dat_status() == dat_reader::enums::DatStatus::InToSort {
-                        n.set_dat_status(dat_reader::enums::DatStatus::InToSort);
+                        n.dat_status = dat_reader::enums::DatStatus::InToSort;
                     }
                 }
             }
@@ -579,7 +583,7 @@ impl Cache {
                     | ToSortDirType::TO_SORT_CACHE
                     | ToSortDirType::TO_SORT_FILE_ONLY,
             ) {
-                n.set_dat_status(dat_reader::enums::DatStatus::InToSort);
+                n.dat_status = dat_reader::enums::DatStatus::InToSort;
             }
 
             if (n.file_type == dat_reader::enums::FileType::Dir

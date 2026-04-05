@@ -23,41 +23,8 @@ use crate::scanned_file::ScannedFile;
 
 pub struct Scanner;
 
-fn is_ignored_file_name(file_name: &str, patterns: &[String]) -> bool {
-    #[cfg(windows)]
-    let name = file_name.to_ascii_lowercase();
-    #[cfg(not(windows))]
-    let name = file_name.to_string();
-
-    for pat in patterns {
-        let Some(scan_pat) = crate::patterns::extract_scan_pattern(pat) else {
-            continue;
-        };
-        if scan_pat.is_empty() {
-            continue;
-        }
-        #[cfg(windows)]
-        {
-            let is_regex = scan_pat.len() >= 6 && scan_pat[..6].eq_ignore_ascii_case("regex:");
-            if is_regex {
-                if crate::patterns::matches_pattern(file_name, scan_pat) {
-                    return true;
-                }
-            } else {
-                let p = scan_pat.to_ascii_lowercase();
-                if crate::patterns::matches_pattern(&name, &p) {
-                    return true;
-                }
-            }
-        }
-        #[cfg(not(windows))]
-        {
-            if crate::patterns::matches_pattern(&name, scan_pat) {
-                return true;
-            }
-        }
-    }
-    false
+fn is_ignored_file_name(file_name: &str, matcher: &crate::patterns::PatternMatcher) -> bool {
+    matcher.is_match(file_name)
 }
 
 include!("scanner/archive.rs");

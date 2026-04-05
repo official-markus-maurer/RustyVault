@@ -227,15 +227,7 @@ pub fn draw_left_panel(
                             unknown = stats.roms_unknown + stats.roms_in_to_sort;
                         } else {
                             drop(node);
-                            let mut stats = rv_core::repair_status::RepairStatus::new();
-                            stats.report_status(Rc::clone(node_rc));
-                            let mut node_mut = node_rc.borrow_mut();
-                            node_mut.cached_stats = Some(stats);
-
-                            got = stats.count_correct();
-                            missing = crate::ui_missing_count(&stats);
-                            fixable = crate::ui_fixable_count(&stats);
-                            unknown = stats.roms_unknown + stats.roms_in_to_sort;
+                            app.enqueue_tree_stats_priority(Rc::clone(node_rc));
                         }
                     }
 

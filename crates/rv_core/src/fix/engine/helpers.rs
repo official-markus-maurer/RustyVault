@@ -1,4 +1,39 @@
 impl Fix {
+    fn physical_path_key(path: &Path) -> String {
+        let s = path.to_string_lossy().replace('\\', "/");
+        #[cfg(windows)]
+        {
+            s.to_ascii_lowercase()
+        }
+        #[cfg(not(windows))]
+        {
+            s
+        }
+    }
+
+    fn increment_physical_path_ref(counts: &mut HashMap<String, u32>, path: &Path) {
+        let key = Self::physical_path_key(path);
+        let entry = counts.entry(key).or_insert(0);
+        *entry = entry.saturating_add(1);
+    }
+
+    fn decrement_physical_path_ref(counts: &mut HashMap<String, u32>, path: &Path) {
+        let key = Self::physical_path_key(path);
+        let Some(v) = counts.get_mut(&key) else {
+            return;
+        };
+        if *v <= 1 {
+            counts.remove(&key);
+        } else {
+            *v -= 1;
+        }
+    }
+
+    fn physical_path_ref_count(counts: &HashMap<String, u32>, path: &Path) -> u32 {
+        let key = Self::physical_path_key(path);
+        counts.get(&key).copied().unwrap_or(0)
+    }
+
     fn default_seven_zip_struct_from_settings() -> ZipStructure {
         match crate::settings::get_settings().seven_z_default_struct {
             0 => ZipStructure::SevenZipSLZMA,

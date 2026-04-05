@@ -78,6 +78,8 @@ impl Fix {
             }
         }
 
+        let mut retained_physical_counts = Self::build_retained_physical_path_counts(Rc::clone(&root));
+
         let children = root.borrow().children.clone();
         for child in children {
             Self::fix_base(
@@ -88,6 +90,7 @@ impl Fix {
                 &crc_map,
                 &sha1_map,
                 &md5_map,
+                &mut retained_physical_counts,
             );
             while file_process_queue_head < file_process_queue.len() {
                 let queued_file = Rc::clone(&file_process_queue[file_process_queue_head]);
@@ -100,6 +103,7 @@ impl Fix {
                     &crc_map,
                     &sha1_map,
                     &md5_map,
+                    &mut retained_physical_counts,
                 );
                 if let Some(last) = cache_timer {
                     if last.elapsed().as_secs_f64() / 60.0 > settings.cache_save_time_period as f64 {
@@ -127,6 +131,50 @@ impl Fix {
         Self::report_action(format!("Fix pass complete. Total fixed: {}", total_fixed));
     }
 
+    fn build_retained_physical_path_counts(root: Rc<RefCell<RvFile>>) -> HashMap<String, u32> {
+        let mut counts = HashMap::new();
+        let mut stack = vec![root];
+        while let Some(node_rc) = stack.pop() {
+            let (file_type, is_dir, got_status, dat_status, rep_status, children) = {
+                let n = node_rc.borrow();
+                (
+                    n.file_type,
+                    n.is_directory(),
+                    n.got_status(),
+                    n.dat_status(),
+                    n.rep_status(),
+                    n.children.clone(),
+                )
+            };
+
+            for child in children {
+                stack.push(child);
+            }
+
+            if is_dir {
+                continue;
+            }
+            if matches!(file_type, FileType::FileZip | FileType::FileSevenZip) {
+                continue;
+            }
+            if got_status != GotStatus::Got {
+                continue;
+            }
+            if !Self::dat_status_retains_shared_physical_path(dat_status)
+                || !Self::status_retains_shared_physical_path(rep_status)
+            {
+                continue;
+            }
+
+            let path = Self::build_physical_path(Rc::clone(&node_rc), true);
+            if path.as_os_str().is_empty() {
+                continue;
+            }
+            Self::increment_physical_path_ref(&mut counts, &path);
+        }
+        counts
+    }
+
     fn fix_dir(
         dir: Rc<RefCell<RvFile>>,
         queue: &mut Vec<Rc<RefCell<RvFile>>>,
@@ -134,6 +182,7 @@ impl Fix {
         crc_map: &HashMap<crate::hash_keys::CrcKey, Rc<RefCell<RvFile>>>,
         sha1_map: &HashMap<crate::hash_keys::Sha1Key, Rc<RefCell<RvFile>>>,
         md5_map: &HashMap<crate::hash_keys::Md5Key, Rc<RefCell<RvFile>>>,
+        retained_physical_counts: &mut HashMap<String, u32>,
     ) {
         let children = dir.borrow().children.clone();
 
@@ -146,18 +195,29 @@ impl Fix {
                 crc_map,
                 sha1_map,
                 md5_map,
+                retained_physical_counts,
             );
 
             let mut head = 0usize;
             while head < queue.len() {
                 let queued_file = Rc::clone(&queue[head]);
                 head += 1;
-                Self::fix_base(queued_file, true, queue, total_fixed, crc_map, sha1_map, md5_map);
+                Self::fix_base(
+                    queued_file,
+                    true,
+                    queue,
+                    total_fixed,
+                    crc_map,
+                    sha1_map,
+                    md5_map,
+                    retained_physical_counts,
+                );
             }
             queue.clear();
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn fix_base(
         child: Rc<RefCell<RvFile>>,
         force_selected: bool,
@@ -166,6 +226,7 @@ impl Fix {
         crc_map: &HashMap<crate::hash_keys::CrcKey, Rc<RefCell<RvFile>>>,
         sha1_map: &HashMap<crate::hash_keys::Sha1Key, Rc<RefCell<RvFile>>>,
         md5_map: &HashMap<crate::hash_keys::Md5Key, Rc<RefCell<RvFile>>>,
+        retained_physical_counts: &mut HashMap<String, u32>,
     ) {
         if child.borrow().rep_status() == RepStatus::Deleted {
             return;
@@ -196,7 +257,15 @@ impl Fix {
                 if !is_selected && !Self::has_selected_descendant(Rc::clone(&child)) {
                     return;
                 }
-                Self::fix_a_zip(Rc::clone(&child), queue, total_fixed, crc_map, sha1_map, md5_map);
+                Self::fix_a_zip_with_counts(
+                    Rc::clone(&child),
+                    queue,
+                    total_fixed,
+                    crc_map,
+                    sha1_map,
+                    md5_map,
+                    retained_physical_counts,
+                );
             }
             FileType::Dir => {
                 if is_selected {
@@ -208,13 +277,29 @@ impl Fix {
                         Self::rename_directory_if_needed(Rc::clone(&child));
                     }
                 }
-                Self::fix_dir(Rc::clone(&child), queue, total_fixed, crc_map, sha1_map, md5_map);
+                Self::fix_dir(
+                    Rc::clone(&child),
+                    queue,
+                    total_fixed,
+                    crc_map,
+                    sha1_map,
+                    md5_map,
+                    retained_physical_counts,
+                );
             }
             FileType::File | FileType::FileOnly | FileType::FileSevenZip | FileType::FileZip => {
                 if !is_selected {
                     return;
                 }
-                Self::fix_a_file(Rc::clone(&child), queue, total_fixed, crc_map, sha1_map, md5_map);
+                Self::fix_a_file_with_counts(
+                    Rc::clone(&child),
+                    queue,
+                    total_fixed,
+                    crc_map,
+                    sha1_map,
+                    md5_map,
+                    retained_physical_counts,
+                );
             }
             _ => {}
         }

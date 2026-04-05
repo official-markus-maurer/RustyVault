@@ -59,7 +59,11 @@ impl RomVaultApp {
             is_directory && node.cached_stats.is_none()
         };
         if should_enqueue_stats {
-            self.enqueue_tree_stats(Rc::clone(&node_rc));
+            if is_selected_for_scroll {
+                self.enqueue_tree_stats_priority(Rc::clone(&node_rc));
+            } else {
+                self.enqueue_tree_stats(Rc::clone(&node_rc));
+            }
         }
 
         {

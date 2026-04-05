@@ -38,12 +38,10 @@ impl RomVaultApp {
     }
 
     pub(crate) fn prompt_add_tosort(&mut self) {
-        if self.sam_running {
+        if self.is_busy() {
             return;
         }
 
-        // TODO(threading): run this as a background task and debounce cache writes when many folders are added.
-        // TODO(perf): avoid full `RepairStatus::report_status_reset` on the entire tree for a single insertion.
         let Some(folder) = rfd::FileDialog::new()
             .set_title("Select new ToSort Folder")
             .pick_folder()
@@ -52,25 +50,23 @@ impl RomVaultApp {
         };
 
         let path = folder.to_string_lossy().to_string();
-        self.task_logs
-            .push(format!("Add ToSort folder requested: {}", path));
-        rv_core::db::GLOBAL_DB.with(|db_ref| {
-            if let Some(db) = db_ref.borrow().as_ref() {
-                let ts = std::rc::Rc::new(std::cell::RefCell::new(rv_core::rv_file::RvFile::new(
-                    dat_reader::enums::FileType::Dir,
-                )));
-                {
-                    let mut t = ts.borrow_mut();
-                    t.name = path;
-                    t.set_dat_status(dat_reader::enums::DatStatus::InToSort);
+        self.launch_task("Add ToSort Folder", move |tx| {
+            let _ = tx.send(format!("Add ToSort folder: {}", path));
+            rv_core::db::GLOBAL_DB.with(|db_ref| {
+                if let Some(db) = db_ref.borrow().as_ref() {
+                    let ts = Rc::new(RefCell::new(rv_core::rv_file::RvFile::new(
+                        dat_reader::enums::FileType::Dir,
+                    )));
+                    {
+                        let mut t = ts.borrow_mut();
+                        t.name = path;
+                        t.set_dat_status(dat_reader::enums::DatStatus::InToSort);
+                        t.rep_status_reset();
+                    }
+                    db.dir_root.borrow_mut().child_add(ts);
                 }
-                db.dir_root.borrow_mut().child_add(ts);
-                rv_core::repair_status::RepairStatus::report_status_reset(std::rc::Rc::clone(
-                    &db.dir_root,
-                ));
-            }
+            });
         });
-        self.db_cache_dirty = true;
     }
 
     pub(crate) fn prompt_fix_report(&mut self) {
@@ -450,6 +446,10 @@ impl RomVaultApp {
                 }
                 match rx.try_recv() {
                     Ok(msg) => {
+                        if self.task_logs.last().is_some_and(|last| last == &msg) {
+                            drained += 1;
+                            continue;
+                        }
                         self.task_logs.push(msg);
                         drained += 1;
                     }
@@ -457,6 +457,10 @@ impl RomVaultApp {
                     Err(TryRecvError::Disconnected) => break,
                 }
             }
+        }
+        if self.task_logs.len() > 5000 {
+            let drop_count = self.task_logs.len() - 5000;
+            self.task_logs.drain(..drop_count);
         }
 
         let done = self
@@ -473,8 +477,15 @@ impl RomVaultApp {
 
         if let Some(rx) = self.task_worker_rx.as_ref() {
             while let Ok(msg) = rx.try_recv() {
+                if self.task_logs.last().is_some_and(|last| last == &msg) {
+                    continue;
+                }
                 self.task_logs.push(msg);
             }
+        }
+        if self.task_logs.len() > 5000 {
+            let drop_count = self.task_logs.len() - 5000;
+            self.task_logs.drain(..drop_count);
         }
 
         rv_core::settings::load_settings_from_file();
@@ -509,6 +520,10 @@ impl RomVaultApp {
         self.task_running = false;
 
         self.task_logs.push("Task completed.".to_string());
+        if self.task_logs.len() > 5000 {
+            let drop_count = self.task_logs.len() - 5000;
+            self.task_logs.drain(..drop_count);
+        }
     }
 
     fn scan_roots(
