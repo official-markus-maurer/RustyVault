@@ -8,6 +8,50 @@ fn with_settings_test_state(test: impl FnOnce()) {
 }
 
 #[test]
+fn test_apply_base_dir_to_settings_paths_makes_relative_paths_absolute() {
+    let mut settings = Settings {
+        dat_root: "DatRoot".to_string(),
+        cache_file: "cache.bin".to_string(),
+        dir_mappings: DirMappingsWrapper {
+            items: vec![
+                DirMapping {
+                    dir_key: "RustyVault".to_string(),
+                    dir_path: "RomRoot".to_string(),
+                },
+                DirMapping {
+                    dir_key: "ToSort".to_string(),
+                    dir_path: "ToSort".to_string(),
+                },
+            ],
+        },
+        ..Default::default()
+    };
+
+    let base_dir = std::path::Path::new(r"C:\BaseDir");
+    apply_base_dir_to_settings_paths(&mut settings, base_dir);
+
+    assert_eq!(
+        std::path::PathBuf::from(&settings.dat_root),
+        base_dir.join("DatRoot")
+    );
+    assert_eq!(
+        std::path::PathBuf::from(&settings.cache_file),
+        base_dir.join("cache.bin")
+    );
+
+    let rv = settings
+        .dir_mappings
+        .items
+        .iter()
+        .find(|m| m.dir_key == "RustyVault")
+        .unwrap();
+    assert_eq!(
+        std::path::PathBuf::from(&rv.dir_path),
+        base_dir.join("RomRoot")
+    );
+}
+
+#[test]
 fn test_find_rule_returns_exact_match() {
     with_settings_test_state(|| {
         let rule = DatRule {

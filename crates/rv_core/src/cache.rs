@@ -3,7 +3,7 @@ use bincode;
 use memmap2::MmapOptions;
 use std::cell::RefCell;
 use std::fs::{self, File};
-use std::io::{BufReader, BufWriter};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::rc::{Rc, Weak};
 
 /// Cache management system for serializing and deserializing the RomVault database.
@@ -26,6 +26,10 @@ impl Cache {
     const CACHE_FILE: &'static str = "RustyVault3_3.Cache";
     const BACKUP_FILE: &'static str = "RustyVault3_3.CacheBackup";
     const TMP_FILE: &'static str = "RustyVault3_3.Cache_tmp";
+    const CACHE_MAGIC: &'static [u8; 8] = b"RVDBIN\0\0";
+    const CACHE_VERSION: u32 = 1;
+    const CACHE_ENCODING_VARINT: u8 = 1;
+    const CACHE_ENCODING_FIXED: u8 = 2;
 
     pub fn cache_path() -> std::path::PathBuf {
         let (cache_path, _backup_path, _tmp_path) = Self::cache_paths();
@@ -75,91 +79,24 @@ impl Cache {
     /// it falls back to a standard buffered reader. After deserialization, it invokes
     /// `relink_parents` to reconstruct the `Weak` pointer tree hierarchy that `serde` skips.
     pub fn read_cache() -> Option<Rc<RefCell<RvFile>>> {
-        let (cache_path, _backup_path, _tmp_path) = Self::cache_paths();
-        let path = cache_path.as_path();
-        if !path.exists() {
-            return None;
-        }
+        let (cache_path, backup_path, tmp_path) = Self::cache_paths();
+        let candidates = [cache_path.as_path(), backup_path.as_path()];
 
-        let config_varint = bincode::config::standard().with_variable_int_encoding();
-        let config_fixed = bincode::config::standard();
-
-        let start_time = std::time::Instant::now();
-
-        let mut mmap_error: Option<String> = None;
-        if let Ok(file) = File::open(path) {
-            if let Ok(mmap) = unsafe { MmapOptions::new().map(&file) } {
-                match bincode::serde::decode_from_slice(&mmap, config_varint) {
-                    Ok((r, _bytes_read)) => {
-                        println!("Deserialized cache via mmap in {:?}", start_time.elapsed());
-                        let relink_start = std::time::Instant::now();
-                        Self::relink_parents(Rc::clone(&r), None, None);
-                        println!("Relinked parents in {:?}", relink_start.elapsed());
-                        return Some(r);
-                    }
-                    Err(e) => mmap_error = Some(format!("{:?}", e)),
-                }
-                match bincode::serde::decode_from_slice(&mmap, config_fixed) {
-                    Ok((r, _bytes_read)) => {
-                        println!("Deserialized cache via mmap in {:?}", start_time.elapsed());
-                        let relink_start = std::time::Instant::now();
-                        Self::relink_parents(Rc::clone(&r), None, None);
-                        println!("Relinked parents in {:?}", relink_start.elapsed());
-                        return Some(r);
-                    }
-                    Err(e) => {
-                        let next = format!("{:?}", e);
-                        mmap_error = Some(match mmap_error.take() {
-                            Some(prev) => format!("{prev}; {next}"),
-                            None => next,
-                        });
-                    }
-                }
+        for path in candidates {
+            if !path.exists() {
+                continue;
             }
-        }
-
-        if let Some(e) = &mmap_error {
-            println!("mmap decode failed ({e}); falling back to buffered read");
-        }
-
-        let mut buffered_error: Option<String> = None;
-        if let Ok(file) = File::open(path) {
-            let mut reader = BufReader::with_capacity(16 * 1024 * 1024, file);
-            match bincode::serde::decode_from_std_read(&mut reader, config_varint) {
-                Ok(r) => {
-                    println!("Deserialized cache in {:?}", start_time.elapsed());
-                    let relink_start = std::time::Instant::now();
-                    Self::relink_parents(Rc::clone(&r), None, None);
-                    println!("Relinked parents in {:?}", relink_start.elapsed());
-                    return Some(r);
-                }
-                Err(e) => buffered_error = Some(format!("{:?}", e)),
-            }
-        }
-
-        if let Ok(file) = File::open(path) {
-            let mut reader = BufReader::with_capacity(16 * 1024 * 1024, file);
-            match bincode::serde::decode_from_std_read(&mut reader, config_fixed) {
-                Ok(r) => {
-                    println!("Deserialized cache in {:?}", start_time.elapsed());
-                    let relink_start = std::time::Instant::now();
-                    Self::relink_parents(Rc::clone(&r), None, None);
-                    println!("Relinked parents in {:?}", relink_start.elapsed());
-                    return Some(r);
-                }
+            match Self::read_cache_from_path(path) {
+                Ok(r) => return Some(r),
                 Err(e) => {
-                    let next = format!("{:?}", e);
-                    buffered_error = Some(match buffered_error.take() {
-                        Some(prev) => format!("{prev}; {next}"),
-                        None => next,
-                    });
+                    if e.contains("AnyNotSupported") {
+                        Self::quarantine_cache_files(&cache_path, &backup_path, &tmp_path);
+                        return None;
+                    }
                 }
             }
         }
 
-        if let Some(e) = buffered_error {
-            println!("Error reading cache: {:?}", e);
-        }
         None
     }
 
@@ -178,21 +115,42 @@ impl Cache {
             }
         }
 
-        let file = match File::create(&tmp_path) {
-            Ok(f) => f,
-            Err(e) => {
-                println!("Error creating temp cache file: {:?}", e);
+        {
+            let file = match File::create(&tmp_path) {
+                Ok(f) => f,
+                Err(e) => {
+                    println!("Error creating temp cache file: {:?}", e);
+                    return;
+                }
+            };
+
+            let mut writer = BufWriter::with_capacity(16 * 1024 * 1024, file);
+
+            let config = bincode::config::standard().with_variable_int_encoding();
+
+            if writer.write_all(Self::CACHE_MAGIC).is_err()
+                || writer
+                    .write_all(&Self::CACHE_VERSION.to_le_bytes())
+                    .is_err()
+                || writer.write_all(&[Self::CACHE_ENCODING_VARINT]).is_err()
+            {
+                println!("Error writing cache: could not write header");
                 return;
             }
-        };
 
-        let mut writer = BufWriter::with_capacity(16 * 1024 * 1024, file);
+            if let Err(e) = bincode::serde::encode_into_std_write(&root, &mut writer, config) {
+                println!("Error writing cache: {:?}", e);
+                return;
+            }
 
-        let config = bincode::config::standard().with_variable_int_encoding();
-
-        if let Err(e) = bincode::serde::encode_into_std_write(&root, &mut writer, config) {
-            println!("Error writing cache: {:?}", e);
-            return;
+            if writer.flush().is_err() {
+                println!("Error writing cache: flush failed");
+                return;
+            }
+            if writer.get_ref().sync_all().is_err() {
+                println!("Error writing cache: sync failed");
+                return;
+            }
         }
 
         if cache_path.exists() {
@@ -202,7 +160,192 @@ impl Cache {
             let _ = fs::rename(&cache_path, &backup_path);
         }
 
-        let _ = fs::rename(&tmp_path, &cache_path);
+        if fs::rename(&tmp_path, &cache_path).is_err() {
+            if fs::copy(&tmp_path, &cache_path).is_err() {
+                let _ = fs::remove_file(&tmp_path);
+                return;
+            }
+            let _ = fs::remove_file(&tmp_path);
+        }
+    }
+
+    fn quarantine_cache_files(
+        cache_path: &std::path::Path,
+        backup_path: &std::path::Path,
+        tmp_path: &std::path::Path,
+    ) {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        for path in [cache_path, backup_path, tmp_path] {
+            if !path.exists() {
+                continue;
+            }
+            let parent = path.parent().unwrap_or_else(|| std::path::Path::new(""));
+            let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("cache");
+            let quarantined = parent.join(format!("{name}.bad.{unique}"));
+            let _ = fs::rename(path, quarantined);
+        }
+    }
+
+    fn parse_cache_header(bytes: &[u8]) -> Option<(usize, u32, u8)> {
+        let header_len = Self::CACHE_MAGIC.len() + 4 + 1;
+        if bytes.len() < header_len {
+            return None;
+        }
+        if &bytes[..Self::CACHE_MAGIC.len()] != Self::CACHE_MAGIC {
+            return None;
+        }
+        let version = u32::from_le_bytes(
+            bytes[Self::CACHE_MAGIC.len()..Self::CACHE_MAGIC.len() + 4]
+                .try_into()
+                .ok()?,
+        );
+        let encoding = bytes[Self::CACHE_MAGIC.len() + 4];
+        Some((header_len, version, encoding))
+    }
+
+    fn decode_root_from_bytes(
+        bytes: &[u8],
+        config: bincode::config::Configuration,
+    ) -> Result<Rc<RefCell<RvFile>>, String> {
+        bincode::serde::decode_from_slice(bytes, config)
+            .map(|(r, _)| r)
+            .map_err(|e| format!("{:?}", e))
+    }
+
+    fn decode_root_from_reader<R: std::io::Read>(
+        reader: &mut R,
+        config: bincode::config::Configuration,
+    ) -> Result<Rc<RefCell<RvFile>>, String> {
+        bincode::serde::decode_from_std_read(reader, config).map_err(|e| format!("{:?}", e))
+    }
+
+    fn read_cache_from_path(path: &std::path::Path) -> Result<Rc<RefCell<RvFile>>, String> {
+        let config_varint = bincode::config::standard().with_variable_int_encoding();
+        let config_fixed = bincode::config::standard();
+
+        let start_time = std::time::Instant::now();
+
+        let mut mmap_error: Option<String> = None;
+        if let Ok(file) = File::open(path) {
+            if let Ok(mmap) = unsafe { MmapOptions::new().map(&file) } {
+                if let Some((offset, version, encoding)) = Self::parse_cache_header(&mmap) {
+                    if version != Self::CACHE_VERSION {
+                        return Err(format!("unsupported cache version {version}"));
+                    }
+                    let config = match encoding {
+                        Self::CACHE_ENCODING_VARINT => config_varint,
+                        Self::CACHE_ENCODING_FIXED => config_fixed,
+                        _ => return Err(format!("unsupported cache encoding {encoding}")),
+                    };
+                    let r = Self::decode_root_from_bytes(&mmap[offset..], config)?;
+                    println!("Deserialized cache via mmap in {:?}", start_time.elapsed());
+                    let relink_start = std::time::Instant::now();
+                    Self::relink_parents(Rc::clone(&r), None, None);
+                    println!("Relinked parents in {:?}", relink_start.elapsed());
+                    return Ok(r);
+                }
+
+                match Self::decode_root_from_bytes(&mmap, config_varint) {
+                    Ok(r) => {
+                        println!("Deserialized cache via mmap in {:?}", start_time.elapsed());
+                        let relink_start = std::time::Instant::now();
+                        Self::relink_parents(Rc::clone(&r), None, None);
+                        println!("Relinked parents in {:?}", relink_start.elapsed());
+                        return Ok(r);
+                    }
+                    Err(e) => mmap_error = Some(e),
+                }
+                match Self::decode_root_from_bytes(&mmap, config_fixed) {
+                    Ok(r) => {
+                        println!("Deserialized cache via mmap in {:?}", start_time.elapsed());
+                        let relink_start = std::time::Instant::now();
+                        Self::relink_parents(Rc::clone(&r), None, None);
+                        println!("Relinked parents in {:?}", relink_start.elapsed());
+                        return Ok(r);
+                    }
+                    Err(e) => {
+                        mmap_error = Some(match mmap_error.take() {
+                            Some(prev) => format!("{prev}; {e}"),
+                            None => e,
+                        });
+                    }
+                }
+            }
+        }
+
+        let mut buffered_error: Option<String> = None;
+        if let Ok(file) = File::open(path) {
+            let mut reader = BufReader::with_capacity(16 * 1024 * 1024, file);
+            let mut header = [0u8; 13];
+            if reader.read_exact(&mut header).is_ok()
+                && &header[..Self::CACHE_MAGIC.len()] == Self::CACHE_MAGIC
+            {
+                let version = u32::from_le_bytes(
+                    header[Self::CACHE_MAGIC.len()..Self::CACHE_MAGIC.len() + 4]
+                        .try_into()
+                        .unwrap(),
+                );
+                let encoding = header[Self::CACHE_MAGIC.len() + 4];
+                if version != Self::CACHE_VERSION {
+                    return Err(format!("unsupported cache version {version}"));
+                }
+                let config = match encoding {
+                    Self::CACHE_ENCODING_VARINT => config_varint,
+                    Self::CACHE_ENCODING_FIXED => config_fixed,
+                    _ => return Err(format!("unsupported cache encoding {encoding}")),
+                };
+                let r = Self::decode_root_from_reader(&mut reader, config)?;
+                println!("Deserialized cache in {:?}", start_time.elapsed());
+                let relink_start = std::time::Instant::now();
+                Self::relink_parents(Rc::clone(&r), None, None);
+                println!("Relinked parents in {:?}", relink_start.elapsed());
+                return Ok(r);
+            }
+        }
+
+        if let Ok(file) = File::open(path) {
+            let mut reader = BufReader::with_capacity(16 * 1024 * 1024, file);
+            match Self::decode_root_from_reader(&mut reader, config_varint) {
+                Ok(r) => {
+                    println!("Deserialized cache in {:?}", start_time.elapsed());
+                    let relink_start = std::time::Instant::now();
+                    Self::relink_parents(Rc::clone(&r), None, None);
+                    println!("Relinked parents in {:?}", relink_start.elapsed());
+                    return Ok(r);
+                }
+                Err(e) => buffered_error = Some(e),
+            }
+        }
+
+        if let Ok(file) = File::open(path) {
+            let mut reader = BufReader::with_capacity(16 * 1024 * 1024, file);
+            match Self::decode_root_from_reader(&mut reader, config_fixed) {
+                Ok(r) => {
+                    println!("Deserialized cache in {:?}", start_time.elapsed());
+                    let relink_start = std::time::Instant::now();
+                    Self::relink_parents(Rc::clone(&r), None, None);
+                    println!("Relinked parents in {:?}", relink_start.elapsed());
+                    return Ok(r);
+                }
+                Err(e) => {
+                    buffered_error = Some(match buffered_error.take() {
+                        Some(prev) => format!("{prev}; {e}"),
+                        None => e,
+                    });
+                }
+            }
+        }
+
+        if let Some(e) = buffered_error.or(mmap_error) {
+            return Err(e);
+        }
+
+        Err("cache read failed".to_string())
     }
 
     fn prepare_for_serialize(root: Rc<RefCell<RvFile>>) {

@@ -20,11 +20,7 @@ impl eframe::App for RomVaultApp {
         crate::toolbar::draw_left_toolbar(self, ctx);
 
         let dark_mode = ctx.style().visuals.dark_mode;
-        let status_bar_fill = if dark_mode {
-            egui::Color32::from_rgb(20, 20, 22)
-        } else {
-            ctx.style().visuals.faint_bg_color
-        };
+        let status_bar_fill = ctx.style().visuals.panel_fill;
         let log_panel_fill = if dark_mode {
             egui::Color32::from_rgb(25, 25, 27)
         } else {

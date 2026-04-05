@@ -91,10 +91,7 @@ pub struct RvDat {
     /// List of key-value metadata pairs
     pub game_meta_data: Vec<DatMetaData>,
     /// Index in the global DAT list
-    #[serde(
-        default = "default_dat_index",
-        deserialize_with = "crate::rv_file::de_i32_compat"
-    )]
+    #[serde(default = "default_dat_index")]
     pub dat_index: i32,
     /// Internal processing status
     pub status: DatUpdateStatus,

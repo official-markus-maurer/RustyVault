@@ -117,10 +117,16 @@ fn test_get_archive_member_tosort_path_uses_mapped_tosort_root_for_mapped_archiv
 
 #[test]
 fn test_get_tosort_path_uses_unmapped_logical_target_root_when_source_is_mapped() {
+    let temp = tempdir().unwrap();
+    let vault_path = temp.path().join("MappedVault");
     let original_settings = get_settings();
     update_settings(Settings::default());
+    set_dir_mapping(DirMapping {
+        dir_key: "RustyVault".to_string(),
+        dir_path: vault_path.to_string_lossy().into_owned(),
+    });
 
-    let source_path = PathBuf::from("RomRoot")
+    let source_path = vault_path
         .join("Nintendo")
         .join("unmapped_target_root_when_source_mapped_unique.zip");
     let tosort_path = Fix::get_tosort_path(&source_path.to_string_lossy(), "UniqueToSortRoot");
@@ -138,10 +144,16 @@ fn test_get_tosort_path_uses_unmapped_logical_target_root_when_source_is_mapped(
 
 #[test]
 fn test_get_archive_member_tosort_path_uses_unmapped_logical_target_root_when_source_is_mapped() {
+    let temp = tempdir().unwrap();
+    let vault_path = temp.path().join("MappedVault");
     let original_settings = get_settings();
     update_settings(Settings::default());
+    set_dir_mapping(DirMapping {
+        dir_key: "RustyVault".to_string(),
+        dir_path: vault_path.to_string_lossy().into_owned(),
+    });
 
-    let archive_path = PathBuf::from("RomRoot")
+    let archive_path = vault_path
         .join("Nintendo")
         .join("unmapped_target_root_when_source_mapped_archive_unique.zip");
     let tosort_path =
@@ -5454,4 +5466,142 @@ fn test_read_seven_zip_entry_bytes_matches_case_insensitively_on_windows_style_n
         Fix::read_seven_zip_entry_bytes(&source_path.to_string_lossy(), "move.bin").unwrap(),
         b"move"
     );
+}
+
+#[test]
+#[cfg(windows)]
+fn test_fix_case_only_dir_duplicates_do_not_crash_and_allow_file_creation() {
+    let original_settings = get_settings();
+    update_settings(Settings {
+        cache_save_timer_enabled: false,
+        ..Default::default()
+    });
+
+    let temp = tempdir().unwrap();
+    let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+    root.borrow_mut().name = temp.path().to_string_lossy().to_string();
+
+    let rom_root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+    {
+        let mut rr = rom_root.borrow_mut();
+        rr.name = "RomRoot".to_string();
+        rr.tree_checked = TreeSelect::Selected;
+        rr.set_dat_got_status(dat_reader::enums::DatStatus::NotInDat, GotStatus::Got);
+        rr.rep_status_reset();
+        rr.parent = Some(Rc::downgrade(&root));
+    }
+    root.borrow_mut().child_add(Rc::clone(&rom_root));
+
+    let to_sort = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+    {
+        let mut ts = to_sort.borrow_mut();
+        ts.name = "ToSort".to_string();
+        ts.tree_checked = TreeSelect::Selected;
+        ts.set_dat_got_status(dat_reader::enums::DatStatus::InToSort, GotStatus::Got);
+        ts.rep_status_reset();
+        ts.parent = Some(Rc::downgrade(&root));
+    }
+    root.borrow_mut().child_add(Rc::clone(&to_sort));
+
+    fs::create_dir_all(temp.path().join("RomRoot")).unwrap();
+    fs::create_dir_all(temp.path().join("ToSort")).unwrap();
+
+    let game_dir = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+    {
+        let mut game = game_dir.borrow_mut();
+        game.name = "!!!_I_AM_A_NAUGHTY_BUG".to_string();
+        game.tree_checked = TreeSelect::Selected;
+        game.set_dat_got_status(
+            dat_reader::enums::DatStatus::InDatCollect,
+            GotStatus::NotGot,
+        );
+        game.rep_status_reset();
+        game.parent = Some(Rc::downgrade(&rom_root));
+    }
+    rom_root.borrow_mut().child_add(Rc::clone(&game_dir));
+
+    let dir_d = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+    {
+        let mut d = dir_d.borrow_mut();
+        d.name = "d".to_string();
+        d.tree_checked = TreeSelect::Selected;
+        d.set_dat_got_status(
+            dat_reader::enums::DatStatus::InDatCollect,
+            GotStatus::NotGot,
+        );
+        d.rep_status_reset();
+        d.parent = Some(Rc::downgrade(&game_dir));
+    }
+    game_dir.borrow_mut().child_add(Rc::clone(&dir_d));
+
+    let dir_upper_d = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+    {
+        let mut d = dir_upper_d.borrow_mut();
+        d.name = "D".to_string();
+        d.tree_checked = TreeSelect::Selected;
+        d.set_dat_got_status(
+            dat_reader::enums::DatStatus::InDatCollect,
+            GotStatus::NotGot,
+        );
+        d.rep_status_reset();
+        d.parent = Some(Rc::downgrade(&game_dir));
+    }
+    game_dir.borrow_mut().child_add(Rc::clone(&dir_upper_d));
+
+    let target_file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+    {
+        let mut f = target_file.borrow_mut();
+        f.name = "C".to_string();
+        f.size = Some(0);
+        f.crc = Some(vec![0, 0, 0, 0]);
+        f.tree_checked = TreeSelect::Selected;
+        f.set_dat_got_status(
+            dat_reader::enums::DatStatus::InDatCollect,
+            GotStatus::NotGot,
+        );
+        f.set_rep_status(RepStatus::CanBeFixed);
+        f.parent = Some(Rc::downgrade(&dir_d));
+    }
+    dir_d.borrow_mut().child_add(Rc::clone(&target_file));
+
+    let tosort_d = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+    {
+        let mut d = tosort_d.borrow_mut();
+        d.name = "d".to_string();
+        d.tree_checked = TreeSelect::Selected;
+        d.set_dat_got_status(dat_reader::enums::DatStatus::InToSort, GotStatus::Got);
+        d.rep_status_reset();
+        d.parent = Some(Rc::downgrade(&to_sort));
+    }
+    to_sort.borrow_mut().child_add(Rc::clone(&tosort_d));
+
+    let source_file = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+    {
+        let mut f = source_file.borrow_mut();
+        f.name = "C".to_string();
+        f.size = Some(0);
+        f.crc = Some(vec![0, 0, 0, 0]);
+        f.tree_checked = TreeSelect::Locked;
+        f.set_dat_got_status(dat_reader::enums::DatStatus::InToSort, GotStatus::Got);
+        f.set_rep_status(RepStatus::NeededForFix);
+        f.parent = Some(Rc::downgrade(&tosort_d));
+    }
+    tosort_d.borrow_mut().child_add(Rc::clone(&source_file));
+
+    let source_path = temp.path().join("ToSort").join("d").join("C");
+    fs::create_dir_all(source_path.parent().unwrap()).unwrap();
+    fs::write(&source_path, b"").unwrap();
+
+    Fix::perform_fixes(Rc::clone(&root));
+
+    let target_path = temp
+        .path()
+        .join("RomRoot")
+        .join("!!!_I_AM_A_NAUGHTY_BUG")
+        .join("d")
+        .join("C");
+    assert!(target_path.exists());
+    assert_eq!(fs::metadata(target_path).unwrap().len(), 0);
+
+    update_settings(original_settings);
 }

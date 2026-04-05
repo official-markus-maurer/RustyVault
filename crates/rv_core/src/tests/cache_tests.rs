@@ -1,5 +1,6 @@
 use super::*;
 use dat_reader::enums::FileType;
+use tempfile::tempdir;
 
 #[test]
 fn test_cache_serialization_and_relinking() {
@@ -36,4 +37,33 @@ fn test_cache_serialization_and_relinking() {
     // Verify Dat reference restored
     assert!(child.borrow().dat.is_some());
     assert_eq!(child.borrow().dat.as_ref().unwrap().borrow().dat_index, 0);
+}
+
+#[test]
+fn test_cache_write_then_read_roundtrip() {
+    let original_settings = crate::settings::get_settings();
+    let temp = tempdir().unwrap();
+    let cache_file = temp.path().join("TestCache.bin");
+    crate::settings::update_settings(crate::settings::Settings {
+        cache_file: cache_file.to_string_lossy().into_owned(),
+        cache_save_timer_enabled: false,
+        ..Default::default()
+    });
+
+    let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+    root.borrow_mut().name = "Root".to_string();
+    let child = Rc::new(RefCell::new(RvFile::new(FileType::File)));
+    child.borrow_mut().name = "File1.bin".to_string();
+    root.borrow_mut().child_add(Rc::clone(&child));
+
+    Cache::write_cache(Rc::clone(&root));
+    assert!(cache_file.exists());
+
+    let loaded = Cache::read_cache_from_path(&cache_file)
+        .unwrap_or_else(|e| panic!("cache should deserialize: {e}"));
+    assert_eq!(loaded.borrow().name, "Root");
+    assert_eq!(loaded.borrow().children.len(), 1);
+    assert_eq!(loaded.borrow().children[0].borrow().name, "File1.bin");
+
+    crate::settings::update_settings(original_settings);
 }
