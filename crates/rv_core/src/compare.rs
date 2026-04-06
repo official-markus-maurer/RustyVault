@@ -12,7 +12,6 @@ use dat_reader::enums::FileType;
 /// - `phase_1_test` performs exact matching.
 /// - `phase_2_test` contains a limited set of fallback heuristics.
 ///
-/// TODO: Expand phase-2 heuristics to handle more header/rename recovery cases safely.
 pub struct FileCompare;
 
 /// Performs a basic alphabetical name comparison between a DB file and a scanned file.
@@ -33,6 +32,20 @@ pub fn compare_db_to_file(db_file: &RvFile, file_c: &ScannedFile) -> i32 {
 }
 
 impl FileCompare {
+    fn file_ext_lower(name: &str) -> Option<String> {
+        let base = name
+            .rsplit_once(&['/', '\\'][..])
+            .map(|(_, b)| b)
+            .unwrap_or(name);
+        base.rsplit_once('.')
+            .map(|(_, ext)| ext.to_ascii_lowercase())
+            .filter(|e| !e.is_empty())
+    }
+
+    fn extensions_compatible(a: &str, b: &str) -> bool {
+        Self::file_ext_lower(a) == Self::file_ext_lower(b)
+    }
+
     fn compare_names(db_name: &str, test_name: &str, index_case: i32) -> std::cmp::Ordering {
         if index_case == 0 {
             db_name.cmp(test_name)
@@ -129,8 +142,9 @@ impl FileCompare {
             return (false, matched_alt);
         }
 
-        // If the scanned file has any hash identity, we should do full hash matching
-        if Self::scanned_file_has_hash_identity(test_file) {
+        if Self::scanned_file_has_hash_identity(test_file)
+            && Self::scanned_file_covers_required_hashes(db_file, test_file)
+        {
             let matched = Self::compare_with_alt(db_file, test_file, &mut matched_alt);
             return (matched, matched_alt);
         }
@@ -148,12 +162,16 @@ impl FileCompare {
             return (true, matched_alt);
         }
 
-        let alt_test_size = test_file.alt_size.or(test_file.size);
-        if test_file.alt_size.is_some() && db_file.size.is_some() && db_file.size == alt_test_size {
-            matched_alt = true;
-            return (true, matched_alt);
+        if let (Some(db_size), Some(test_size)) = (db_file.size, test_file.size) {
+            let header_len =
+                file_header_reader::FileHeaders::get_file_header_length(db_file.header_file_type);
+            if header_len > 0 && db_size.saturating_add(header_len as u64) == test_size {
+                matched_alt = true;
+                return (true, matched_alt);
+            }
         }
 
+        let alt_test_size = test_file.alt_size.or(test_file.size);
         if db_file.alt_size.is_some() && db_file.alt_size == alt_test_size {
             matched_alt = true;
             return (true, matched_alt);
@@ -162,107 +180,88 @@ impl FileCompare {
         (false, matched_alt)
     }
 
-    fn compare_with_alt(db_file: &RvFile, test_file: &ScannedFile, matched_alt: &mut bool) -> bool {
-        let has_primary_identity = db_file.size.is_some()
-            || db_file.crc.is_some()
-            || db_file.sha1.is_some()
-            || db_file.md5.is_some();
-
-        // Standard compare
-        let mut match_ok = has_primary_identity;
-        if db_file.size.is_some() && db_file.size != test_file.size {
-            match_ok = false;
-        }
-        if db_file.crc.is_some() && db_file.crc != test_file.crc {
-            match_ok = false;
-        }
-        if db_file.sha1.is_some() && db_file.sha1 != test_file.sha1 {
-            match_ok = false;
-        }
-        if db_file.md5.is_some() && db_file.md5 != test_file.md5 {
-            match_ok = false;
-        }
-
-        if match_ok {
-            *matched_alt = false;
-            return true;
-        }
-
-        let alt_test_size = test_file.alt_size.or(test_file.size);
-        let alt_test_crc = test_file.alt_crc.as_ref().or(test_file.crc.as_ref());
-        let alt_test_sha1 = test_file.alt_sha1.as_ref().or(test_file.sha1.as_ref());
-        let alt_test_md5 = test_file.alt_md5.as_ref().or(test_file.md5.as_ref());
-
-        let scanned_has_alt_identity = test_file.alt_size.is_some()
-            || test_file.alt_crc.is_some()
-            || test_file.alt_sha1.is_some()
-            || test_file.alt_md5.is_some();
-        if scanned_has_alt_identity {
-            let mut primary_vs_alt_ok = has_primary_identity;
-            if db_file.size.is_some() && db_file.size != alt_test_size {
-                primary_vs_alt_ok = false;
+    #[allow(clippy::too_many_arguments)]
+    fn compare_hash(
+        db_size: Option<u64>,
+        db_crc: Option<&Vec<u8>>,
+        db_sha1: Option<&Vec<u8>>,
+        db_md5: Option<&Vec<u8>>,
+        test_size: Option<u64>,
+        test_crc: Option<&Vec<u8>>,
+        test_sha1: Option<&Vec<u8>>,
+        test_md5: Option<&Vec<u8>>,
+    ) -> bool {
+        if let (Some(ds), Some(ts)) = (db_size, test_size) {
+            if ds != ts {
+                return false;
             }
-            if db_file
-                .crc
-                .as_ref()
-                .is_some_and(|v| Some(v) != alt_test_crc)
-            {
-                primary_vs_alt_ok = false;
-            }
-            if db_file
-                .sha1
-                .as_ref()
-                .is_some_and(|v| Some(v) != alt_test_sha1)
-            {
-                primary_vs_alt_ok = false;
-            }
-            if db_file
-                .md5
-                .as_ref()
-                .is_some_and(|v| Some(v) != alt_test_md5)
-            {
-                primary_vs_alt_ok = false;
-            }
-
-            if primary_vs_alt_ok {
-                *matched_alt = true;
+            if ts == 0 && db_crc.is_none() && db_sha1.is_none() && db_md5.is_none() {
                 return true;
             }
         }
 
-        // Alt compare
-        let mut alt_ok = true;
-        if db_file.alt_size.is_some() && db_file.alt_size != alt_test_size {
-            alt_ok = false;
+        let mut test_found = false;
+        if let (Some(dbv), Some(tv)) = (db_crc, test_crc) {
+            test_found = true;
+            if dbv != tv {
+                return false;
+            }
         }
-        if db_file
-            .alt_crc
-            .as_ref()
-            .is_some_and(|v| Some(v) != alt_test_crc)
-        {
-            alt_ok = false;
+        if let (Some(dbv), Some(tv)) = (db_sha1, test_sha1) {
+            test_found = true;
+            if dbv != tv {
+                return false;
+            }
         }
-        if db_file
-            .alt_sha1
-            .as_ref()
-            .is_some_and(|v| Some(v) != alt_test_sha1)
-        {
-            alt_ok = false;
-        }
-        if db_file
-            .alt_md5
-            .as_ref()
-            .is_some_and(|v| Some(v) != alt_test_md5)
-        {
-            alt_ok = false;
+        if let (Some(dbv), Some(tv)) = (db_md5, test_md5) {
+            test_found = true;
+            if dbv != tv {
+                return false;
+            }
         }
 
-        if alt_ok
-            && (db_file.alt_size.is_some()
-                || db_file.alt_crc.is_some()
-                || db_file.alt_sha1.is_some()
-                || db_file.alt_md5.is_some())
-        {
+        test_found
+    }
+
+    fn compare_alt_hash(db_file: &RvFile, test_file: &ScannedFile) -> bool {
+        if !file_header_reader::FileHeaders::alt_header_file(test_file.header_file_type) {
+            return false;
+        }
+        let db_header = db_file.header_file_type & dat_reader::enums::HeaderFileType::HEADER_MASK;
+        let test_header =
+            test_file.header_file_type & dat_reader::enums::HeaderFileType::HEADER_MASK;
+        if db_header != test_header {
+            return false;
+        }
+
+        Self::compare_hash(
+            db_file.alt_size,
+            db_file.alt_crc.as_ref(),
+            db_file.alt_sha1.as_ref(),
+            db_file.alt_md5.as_ref(),
+            test_file.alt_size,
+            test_file.alt_crc.as_ref(),
+            test_file.alt_sha1.as_ref(),
+            test_file.alt_md5.as_ref(),
+        )
+    }
+
+    fn compare_with_alt(db_file: &RvFile, test_file: &ScannedFile, matched_alt: &mut bool) -> bool {
+        if Self::compare_hash(
+            db_file.size,
+            db_file.crc.as_ref(),
+            db_file.sha1.as_ref(),
+            db_file.md5.as_ref(),
+            test_file.size,
+            test_file.crc.as_ref(),
+            test_file.sha1.as_ref(),
+            test_file.md5.as_ref(),
+        ) {
+            *matched_alt = false;
+            return true;
+        }
+
+        if Self::compare_alt_hash(db_file, test_file) {
             *matched_alt = true;
             return true;
         }
@@ -364,7 +363,7 @@ impl FileCompare {
         Self::deep_scan_physical_file(db_file, test_file);
 
         if test_file.got_status == dat_reader::enums::GotStatus::FileLocked {
-            return (false, matched_alt);
+            return (true, matched_alt);
         }
 
         if !Self::header_requirement_matches(db_file, test_file) {
@@ -403,6 +402,75 @@ impl FileCompare {
             if !timestamp_confident {
                 return (false, matched_alt);
             }
+            if !Self::extensions_compatible(&db_file.name, &test_file.name) {
+                return (false, matched_alt);
+            }
+            let size_confident = db_file.size.is_some_and(|s| Some(s) == test_file.size)
+                || db_file
+                    .size
+                    .is_some_and(|s| test_file.alt_size.or(test_file.size) == Some(s))
+                || db_file
+                    .alt_size
+                    .is_some_and(|s| test_file.alt_size.or(test_file.size) == Some(s));
+            if !size_confident {
+                return (false, matched_alt);
+            }
+        }
+
+        let matched = Self::compare_with_alt(db_file, test_file, &mut matched_alt);
+        (matched, matched_alt)
+    }
+
+    pub fn phase_2_rename_recovery_test(
+        db_file: &RvFile,
+        test_file: &mut ScannedFile,
+    ) -> (bool, bool) {
+        let mut matched_alt = false;
+
+        let db_file_type = db_file.file_type;
+        let test_file_type = test_file.file_type;
+        if !Self::phase_1_compatible_type_pair(db_file_type, test_file_type) {
+            return (false, matched_alt);
+        }
+        if !Self::phase_2_supported_leaf_type(db_file_type)
+            || !Self::phase_2_supported_leaf_type(test_file_type)
+        {
+            return (false, matched_alt);
+        }
+
+        Self::deep_scan_physical_file(db_file, test_file);
+        if test_file.got_status == dat_reader::enums::GotStatus::FileLocked {
+            return (false, matched_alt);
+        }
+
+        if !Self::header_requirement_matches(db_file, test_file) {
+            return (false, matched_alt);
+        }
+
+        let has_db_identity = Self::db_file_has_name_agnostic_identity(db_file);
+        if !has_db_identity {
+            let timestamp_confident = db_file.file_mod_time_stamp > 0
+                && db_file.file_mod_time_stamp == test_file.file_mod_time_stamp;
+            if !timestamp_confident {
+                return (false, matched_alt);
+            }
+            if !Self::extensions_compatible(&db_file.name, &test_file.name) {
+                return (false, matched_alt);
+            }
+            let size_confident = db_file.size.is_some_and(|s| Some(s) == test_file.size)
+                || db_file
+                    .size
+                    .is_some_and(|s| test_file.alt_size.or(test_file.size) == Some(s))
+                || db_file
+                    .alt_size
+                    .is_some_and(|s| test_file.alt_size.or(test_file.size) == Some(s));
+            if !size_confident {
+                return (false, matched_alt);
+            }
+        } else if !Self::extensions_compatible(&db_file.name, &test_file.name)
+            && !Self::scanned_file_has_hash_identity(test_file)
+        {
+            return (false, matched_alt);
         }
 
         let matched = Self::compare_with_alt(db_file, test_file, &mut matched_alt);

@@ -12,8 +12,10 @@ pub mod error;
 ///
 /// Implementation notes:
 /// - Uses ecosystem crates for archive parsing and encoding.
-///
-/// TODO: Extend writers to preserve more archive-structure invariants (where required by validation tools).
+/// - ZIP: primary IO is via `zip` crate (supports many ZIP compression methods). A fallback fast-open
+///   path exists for a subset of methods (Stored/DefLATE/Deflate64/Bzip2/Zstd).
+/// - 7z: extraction is delegated to `sevenz-rust` via `compress::seven_zip::*`.
+/// - Deterministic torrentzip rebuild is handled in `crates/trrntzip`, not here.
 pub mod file_header;
 pub mod gzip_file;
 pub mod i_compress;

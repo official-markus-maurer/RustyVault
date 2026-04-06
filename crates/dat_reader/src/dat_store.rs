@@ -108,6 +108,33 @@ impl DatDir {
         }
     }
 
+    pub fn take_children(&mut self) -> Vec<DatNode> {
+        self.children_name_index.clear();
+        std::mem::take(&mut self.children)
+    }
+
+    pub fn clear_children(&mut self) {
+        self.children.clear();
+        self.children_name_index.clear();
+    }
+
+    fn ensure_children_name_index(&mut self) {
+        if self.file_type != FileType::UnSet {
+            return;
+        }
+        if self.children_name_index.len() == self.children.len() {
+            return;
+        }
+        self.children_name_index = (0..self.children.len()).collect();
+        let dir_type = self.file_type;
+        self.children_name_index.sort_by(|a, b| {
+            let left = &self.children[*a];
+            let right = &self.children[*b];
+            let res = Self::compare_node_names(dir_type, left, right);
+            res.cmp(&0)
+        });
+    }
+
     pub fn file_type(&self) -> FileType {
         self.file_type
     }
@@ -129,6 +156,7 @@ impl DatDir {
 
     pub fn add_child(&mut self, child: DatNode) {
         if self.file_type == FileType::UnSet {
+            self.ensure_children_name_index();
             let insert_pos = Self::child_name_binary_search_indexed(
                 self.file_type,
                 &child,
@@ -205,6 +233,9 @@ impl DatDir {
         index: &[usize],
         find_first: bool,
     ) -> usize {
+        if index.is_empty() || children.is_empty() {
+            return 0;
+        }
         let mut bottom = 0usize;
         let mut top = index.len();
         let mut mid = 0usize;
@@ -212,7 +243,10 @@ impl DatDir {
 
         while bottom < top && res != 0 {
             mid = (bottom + top) / 2;
-            let current = &children[index[mid]];
+            let child_idx = index[mid];
+            let Some(current) = children.get(child_idx) else {
+                return 0;
+            };
             res = Self::compare_node_names(dir_type, needle, current);
             if res < 0 {
                 top = mid;

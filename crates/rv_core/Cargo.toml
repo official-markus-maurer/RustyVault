@@ -26,6 +26,7 @@ sevenz-rust = { package = "sevenz-rust2", version = "0.19.3", features = ["compr
 flate2 = "1.0"
 file_header_reader = { path = "../file_header_reader" }
 regex = "1.11.2"
+zstd = "0.13"
 
 [dev-dependencies]
 tempfile = "3.10.1"

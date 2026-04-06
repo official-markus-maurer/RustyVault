@@ -72,13 +72,14 @@ pub fn draw_top_menu(app: &mut RomVaultApp, ctx: &egui::Context) {
                     .add_enabled(is_idle, egui::Button::new("Find Fixes"))
                     .clicked()
                 {
-                    app.launch_task("Find Fixes", |tx| {
+                    app.launch_task("Find Fixes", |tx, control| {
                         let _ = tx.send("Running FindFixes...".to_string());
                         crate::GLOBAL_DB.with(|db_ref| {
                             if let Some(db) = db_ref.borrow().as_ref() {
-                                rv_core::find_fixes::FindFixes::scan_files(std::rc::Rc::clone(
-                                    &db.dir_root,
-                                ));
+                                rv_core::find_fixes::FindFixes::scan_files_with_control(
+                                    std::rc::Rc::clone(&db.dir_root),
+                                    &control,
+                                );
                                 db.dir_root.borrow_mut().cached_stats = None;
                             }
                         });

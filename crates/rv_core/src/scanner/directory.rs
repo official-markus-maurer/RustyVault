@@ -20,8 +20,15 @@ impl Scanner {
             crate::settings::EScanLevel::Level2 | crate::settings::EScanLevel::Level3
         );
 
-        let mut ignore_patterns = crate::settings::get_settings().ignore_files.items.clone();
-        ignore_patterns.extend_from_slice(extra_ignore_patterns);
+        let settings = crate::settings::get_settings();
+        let use_extra = extra_ignore_patterns.iter().any(|raw| {
+            crate::patterns::extract_scan_pattern(raw).is_some_and(|s| !s.trim().is_empty())
+        });
+        let ignore_patterns = if use_extra {
+            extra_ignore_patterns.to_vec()
+        } else {
+            settings.ignore_files.items
+        };
         let ignore_matcher = Arc::new(crate::patterns::PatternMatcher::from_scan_ignore_patterns(
             &ignore_patterns,
         ));

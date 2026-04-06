@@ -9,6 +9,7 @@ fn test_file_scanning_integration() {
     let mut existing_db_file = RvFile::new(FileType::File);
     existing_db_file.name = "exist.zip".to_string();
     existing_db_file.size = Some(100);
+    existing_db_file.file_mod_time_stamp = 0;
     existing_db_file.set_dat_got_status(
         dat_reader::enums::DatStatus::InDatCollect,
         GotStatus::NotGot,
@@ -23,6 +24,7 @@ fn test_file_scanning_integration() {
     let mut scan1 = ScannedFile::new(FileType::File);
     scan1.name = "exist.zip".to_string();
     scan1.size = Some(100);
+    scan1.file_mod_time_stamp = 0;
 
     let mut scan2 = ScannedFile::new(FileType::File);
     scan2.name = "new_file.zip".to_string();
@@ -31,7 +33,11 @@ fn test_file_scanning_integration() {
     scanned_root.children.push(scan1);
     scanned_root.children.push(scan2);
 
-    FileScanning::scan_dir(Rc::clone(&db_dir), &mut scanned_root);
+    FileScanning::scan_dir_with_level(
+        Rc::clone(&db_dir),
+        &mut scanned_root,
+        crate::settings::EScanLevel::Level1,
+    );
 
     let dir = db_dir.borrow();
     assert_eq!(dir.children.len(), 2);
@@ -47,6 +53,151 @@ fn test_file_scanning_integration() {
     assert_eq!(c2.name, "new_file.zip");
     assert_eq!(c2.got_status(), GotStatus::Got);
     assert_eq!(c2.dat_status(), dat_reader::enums::DatStatus::NotInDat);
+}
+
+#[test]
+fn test_scan_dir_archive_merge_in_semantics_scans_members_when_needed() {
+    let db_root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+    db_root.borrow_mut().name = "Root".to_string();
+
+    let zip = Rc::new(RefCell::new(RvFile::new(FileType::Zip)));
+    {
+        let mut z = zip.borrow_mut();
+        z.name = "game.zip".to_string();
+        z.file_mod_time_stamp = 100;
+        z.set_dat_got_status(
+            dat_reader::enums::DatStatus::InDatCollect,
+            GotStatus::NotGot,
+        );
+        z.rep_status_reset();
+        z.parent = Some(Rc::downgrade(&db_root));
+    }
+    db_root.borrow_mut().child_add(Rc::clone(&zip));
+
+    let a = Rc::new(RefCell::new(RvFile::new(FileType::FileZip)));
+    {
+        let mut f = a.borrow_mut();
+        f.name = "a.bin".to_string();
+        f.size = Some(1);
+        f.crc = Some(vec![1, 2, 3, 4]);
+        f.set_dat_got_status(
+            dat_reader::enums::DatStatus::InDatCollect,
+            GotStatus::NotGot,
+        );
+        f.rep_status_reset();
+        f.parent = Some(Rc::downgrade(&zip));
+    }
+    zip.borrow_mut().child_add(Rc::clone(&a));
+
+    let b = Rc::new(RefCell::new(RvFile::new(FileType::FileZip)));
+    {
+        let mut f = b.borrow_mut();
+        f.name = "b.bin".to_string();
+        f.size = Some(1);
+        f.file_mod_time_stamp = 0;
+        f.deep_scanned = true;
+        f.set_dat_got_status(
+            dat_reader::enums::DatStatus::InDatCollect,
+            GotStatus::NotGot,
+        );
+        f.rep_status_reset();
+        f.parent = Some(Rc::downgrade(&zip));
+    }
+    zip.borrow_mut().child_add(Rc::clone(&b));
+
+    let mut scanned_root = ScannedFile::new(FileType::Dir);
+    scanned_root.name = "Root".to_string();
+
+    let mut scanned_zip = ScannedFile::new(FileType::Zip);
+    scanned_zip.name = "game.zip".to_string();
+    scanned_zip.file_mod_time_stamp = 100;
+
+    let mut scanned_a = ScannedFile::new(FileType::FileZip);
+    scanned_a.name = "a.bin".to_string();
+    scanned_a.size = Some(1);
+    scanned_a.crc = Some(vec![1, 2, 3, 4]);
+    scanned_a.deep_scanned = true;
+    scanned_zip.children.push(scanned_a);
+
+    let mut scanned_b = ScannedFile::new(FileType::FileZip);
+    scanned_b.name = "b.bin".to_string();
+    scanned_b.size = Some(1);
+    scanned_b.file_mod_time_stamp = 0;
+    scanned_zip.children.push(scanned_b);
+
+    let mut scanned_c = ScannedFile::new(FileType::FileZip);
+    scanned_c.name = "c.bin".to_string();
+    scanned_c.size = Some(1);
+    scanned_c.crc = Some(vec![9, 9, 9, 9]);
+    scanned_c.deep_scanned = true;
+    scanned_zip.children.push(scanned_c);
+
+    scanned_root.children.push(scanned_zip);
+
+    FileScanning::scan_dir_with_level(
+        Rc::clone(&db_root),
+        &mut scanned_root,
+        crate::settings::EScanLevel::Level2,
+    );
+
+    let zip_borrow = zip.borrow();
+    assert_eq!(zip_borrow.got_status(), GotStatus::Got);
+    assert_eq!(zip_borrow.children.len(), 3);
+    assert_eq!(zip_borrow.children[0].borrow().got_status(), GotStatus::Got);
+    assert_eq!(zip_borrow.children[1].borrow().got_status(), GotStatus::Got);
+    assert_eq!(
+        zip_borrow.children[2].borrow().dat_status(),
+        dat_reader::enums::DatStatus::NotInDat
+    );
+}
+
+#[test]
+fn test_scan_dir_cache_save_timer_does_not_change_scan_results() {
+    let original_settings = crate::settings::get_settings();
+    crate::settings::update_settings(crate::settings::Settings {
+        cache_save_timer_enabled: true,
+        cache_save_time_period: 1,
+        ..Default::default()
+    });
+
+    let db_dir = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+    db_dir.borrow_mut().name = "Root".to_string();
+    db_dir.borrow_mut().cache_dirty = true;
+
+    let mut existing_db_file = RvFile::new(FileType::File);
+    existing_db_file.name = "a.bin".to_string();
+    existing_db_file.size = Some(1);
+    existing_db_file.file_mod_time_stamp = 0;
+    existing_db_file.set_dat_got_status(
+        dat_reader::enums::DatStatus::InDatCollect,
+        GotStatus::NotGot,
+    );
+    db_dir
+        .borrow_mut()
+        .child_add(Rc::new(RefCell::new(existing_db_file)));
+
+    let mut scanned_root = ScannedFile::new(FileType::Dir);
+    scanned_root.name = "Root".to_string();
+    let mut scanned = ScannedFile::new(FileType::File);
+    scanned.name = "a.bin".to_string();
+    scanned.size = Some(1);
+    scanned.file_mod_time_stamp = 0;
+    scanned_root.children.push(scanned);
+
+    FileScanning::scan_dir_with_level_forced_cache_timer(
+        Rc::clone(&db_dir),
+        &mut scanned_root,
+        crate::settings::EScanLevel::Level1,
+        std::time::Duration::from_secs(61),
+    );
+
+    assert!(!db_dir.borrow().cache_dirty);
+    assert_eq!(
+        db_dir.borrow().children[0].borrow().got_status(),
+        GotStatus::Got
+    );
+
+    crate::settings::update_settings(original_settings);
 }
 
 #[test]
@@ -93,6 +244,9 @@ fn test_match_found_updates_scanned_metadata_on_existing_file() {
     existing_db_file.name = "match.bin".to_string();
     existing_db_file.size = Some(2048);
     existing_db_file.file_mod_time_stamp = 123456;
+    existing_db_file.crc = Some(vec![1, 2, 3, 4]);
+    existing_db_file.sha1 = Some(vec![5; 20]);
+    existing_db_file.md5 = Some(vec![6; 16]);
     existing_db_file.set_dat_got_status(
         dat_reader::enums::DatStatus::InDatCollect,
         GotStatus::NotGot,
@@ -179,6 +333,7 @@ fn test_match_found_marks_archive_member_file_types_got() {
     let mut existing_db_file = RvFile::new(FileType::FileZip);
     existing_db_file.name = "member.bin".to_string();
     existing_db_file.size = Some(32);
+    existing_db_file.file_mod_time_stamp = 0;
     existing_db_file.set_dat_got_status(
         dat_reader::enums::DatStatus::InDatCollect,
         GotStatus::NotGot,
@@ -192,9 +347,14 @@ fn test_match_found_marks_archive_member_file_types_got() {
     let mut scanned = ScannedFile::new(FileType::FileZip);
     scanned.name = "member.bin".to_string();
     scanned.size = Some(32);
+    scanned.file_mod_time_stamp = 0;
     scanned_root.children.push(scanned);
 
-    FileScanning::scan_dir(Rc::clone(&db_dir), &mut scanned_root);
+    FileScanning::scan_dir_with_level(
+        Rc::clone(&db_dir),
+        &mut scanned_root,
+        crate::settings::EScanLevel::Level1,
+    );
 
     let matched = existing_db_file.borrow();
     assert_eq!(matched.got_status(), GotStatus::Got);
@@ -421,7 +581,11 @@ fn test_case_only_name_difference_matches_existing_file_on_windows_style_scan() 
     scanned.size = Some(100);
     scanned_root.children.push(scanned);
 
-    FileScanning::scan_dir(Rc::clone(&db_dir), &mut scanned_root);
+    FileScanning::scan_dir_with_level(
+        Rc::clone(&db_dir),
+        &mut scanned_root,
+        crate::settings::EScanLevel::Level1,
+    );
 
     let dir = db_dir.borrow();
     assert_eq!(dir.children.len(), 1);
@@ -1224,6 +1388,67 @@ fn test_scan_dir_handles_windows_style_case_insensitive_sort_order() {
 
     let dir = db_dir.borrow();
     for child in &dir.children {
+        assert_eq!(child.borrow().got_status(), GotStatus::Got);
+    }
+}
+
+#[test]
+fn test_scan_dir_duplicate_name_group_matches_by_hash() {
+    let db_dir = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+    db_dir.borrow_mut().name = "Root".to_string();
+
+    let mut a = RvFile::new(FileType::File);
+    a.name = "dup.bin".to_string();
+    a.size = Some(4);
+    a.crc = Some(vec![0, 0, 0, 1]);
+    a.set_dat_got_status(
+        dat_reader::enums::DatStatus::InDatCollect,
+        GotStatus::NotGot,
+    );
+    db_dir.borrow_mut().child_add(Rc::new(RefCell::new(a)));
+
+    let mut b = RvFile::new(FileType::File);
+    b.name = "dup.bin".to_string();
+    b.size = Some(4);
+    b.crc = Some(vec![0, 0, 0, 2]);
+    b.set_dat_got_status(
+        dat_reader::enums::DatStatus::InDatCollect,
+        GotStatus::NotGot,
+    );
+    db_dir.borrow_mut().child_add(Rc::new(RefCell::new(b)));
+
+    let mut scanned_root = ScannedFile::new(FileType::Dir);
+    scanned_root.name = "Root".to_string();
+
+    let mut s2 = ScannedFile::new(FileType::File);
+    s2.name = "dup.bin".to_string();
+    s2.size = Some(4);
+    s2.crc = Some(vec![0, 0, 0, 2]);
+    s2.deep_scanned = true;
+    scanned_root.children.push(s2);
+
+    let mut s1 = ScannedFile::new(FileType::File);
+    s1.name = "dup.bin".to_string();
+    s1.size = Some(4);
+    s1.crc = Some(vec![0, 0, 0, 1]);
+    s1.deep_scanned = true;
+    scanned_root.children.push(s1);
+
+    FileScanning::scan_dir_with_level(
+        Rc::clone(&db_dir),
+        &mut scanned_root,
+        crate::settings::EScanLevel::Level2,
+    );
+
+    let got_crcs: Vec<Vec<u8>> = db_dir
+        .borrow()
+        .children
+        .iter()
+        .map(|c| c.borrow().crc.clone().unwrap())
+        .collect();
+    assert!(got_crcs.contains(&vec![0, 0, 0, 1]));
+    assert!(got_crcs.contains(&vec![0, 0, 0, 2]));
+    for child in &db_dir.borrow().children {
         assert_eq!(child.borrow().got_status(), GotStatus::Got);
     }
 }

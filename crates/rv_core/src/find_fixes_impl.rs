@@ -6,6 +6,7 @@ use std::rc::Rc;
 
 use dat_reader::enums::{DatStatus, FileType, GotStatus};
 use tracing::{info, trace};
+use trrntzip::process_control::ProcessControl;
 
 use crate::enums::RepStatus;
 use crate::rv_file::{RvFile, TreeSelect};

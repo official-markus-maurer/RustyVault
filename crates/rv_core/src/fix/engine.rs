@@ -655,11 +655,6 @@ impl Fix {
         md5_map: &HashMap<crate::hash_keys::Md5Key, Rc<RefCell<RvFile>>>,
         retained_physical_counts: &mut HashMap<String, u32>,
     ) {
-        // TODO(threading): consider parallelizing independent file fixes, but guard against:
-        // - multiple targets writing into the same directory
-        // - sources that share the same physical backing
-        // - archive rebuild steps that must be serialized per-archive
-        // TODO(perf): avoid repeated full reads of source bytes for large archives by streaming and/or using OS copy APIs.
         let (rep_status, name, current_path, target_path, is_read_only) = {
             let file_ref = file.borrow();
             let current_path = Self::build_physical_path(Rc::clone(&file), true);
@@ -688,17 +683,27 @@ impl Fix {
                     file_mut.rep_status_reset();
                     return;
                 }
-                if !Self::double_check_delete_should_skip(&file.borrow()) {
+                if rep_status == RepStatus::Delete
+                    && current_path.exists()
+                    && file.borrow().file_type == FileType::File
+                    && file.borrow().parent.is_some()
+                    && !Self::double_check_delete_should_skip(&file.borrow())
+                {
                     let tree_root = Self::find_tree_root(Rc::clone(&file));
                     if Self::find_delete_check_candidate(tree_root, Rc::clone(&file)).is_none() {
                         tracing::warn!(
-                            "DoubleCheckDelete: no retained candidate found, deleting anyway for {}",
+                            "DoubleCheckDelete: no retained candidate found; skipping delete for {}",
                             name
                         );
+                        return;
                     }
                 }
                 if current_path.exists() {
-                    let _ = fs::remove_file(&current_path);
+                    if fs::remove_file(&current_path).is_err() {
+                        if let Ok(canonical) = current_path.canonicalize() {
+                            let _ = fs::remove_file(&canonical);
+                        }
+                    }
 
                     let mut current_dir = current_path.parent();
                     while let Some(parent) = current_dir {
@@ -784,17 +789,12 @@ impl Fix {
                             let _ = fs::create_dir_all(parent);
                         }
 
-                        let copied = if Self::find_containing_archive(Rc::clone(&src)).is_none() {
-                            let _ = fs::remove_file(&target_path);
-                            fs::copy(&src_path, &target_path).is_ok()
-                        } else {
-                            false
-                        };
-
-                        if !copied {
-                            if let Some(bytes) = Self::read_source_file_bytes(Rc::clone(&src)) {
-                                let _ = fs::write(&target_path, bytes);
-                            }
+                        let _ = fs::remove_file(&target_path);
+                        if !Self::copy_source_file_to_path(Rc::clone(&src), &target_path) {
+                            tracing::warn!(
+                                "Failed writing fixed file: {}",
+                                target_path.display()
+                            );
                         }
                         Self::increment_physical_path_ref(retained_physical_counts, &target_path);
 

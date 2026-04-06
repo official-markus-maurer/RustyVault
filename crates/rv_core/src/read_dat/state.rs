@@ -126,7 +126,7 @@ impl DatUpdate {
         {
             let mut node = node_rc.borrow_mut();
             node.children = kept_children;
-            node.dat = None;
+            node.set_dat_ref(None);
             node.dir_dats.clear();
             if node.dat_status() != DatStatus::NotInDat {
                 node.set_dat_status(DatStatus::NotInDat);

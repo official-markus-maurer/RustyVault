@@ -77,7 +77,7 @@ impl Fix {
     }
 
     fn timestamp_matches(path: &PathBuf, expected_secs: i64) -> bool {
-        if expected_secs == i64::MIN {
+        if expected_secs == i64::MIN || expected_secs == 0 {
             return true;
         }
         let Ok(meta) = fs::metadata(path) else {

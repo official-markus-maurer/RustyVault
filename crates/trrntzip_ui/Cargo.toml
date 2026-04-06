@@ -1,6 +1,0 @@
-[package]
-name = "trrntzip_ui"
-version.workspace = true
-edition.workspace = true
-authors.workspace = true
-

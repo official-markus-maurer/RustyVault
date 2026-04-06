@@ -70,6 +70,26 @@ fn test_convert_to_external_dat_drops_empty_filtered_directories() {
 }
 
 #[test]
+fn test_convert_to_external_dat_prunes_empty_archive_directory_markers() {
+    let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+    root.borrow_mut().name = "Root".to_string();
+
+    let zip = Rc::new(RefCell::new(RvFile::new(FileType::Zip)));
+    zip.borrow_mut().name = "game.zip".to_string();
+
+    let empty_dir = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+    empty_dir.borrow_mut().name = "empty".to_string();
+    zip.borrow_mut().child_add(Rc::clone(&empty_dir));
+
+    root.borrow_mut().child_add(Rc::clone(&zip));
+
+    let converter = ExternalDatConverterTo::new();
+    let dat = converter.convert_to_external_dat(Rc::clone(&root)).unwrap();
+
+    assert!(dat.base_dir.children.is_empty());
+}
+
+#[test]
 fn test_convert_to_external_dat_can_filter_loose_files_only() {
     let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
     root.borrow_mut().name = "Root".to_string();

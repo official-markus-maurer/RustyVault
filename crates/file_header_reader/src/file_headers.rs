@@ -320,6 +320,29 @@ impl FileHeaders {
         (HeaderFileType::NOTHING, 0)
     }
 
+    pub fn get_file_header_length(file_type: HeaderFileType) -> usize {
+        let header = file_type & HeaderFileType::HEADER_MASK;
+        for detector in Self::get_detectors() {
+            if detector.ftype == header {
+                return detector.file_offset;
+            }
+        }
+        0
+    }
+
+    pub fn alt_header_file(file_type: HeaderFileType) -> bool {
+        let header = file_type & HeaderFileType::HEADER_MASK;
+        header == HeaderFileType::A7800
+            || header == HeaderFileType::FDS
+            || header == HeaderFileType::LYNX
+            || header == HeaderFileType::NES
+            || header == HeaderFileType::PCE
+            || header == HeaderFileType::PSID
+            || header == HeaderFileType::SNES
+            || header == HeaderFileType::SPC
+            || header == HeaderFileType::CHD
+    }
+
     fn byte_comp(buffer: &[u8], d: &Data) -> bool {
         if buffer.len() < d.value.len() + d.offset {
             return false;

@@ -697,8 +697,11 @@ impl RomVaultApp {
                             crate::normalize_full_name_key(&node_rc.borrow().get_full_name());
                         let np =
                             rv_core::settings::find_dir_mapping(&logical).unwrap_or(logical.clone());
-                        self.launch_task("Scan ROMs (Quick)", move |tx| {
+                        self.launch_task("Scan ROMs (Quick)", move |tx, control| {
                             let _ = tx.send(format!("Scanning {} (Headers Only)...", logical));
+                            if control.is_soft_stop_requested() || control.is_hard_stop_requested() {
+                                return;
+                            }
                             let rule = rv_core::settings::find_rule(&logical);
                             let files = Scanner::scan_directory_with_level_and_ignore(
                                 &np,
@@ -730,8 +733,11 @@ impl RomVaultApp {
                             crate::normalize_full_name_key(&node_rc.borrow().get_full_name());
                         let np =
                             rv_core::settings::find_dir_mapping(&logical).unwrap_or(logical.clone());
-                        self.launch_task("Scan ROMs", move |tx| {
+                        self.launch_task("Scan ROMs", move |tx, control| {
                             let _ = tx.send(format!("Scanning {}...", logical));
+                            if control.is_soft_stop_requested() || control.is_hard_stop_requested() {
+                                return;
+                            }
                             let rule = rv_core::settings::find_rule(&logical);
                             let files = Scanner::scan_directory_with_level_and_ignore(
                                 &np,
@@ -763,8 +769,11 @@ impl RomVaultApp {
                             crate::normalize_full_name_key(&node_rc.borrow().get_full_name());
                         let np =
                             rv_core::settings::find_dir_mapping(&logical).unwrap_or(logical.clone());
-                        self.launch_task("Scan ROMs (Full)", move |tx| {
+                        self.launch_task("Scan ROMs (Full)", move |tx, control| {
                             let _ = tx.send(format!("Scanning {} (Full Re-Scan)...", logical));
+                            if control.is_soft_stop_requested() || control.is_hard_stop_requested() {
+                                return;
+                            }
                             let rule = rv_core::settings::find_rule(&logical);
                             let files = Scanner::scan_directory_with_level_and_ignore(
                                 &np,

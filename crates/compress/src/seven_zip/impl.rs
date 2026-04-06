@@ -28,9 +28,7 @@ use internals::{SevenZipPendingWrite, SharedFileWriter};
 ///
 /// Implementation notes:
 /// - Uses the `sevenz-rust` crate for archive reading/writing.
-/// - Extraction currently materializes the file payload into memory for read streams.
-///
-/// TODO: Support streaming extraction for solid archives to reduce peak memory usage.
+/// - Read streams extract to a temporary file, avoiding large in-memory buffers (especially for solid archives).
 pub struct SevenZipFile {
     zip_filename: String,
     zip_open_type: ZipOpenType,
@@ -42,6 +40,7 @@ pub struct SevenZipFile {
     staging_dir: Option<PathBuf>,
     pending_write: Option<SevenZipPendingWrite>,
     temp_open_path: Option<PathBuf>,
+    temp_extract_path: Option<PathBuf>,
 
     file_headers: Vec<FileHeader>,
     file_comment: String,
@@ -64,6 +63,7 @@ impl SevenZipFile {
             staging_dir: None,
             pending_write: None,
             temp_open_path: None,
+            temp_extract_path: None,
             file_headers: Vec::new(),
             file_comment: String::new(),
             zip_struct: ZipStructure::None,

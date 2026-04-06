@@ -12,8 +12,6 @@ pub mod torrent_zip_rebuild;
 ///
 /// Implementation notes:
 /// - Provides validation and rebuild utilities for deterministic ZIP formatting.
-///
-/// TODO: Implement a fully deterministic rebuild path that preserves byte-level ZIP invariants.
 pub mod trrntzip_status;
 pub mod zipped_file;
 

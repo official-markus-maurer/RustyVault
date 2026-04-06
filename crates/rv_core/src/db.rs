@@ -137,8 +137,8 @@ impl DB {
     }
 
     /// Serializes the entire `dir_root` tree to disk via `cache::Cache::write_cache`.
-    pub fn write_cache(&self) {
-        Cache::write_cache(Rc::clone(&self.dir_root));
+    pub fn write_cache(&self) -> bool {
+        Cache::write_cache(Rc::clone(&self.dir_root))
     }
 }
 

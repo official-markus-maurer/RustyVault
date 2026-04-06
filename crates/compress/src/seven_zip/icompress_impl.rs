@@ -90,6 +90,9 @@ impl ICompress for SevenZipFile {
         if let Some(tmp) = self.temp_open_path.take() {
             let _ = fs::remove_file(tmp);
         }
+        if let Some(tmp) = self.temp_extract_path.take() {
+            let _ = fs::remove_file(tmp);
+        }
         self.zip_open_type = ZipOpenType::Closed;
         self.file_headers.clear();
         self.zip_struct = ZipStructure::None;
@@ -115,13 +118,26 @@ impl ICompress for SevenZipFile {
             return Ok((Box::new(std::io::Cursor::new(Vec::new())), 0));
         }
 
-        let Some(bytes) = extract_entry_bytes(&self.zip_filename, file_entry.name())? else {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let tmp_path = std::env::temp_dir().join(format!("rv_7z_extract_{}_{}", unique, index));
+
+        if !internals::extract_entry_to_path(&self.zip_filename, file_entry.name(), &tmp_path)? {
             return Err(ZipReturn::ZipErrorGettingDataStream);
-        };
-        Ok((Box::new(std::io::Cursor::new(bytes)), file_entry.size()))
+        }
+
+        let f = std::fs::File::open(&tmp_path).map_err(|_| ZipReturn::ZipErrorOpeningFile)?;
+        self.temp_extract_path = Some(tmp_path);
+        Ok((Box::new(f), file_entry.size()))
     }
 
     fn zip_file_close_read_stream(&mut self) -> ZipReturn {
+        if let Some(tmp) = self.temp_extract_path.take() {
+            let _ = fs::remove_file(tmp);
+        }
         ZipReturn::ZipGood
     }
 

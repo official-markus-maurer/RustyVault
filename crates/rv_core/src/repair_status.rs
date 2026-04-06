@@ -49,6 +49,79 @@ pub struct RepairStatus {
 }
 
 impl RepairStatus {
+    pub fn dominant_rep_status(root: Rc<RefCell<RvFile>>) -> crate::enums::RepStatus {
+        use crate::enums::RepStatus;
+        use dat_reader::enums::GotStatus;
+
+        const DISPLAY_ORDER: [RepStatus; 24] = [
+            RepStatus::Error,
+            RepStatus::UnSet,
+            RepStatus::UnScanned,
+            RepStatus::DirCorrupt,
+            RepStatus::MoveToCorrupt,
+            RepStatus::CorruptCanBeFixed,
+            RepStatus::CanBeFixedMIA,
+            RepStatus::CanBeFixed,
+            RepStatus::MoveToSort,
+            RepStatus::Delete,
+            RepStatus::NeededForFix,
+            RepStatus::Rename,
+            RepStatus::Corrupt,
+            RepStatus::Unknown,
+            RepStatus::UnNeeded,
+            RepStatus::Incomplete,
+            RepStatus::Missing,
+            RepStatus::MissingMIA,
+            RepStatus::CorrectMIA,
+            RepStatus::Correct,
+            RepStatus::InToSort,
+            RepStatus::NotCollected,
+            RepStatus::Ignore,
+            RepStatus::Deleted,
+        ];
+
+        if root.borrow().got_status() == GotStatus::FileLocked {
+            return RepStatus::UnScanned;
+        }
+
+        let mut counts = vec![0u32; RepStatus::EndValue as usize];
+
+        fn add_counts(node: Rc<RefCell<RvFile>>, counts: &mut [u32]) {
+            let (rep_status, is_dir, children) = {
+                let n = node.borrow();
+                (n.rep_status(), n.is_directory(), n.children.clone())
+            };
+            let idx = rep_status as usize;
+            if idx < counts.len() {
+                counts[idx] += 1;
+            }
+            if is_dir {
+                for child in children {
+                    add_counts(child, counts);
+                }
+            }
+        }
+
+        let is_dir = root.borrow().is_directory();
+        if is_dir {
+            let children = root.borrow().children.clone();
+            for child in children {
+                add_counts(child, &mut counts);
+            }
+        } else {
+            add_counts(Rc::clone(&root), &mut counts);
+        }
+
+        for status in DISPLAY_ORDER {
+            let idx = status as usize;
+            if idx < counts.len() && counts[idx] > 0 {
+                return status;
+            }
+        }
+
+        RepStatus::UnScanned
+    }
+
     /// Initializes an empty `RepairStatus` struct with all counters set to zero.
     pub fn new() -> Self {
         Self {
@@ -141,6 +214,10 @@ impl RepairStatus {
         } else {
             crate::enums::ReportStatus::Unknown
         }
+    }
+
+    pub fn synthesized_dir_status(&self) -> crate::enums::ReportStatus {
+        self.synthesized_report_status()
     }
 
     /// Recursively traverses a tree branch and calculates its exact `RepairStatus` by

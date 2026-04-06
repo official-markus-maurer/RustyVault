@@ -1,4 +1,81 @@
 impl Fix {
+    fn copy_zip_entry_to_path(zip_path: &str, entry_name: &str, out_path: &Path) -> bool {
+        let file = match File::open(zip_path) {
+            Ok(f) => f,
+            Err(_) => return false,
+        };
+        let mut archive = match ZipArchive::new(file) {
+            Ok(a) => a,
+            Err(_) => return false,
+        };
+
+        let mut exact_match = None;
+        let mut logical_match = None;
+        for index in 0..archive.len() {
+            let Ok(entry) = archive.by_index(index) else {
+                continue;
+            };
+            if entry.name() == entry_name {
+                exact_match = Some(index);
+                break;
+            }
+            if logical_match.is_none() && Self::logical_name_eq(entry.name(), entry_name) {
+                logical_match = Some(index);
+            }
+        }
+        let Some(found_index) = exact_match.or(logical_match) else {
+            return false;
+        };
+
+        if let Some(parent) = out_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let out_file = match File::create(out_path) {
+            Ok(f) => f,
+            Err(_) => return false,
+        };
+        let mut out = std::io::BufWriter::new(out_file);
+
+        let mut entry = match archive.by_index(found_index) {
+            Ok(e) => e,
+            Err(_) => return false,
+        };
+
+        std::io::copy(&mut entry, &mut out).is_ok()
+    }
+
+    fn copy_seven_zip_entry_to_path(
+        archive_path: &str,
+        entry_name: &str,
+        out_path: &Path,
+    ) -> bool {
+        compress::seven_zip::extract_entry_to_path(archive_path, entry_name, out_path)
+            .ok()
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn copy_source_file_to_path(
+        source_file: Rc<RefCell<RvFile>>,
+        out_path: &Path,
+    ) -> bool {
+        let source_path = Self::get_existing_physical_path(Rc::clone(&source_file));
+
+        if let Some((parent_archive, source_name, parent_type)) =
+            Self::find_containing_archive(Rc::clone(&source_file))
+        {
+            let archive_path = Self::get_existing_physical_path(parent_archive);
+            return match parent_type {
+                FileType::Zip => Self::copy_zip_entry_to_path(&archive_path, &source_name, out_path),
+                FileType::SevenZip => {
+                    Self::copy_seven_zip_entry_to_path(&archive_path, &source_name, out_path)
+                }
+                _ => fs::copy(std::path::Path::new(&source_path), out_path).is_ok(),
+            };
+        }
+
+        fs::copy(std::path::Path::new(&source_path), out_path).is_ok()
+    }
+
     fn read_zip_entry_bytes(zip_path: &str, entry_name: &str) -> Option<Vec<u8>> {
         let file = File::open(zip_path).ok()?;
         let mut archive = ZipArchive::new(file).ok()?;

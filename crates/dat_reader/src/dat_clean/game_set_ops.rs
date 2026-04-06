@@ -457,7 +457,7 @@ impl DatClean {
     }
 
     pub fn remove_devices(t_dat: &mut DatDir) {
-        let children = std::mem::take(&mut t_dat.children);
+        let children = t_dat.take_children();
         for mut child in children {
             if let Some(m_game) = child.dir_mut() {
                 if m_game.d_game.is_none() {

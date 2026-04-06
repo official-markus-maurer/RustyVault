@@ -5,8 +5,10 @@ use crc32fast::Hasher;
 use memmap2::MmapOptions;
 use std::cell::RefCell;
 use std::fs::{self, File};
-use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::rc::{Rc, Weak};
+use std::sync::{mpsc, OnceLock};
+use std::thread;
 
 /// Cache management system for serializing and deserializing the RomVault database.
 ///
@@ -20,6 +22,104 @@ use std::rc::{Rc, Weak};
 /// - A small header (magic/version/encoding) is written to detect incompatible caches early.
 pub struct Cache;
 
+struct CSharpCacheReader<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> CSharpCacheReader<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, pos: 0 }
+    }
+
+    fn remaining(&self) -> usize {
+        self.bytes.len().saturating_sub(self.pos)
+    }
+
+    fn read_exact(&mut self, n: usize) -> Result<&'a [u8], String> {
+        let end = self
+            .pos
+            .checked_add(n)
+            .ok_or_else(|| "csharp cache read overflow".to_string())?;
+        if end > self.bytes.len() {
+            return Err("truncated csharp cache".to_string());
+        }
+        let s = &self.bytes[self.pos..end];
+        self.pos = end;
+        Ok(s)
+    }
+
+    fn read_u8(&mut self) -> Result<u8, String> {
+        Ok(self.read_exact(1)?[0])
+    }
+
+    fn read_bool(&mut self) -> Result<bool, String> {
+        Ok(self.read_u8()? != 0)
+    }
+
+    fn read_u32_le(&mut self) -> Result<u32, String> {
+        let b = self.read_exact(4)?;
+        Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
+
+    fn read_i32_le(&mut self) -> Result<i32, String> {
+        let b = self.read_exact(4)?;
+        Ok(i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
+
+    fn read_u64_le(&mut self) -> Result<u64, String> {
+        let b = self.read_exact(8)?;
+        Ok(u64::from_le_bytes([
+            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+        ]))
+    }
+
+    fn read_i64_le(&mut self) -> Result<i64, String> {
+        let b = self.read_exact(8)?;
+        Ok(i64::from_le_bytes([
+            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+        ]))
+    }
+
+    fn read_7bit_encoded_i32(&mut self) -> Result<u32, String> {
+        let mut count: u32 = 0;
+        let mut shift: u32 = 0;
+        loop {
+            if shift >= 35 {
+                return Err("invalid 7-bit encoded int".to_string());
+            }
+            let b = self.read_u8()? as u32;
+            count |= (b & 0x7f) << shift;
+            if (b & 0x80) == 0 {
+                return Ok(count);
+            }
+            shift += 7;
+        }
+    }
+
+    fn read_dotnet_string(&mut self) -> Result<String, String> {
+        let byte_len = self.read_7bit_encoded_i32()? as usize;
+        let b = self.read_exact(byte_len)?;
+        Ok(String::from_utf8_lossy(b).into_owned())
+    }
+
+    fn read_byte_array_u8len(&mut self) -> Result<Vec<u8>, String> {
+        let len = self.read_u8()? as usize;
+        Ok(self.read_exact(len)?.to_vec())
+    }
+}
+
+struct CacheWriteJob {
+    cache_path: std::path::PathBuf,
+    backup_path: std::path::PathBuf,
+    tmp_path: std::path::PathBuf,
+    encoding: u8,
+    flags: u8,
+    payload: Vec<u8>,
+    payload_crc32: u32,
+    done: Option<mpsc::Sender<bool>>,
+}
+
 impl Cache {
     const CACHE_FILE: &'static str = "RustyVault3_3.Cache";
     const BACKUP_FILE: &'static str = "RustyVault3_3.CacheBackup";
@@ -30,6 +130,10 @@ impl Cache {
     const CACHE_ENCODING_FIXED: u8 = 2;
     const CACHE_WRITE_ENCODING: u8 = Self::CACHE_ENCODING_VARINT;
     const CACHE_FLAGS_NONE: u8 = 0;
+    const CACHE_FLAG_ZSTD: u8 = 1;
+    const CACHE_ZSTD_LEVEL: i32 = 3;
+    const CACHE_ZSTD_MIN_BYTES: usize = 1024 * 1024;
+    const CSHARP_END_MARKER: u64 = 0x15a600dda7;
 
     pub fn cache_path() -> std::path::PathBuf {
         let (cache_path, _backup_path, _tmp_path) = Self::cache_paths();
@@ -73,16 +177,145 @@ impl Cache {
         (cache_path, backup, tmp)
     }
 
+    fn writer_tx() -> &'static mpsc::Sender<CacheWriteJob> {
+        static TX: OnceLock<mpsc::Sender<CacheWriteJob>> = OnceLock::new();
+        TX.get_or_init(|| {
+            let (tx, rx) = mpsc::channel::<CacheWriteJob>();
+            thread::spawn(move || Self::writer_loop(rx));
+            tx
+        })
+    }
+
+    fn writer_loop(rx: mpsc::Receiver<CacheWriteJob>) {
+        while let Ok(mut job) = rx.recv() {
+            let mut pending_with_waiters = Vec::new();
+            let mut coalesced: Option<CacheWriteJob> = None;
+            while let Ok(next) = rx.try_recv() {
+                if next.done.is_some() {
+                    pending_with_waiters.push(next);
+                } else {
+                    coalesced = Some(next);
+                }
+            }
+
+            let ok = Self::write_job(&job);
+            if let Some(done) = job.done.take() {
+                let _ = done.send(ok);
+            }
+
+            for mut w in pending_with_waiters {
+                let ok = Self::write_job(&w);
+                if let Some(done) = w.done.take() {
+                    let _ = done.send(ok);
+                }
+            }
+
+            if let Some(last) = coalesced {
+                let _ = Self::write_job(&last);
+            }
+        }
+    }
+
+    fn write_job(job: &CacheWriteJob) -> bool {
+        if job.tmp_path.exists() {
+            let _ = fs::remove_file(&job.tmp_path);
+        }
+        if let Some(parent) = job.cache_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                let _ = fs::create_dir_all(parent);
+            }
+        }
+
+        let file = match File::create(&job.tmp_path) {
+            Ok(f) => f,
+            Err(_) => return false,
+        };
+
+        {
+            let mut writer = BufWriter::with_capacity(16 * 1024 * 1024, file);
+            if writer.write_all(Self::CACHE_MAGIC).is_err()
+                || writer
+                    .write_all(&Self::CACHE_VERSION.to_le_bytes())
+                    .is_err()
+                || writer.write_all(&[job.encoding]).is_err()
+                || writer.write_all(&[job.flags]).is_err()
+                || writer
+                    .write_all(&(job.payload.len() as u64).to_le_bytes())
+                    .is_err()
+                || writer.write_all(&job.payload_crc32.to_le_bytes()).is_err()
+                || writer.write_all(&job.payload).is_err()
+                || writer.flush().is_err()
+            {
+                return false;
+            }
+
+            if writer.get_ref().sync_all().is_err() {
+                return false;
+            }
+        }
+
+        if Self::validate_cache_file(&job.tmp_path).is_err() {
+            let _ = fs::remove_file(&job.tmp_path);
+            return false;
+        }
+
+        if job.cache_path.exists() {
+            if job.backup_path.exists() {
+                let _ = fs::remove_file(&job.backup_path);
+            }
+            let _ = fs::rename(&job.cache_path, &job.backup_path);
+        }
+
+        if fs::rename(&job.tmp_path, &job.cache_path).is_err() {
+            if fs::copy(&job.tmp_path, &job.cache_path).is_err() {
+                let _ = fs::remove_file(&job.tmp_path);
+                return false;
+            }
+            let _ = fs::remove_file(&job.tmp_path);
+        }
+
+        true
+    }
+
+    fn encode_root_payload(
+        root: &Rc<RefCell<RvFile>>,
+        config: bincode::config::Configuration,
+    ) -> Result<(Vec<u8>, u8), String> {
+        let payload =
+            bincode::serde::encode_to_vec(root, config).map_err(|e| format!("{:?}", e))?;
+        if payload.len() < Self::CACHE_ZSTD_MIN_BYTES {
+            return Ok((payload, Self::CACHE_FLAGS_NONE));
+        }
+        let compressed =
+            zstd::stream::encode_all(std::io::Cursor::new(&payload), Self::CACHE_ZSTD_LEVEL)
+                .map_err(|e| format!("{:?}", e))?;
+        if compressed.len() < payload.len() {
+            Ok((compressed, Self::CACHE_FLAG_ZSTD))
+        } else {
+            Ok((payload, Self::CACHE_FLAGS_NONE))
+        }
+    }
+
+    fn decode_root_from_payload(
+        payload: &[u8],
+        flags: u8,
+        config: bincode::config::Configuration,
+    ) -> Result<Rc<RefCell<RvFile>>, String> {
+        if flags & Self::CACHE_FLAG_ZSTD != 0 {
+            let decompressed = zstd::stream::decode_all(std::io::Cursor::new(payload))
+                .map_err(|e| format!("{:?}", e))?;
+            Self::decode_root_from_bytes(&decompressed, config)
+        } else {
+            Self::decode_root_from_bytes(payload, config)
+        }
+    }
+
     /// Reads the binary cache file from disk and deserializes it into the `dir_root` tree.
     ///
     /// If memory mapping (`mmap`) is available, it performs a zero-copy read. Otherwise,
     /// it falls back to a standard buffered reader. After deserialization, it invokes
     /// `relink_parents` to reconstruct the `Weak` pointer tree hierarchy that `serde` skips.
     pub fn read_cache() -> Option<Rc<RefCell<RvFile>>> {
-        // TODO(perf): cache read/write is full-tree serialization. Consider incremental updates or chunked storage to avoid
-        // rewriting the entire DB on every change.
-        // TODO(threading): move cache writes off the UI thread with a single background writer and atomic swap.
-        // TODO(perf): consider compressing large portions of the serialized tree and/or using zstd frames per chunk.
         let (cache_path, backup_path, tmp_path) = Self::cache_paths();
         let candidates = [cache_path.as_path(), backup_path.as_path()];
 
@@ -110,161 +343,89 @@ impl Cache {
     }
 
     /// Serializes the entire `RvFile` tree back to disk using `bincode` into the standard `RustyVault3_3.Cache` file format.
-    pub fn write_cache(root: Rc<RefCell<RvFile>>) {
+    pub fn write_cache(root: Rc<RefCell<RvFile>>) -> bool {
         if !root.borrow().cache_dirty {
-            return;
+            return false;
         }
-        Self::prepare_for_serialize(Rc::clone(&root));
 
         let (cache_path, backup_path, tmp_path) = Self::cache_paths();
-        if tmp_path.exists() {
-            let _ = fs::remove_file(&tmp_path);
+
+        let config = match Self::CACHE_WRITE_ENCODING {
+            Self::CACHE_ENCODING_VARINT => bincode::config::standard().with_variable_int_encoding(),
+            Self::CACHE_ENCODING_FIXED => bincode::config::standard(),
+            _ => bincode::config::standard(),
+        };
+
+        let (payload, flags) = match Self::encode_root_payload(&root, config) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+
+        let mut hasher = Hasher::new();
+        hasher.update(&payload);
+        let payload_crc32 = hasher.finalize();
+
+        let (done_tx, done_rx) = mpsc::channel();
+        let job = CacheWriteJob {
+            cache_path,
+            backup_path,
+            tmp_path,
+            encoding: Self::CACHE_WRITE_ENCODING,
+            flags,
+            payload,
+            payload_crc32,
+            done: Some(done_tx),
+        };
+
+        if Self::writer_tx().send(job).is_err() {
+            return false;
         }
 
-        // TODO(perf): avoid writing cache twice per UI task (pre + post). Prefer a single atomic write when the task completes.
-        // TODO(threading): move cache writes to a single background writer thread so tasks can enqueue "write requests"
-        // without blocking scan/fix work.
-        // TODO(perf): store cache as chunked data (e.g. per top-level root) to avoid serializing the entire tree on small changes.
-        // TODO(perf): consider interning repeated strings (names/paths/status strings) to reduce serialized size and encode time.
-        // TODO(perf): consider fixed-int encoding for bincode again, but only behind a bumped cache version + migration and/or
-        // a strict write+read-back validation gate (already present below).
-        // TODO(perf): avoid `prepare_for_serialize` walking the full tree on every write; maintain `dat_index_for_serde`
-        // incrementally as nodes are mutated.
-        if let Some(parent) = cache_path.parent() {
-            if !parent.as_os_str().is_empty() {
-                let _ = fs::create_dir_all(parent);
-            }
+        let ok = done_rx.recv().unwrap_or(false);
+        if ok {
+            root.borrow_mut().cache_dirty = false;
+        }
+        ok
+    }
+
+    pub fn enqueue_write_cache(root: Rc<RefCell<RvFile>>) -> bool {
+        if !root.borrow().cache_dirty {
+            return false;
         }
 
-        {
-            let file = match File::create(&tmp_path) {
-                Ok(f) => f,
-                Err(e) => {
-                    println!("Error creating temp cache file: {:?}", e);
-                    return;
-                }
-            };
+        let (cache_path, backup_path, tmp_path) = Self::cache_paths();
+        let config = match Self::CACHE_WRITE_ENCODING {
+            Self::CACHE_ENCODING_VARINT => bincode::config::standard().with_variable_int_encoding(),
+            Self::CACHE_ENCODING_FIXED => bincode::config::standard(),
+            _ => bincode::config::standard(),
+        };
 
-            let mut writer = BufWriter::with_capacity(16 * 1024 * 1024, file);
+        let (payload, flags) = match Self::encode_root_payload(&root, config) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
 
-            let config = match Self::CACHE_WRITE_ENCODING {
-                Self::CACHE_ENCODING_VARINT => {
-                    bincode::config::standard().with_variable_int_encoding()
-                }
-                Self::CACHE_ENCODING_FIXED => bincode::config::standard(),
-                _ => bincode::config::standard(),
-            };
+        let mut hasher = Hasher::new();
+        hasher.update(&payload);
+        let payload_crc32 = hasher.finalize();
 
-            let payload_len_offset = Self::CACHE_MAGIC.len() + 4 + 1 + 1;
-            let payload_crc_offset = payload_len_offset + 8;
+        let job = CacheWriteJob {
+            cache_path,
+            backup_path,
+            tmp_path,
+            encoding: Self::CACHE_WRITE_ENCODING,
+            flags,
+            payload,
+            payload_crc32,
+            done: None,
+        };
 
-            if writer.write_all(Self::CACHE_MAGIC).is_err()
-                || writer
-                    .write_all(&Self::CACHE_VERSION.to_le_bytes())
-                    .is_err()
-                || writer.write_all(&[Self::CACHE_WRITE_ENCODING]).is_err()
-                || writer.write_all(&[Self::CACHE_FLAGS_NONE]).is_err()
-                || writer.write_all(&0u64.to_le_bytes()).is_err()
-                || writer.write_all(&0u32.to_le_bytes()).is_err()
-            {
-                println!("Error writing cache: could not write header");
-                return;
-            }
-
-            struct CountingCrcWriter<W: Write> {
-                inner: W,
-                hasher: Hasher,
-                bytes_written: u64,
-            }
-
-            impl<W: Write> CountingCrcWriter<W> {
-                fn new(inner: W) -> Self {
-                    Self {
-                        inner,
-                        hasher: Hasher::new(),
-                        bytes_written: 0,
-                    }
-                }
-            }
-
-            impl<W: Write> Write for CountingCrcWriter<W> {
-                fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-                    let n = self.inner.write(buf)?;
-                    if n > 0 {
-                        self.hasher.update(&buf[..n]);
-                        self.bytes_written = self.bytes_written.saturating_add(n as u64);
-                    }
-                    Ok(n)
-                }
-
-                fn flush(&mut self) -> std::io::Result<()> {
-                    self.inner.flush()
-                }
-            }
-
-            let mut payload_writer = CountingCrcWriter::new(writer);
-            if let Err(e) =
-                bincode::serde::encode_into_std_write(&root, &mut payload_writer, config)
-            {
-                println!("Error writing cache: {:?}", e);
-                return;
-            }
-
-            if payload_writer.flush().is_err() {
-                println!("Error writing cache: flush failed");
-                return;
-            }
-
-            let payload_len = payload_writer.bytes_written;
-            let payload_crc32 = payload_writer.hasher.finalize();
-
-            let mut file = match payload_writer.inner.into_inner() {
-                Ok(f) => f,
-                Err(e) => {
-                    println!("Error writing cache: finalize writer failed: {:?}", e);
-                    return;
-                }
-            };
-
-            if file
-                .seek(SeekFrom::Start(payload_len_offset as u64))
-                .is_err()
-                || file.write_all(&payload_len.to_le_bytes()).is_err()
-                || file
-                    .seek(SeekFrom::Start(payload_crc_offset as u64))
-                    .is_err()
-                || file.write_all(&payload_crc32.to_le_bytes()).is_err()
-            {
-                println!("Error writing cache: could not finalize header");
-                return;
-            }
-
-            if file.sync_all().is_err() {
-                println!("Error writing cache: sync failed");
-                return;
-            }
+        if Self::writer_tx().send(job).is_err() {
+            return false;
         }
 
-        if let Err(e) = Self::validate_cache_file(&tmp_path) {
-            println!("Error writing cache: validation failed: {e}");
-            let _ = fs::remove_file(&tmp_path);
-            return;
-        }
-
-        if cache_path.exists() {
-            if backup_path.exists() {
-                let _ = fs::remove_file(&backup_path);
-            }
-            let _ = fs::rename(&cache_path, &backup_path);
-        }
-
-        if fs::rename(&tmp_path, &cache_path).is_err() {
-            if fs::copy(&tmp_path, &cache_path).is_err() {
-                let _ = fs::remove_file(&tmp_path);
-                return;
-            }
-            let _ = fs::remove_file(&tmp_path);
-        }
+        root.borrow_mut().cache_dirty = false;
+        true
     }
 
     fn quarantine_cache_files(
@@ -314,7 +475,7 @@ impl Cache {
         }
     }
 
-    fn parse_cache_v2_meta(bytes: &[u8]) -> Option<(u64, u32)> {
+    fn parse_cache_v2_meta(bytes: &[u8]) -> Option<(u8, u64, u32)> {
         let header_len = Self::CACHE_MAGIC.len() + 4 + 1 + 1 + 8 + 4;
         if bytes.len() < header_len {
             return None;
@@ -330,6 +491,7 @@ impl Cache {
         if version != Self::CACHE_VERSION {
             return None;
         }
+        let flags = bytes[Self::CACHE_MAGIC.len() + 4 + 1];
         let payload_len_offset = Self::CACHE_MAGIC.len() + 4 + 1 + 1;
         let payload_crc_offset = payload_len_offset + 8;
         let payload_len = u64::from_le_bytes(
@@ -342,7 +504,7 @@ impl Cache {
                 .try_into()
                 .ok()?,
         );
-        Some((payload_len, payload_crc))
+        Some((flags, payload_len, payload_crc))
     }
 
     fn validate_cache_file(path: &std::path::Path) -> Result<(), String> {
@@ -353,7 +515,7 @@ impl Cache {
         };
 
         if version == Self::CACHE_VERSION {
-            let Some((payload_len, payload_crc32)) = Self::parse_cache_v2_meta(&mmap) else {
+            let Some((flags, payload_len, payload_crc32)) = Self::parse_cache_v2_meta(&mmap) else {
                 return Err("invalid v2 cache meta".to_string());
             };
             let end = offset
@@ -370,6 +532,15 @@ impl Cache {
                     "v2 cache checksum mismatch (expected {payload_crc32:08X}, got {actual:08X})"
                 ));
             }
+            let config_varint = bincode::config::standard().with_variable_int_encoding();
+            let config_fixed = bincode::config::standard();
+            let config = match encoding {
+                Self::CACHE_ENCODING_VARINT => config_varint,
+                Self::CACHE_ENCODING_FIXED => config_fixed,
+                _ => return Err(format!("unsupported cache encoding {encoding}")),
+            };
+            let payload = &mmap[offset..end];
+            let _ = Self::decode_root_from_payload(payload, flags, config)?;
             return Ok(());
         }
 
@@ -419,21 +590,26 @@ impl Cache {
                         Self::CACHE_ENCODING_FIXED => config_fixed,
                         _ => return Err(format!("unsupported cache encoding {encoding}")),
                     };
-                    let payload = if version == Self::CACHE_VERSION {
-                        if let Some((payload_len, _)) = Self::parse_cache_v2_meta(&mmap) {
-                            let end = offset
-                                .checked_add(payload_len as usize)
-                                .ok_or_else(|| "invalid v2 cache length".to_string())?;
-                            if end > mmap.len() {
-                                return Err("truncated v2 cache payload".to_string());
-                            }
-                            &mmap[offset..end]
-                        } else {
-                            &mmap[offset..]
+                    if version == Self::CACHE_VERSION {
+                        let Some((flags, payload_len, _)) = Self::parse_cache_v2_meta(&mmap) else {
+                            return Err("invalid v2 cache meta".to_string());
+                        };
+                        let end = offset
+                            .checked_add(payload_len as usize)
+                            .ok_or_else(|| "invalid v2 cache length".to_string())?;
+                        if end > mmap.len() {
+                            return Err("truncated v2 cache payload".to_string());
                         }
-                    } else {
-                        &mmap[offset..]
-                    };
+                        let payload = &mmap[offset..end];
+                        let r = Self::decode_root_from_payload(payload, flags, config)?;
+                        println!("Deserialized cache via mmap in {:?}", start_time.elapsed());
+                        let relink_start = std::time::Instant::now();
+                        Self::relink_parents(Rc::clone(&r), None, None);
+                        println!("Relinked parents in {:?}", relink_start.elapsed());
+                        return Ok((r, version));
+                    }
+
+                    let payload = &mmap[offset..];
                     let r = Self::decode_root_from_bytes(payload, config)?;
                     println!("Deserialized cache via mmap in {:?}", start_time.elapsed());
                     let relink_start = std::time::Instant::now();
@@ -451,6 +627,16 @@ impl Cache {
                         return Ok((r, 0));
                     }
                     Err(e) => mmap_error = Some(e),
+                }
+                if let Ok(r) = Self::decode_csharp_cache_from_bytes(&mmap) {
+                    println!(
+                        "Deserialized C# cache via mmap in {:?}",
+                        start_time.elapsed()
+                    );
+                    let relink_start = std::time::Instant::now();
+                    Self::relink_parents(Rc::clone(&r), None, None);
+                    println!("Relinked parents in {:?}", relink_start.elapsed());
+                    return Ok((r, 0));
                 }
                 match Self::decode_root_from_bytes(&mmap, config_fixed) {
                     Ok(r) => {
@@ -496,6 +682,37 @@ impl Cache {
                     if reader.read_exact(&mut extra).is_err() {
                         return Err("truncated v2 cache header".to_string());
                     }
+                    let flags = extra[0];
+                    let payload_len = u64::from_le_bytes(
+                        extra[1..9]
+                            .try_into()
+                            .map_err(|_| "invalid v2 cache length".to_string())?,
+                    );
+                    let payload_crc32 = u32::from_le_bytes(
+                        extra[9..13]
+                            .try_into()
+                            .map_err(|_| "invalid v2 cache checksum".to_string())?,
+                    );
+                    let mut payload = vec![0u8; payload_len as usize];
+                    reader
+                        .read_exact(&mut payload)
+                        .map_err(|_| "truncated v2 cache payload".to_string())?;
+
+                    let mut hasher = Hasher::new();
+                    hasher.update(&payload);
+                    let actual = hasher.finalize();
+                    if actual != payload_crc32 {
+                        return Err(format!(
+                            "v2 cache checksum mismatch (expected {payload_crc32:08X}, got {actual:08X})"
+                        ));
+                    }
+
+                    let r = Self::decode_root_from_payload(&payload, flags, config)?;
+                    println!("Deserialized cache in {:?}", start_time.elapsed());
+                    let relink_start = std::time::Instant::now();
+                    Self::relink_parents(Rc::clone(&r), None, None);
+                    println!("Relinked parents in {:?}", relink_start.elapsed());
+                    return Ok((r, version));
                 }
                 let r = Self::decode_root_from_reader(&mut reader, config)?;
                 println!("Deserialized cache in {:?}", start_time.elapsed());
@@ -508,6 +725,13 @@ impl Cache {
 
         if let Ok(file) = File::open(path) {
             let mut reader = BufReader::with_capacity(16 * 1024 * 1024, file);
+            if let Ok(r) = Self::decode_csharp_cache_from_reader(&mut reader) {
+                println!("Deserialized C# cache in {:?}", start_time.elapsed());
+                let relink_start = std::time::Instant::now();
+                Self::relink_parents(Rc::clone(&r), None, None);
+                println!("Relinked parents in {:?}", relink_start.elapsed());
+                return Ok((r, 0));
+            }
             match Self::decode_root_from_reader(&mut reader, config_varint) {
                 Ok(r) => {
                     println!("Deserialized cache in {:?}", start_time.elapsed());
@@ -544,18 +768,6 @@ impl Cache {
         }
 
         Err("cache read failed".to_string())
-    }
-
-    fn prepare_for_serialize(root: Rc<RefCell<RvFile>>) {
-        let mut stack = vec![Rc::clone(&root)];
-        while let Some(node) = stack.pop() {
-            let mut n = node.borrow_mut();
-            n.cache_dirty = false;
-            n.dat_index_for_serde = n.dat.as_ref().map(|d| d.borrow().dat_index);
-            for child in &n.children {
-                stack.push(Rc::clone(child));
-            }
-        }
     }
 
     fn relink_parents(
@@ -618,6 +830,365 @@ impl Cache {
                 ));
             }
         }
+    }
+
+    fn decode_csharp_cache_from_reader<R: std::io::Read>(
+        reader: &mut R,
+    ) -> Result<Rc<RefCell<RvFile>>, String> {
+        let mut bytes = Vec::new();
+        reader
+            .read_to_end(&mut bytes)
+            .map_err(|_| "failed to read csharp cache bytes".to_string())?;
+        Self::decode_csharp_cache_from_bytes(&bytes)
+    }
+
+    fn decode_csharp_cache_from_bytes(bytes: &[u8]) -> Result<Rc<RefCell<RvFile>>, String> {
+        if bytes.len() < 4 + 8 {
+            return Err("truncated csharp cache".to_string());
+        }
+        let version = i32::from_le_bytes(bytes[0..4].try_into().unwrap());
+        if version != 2 && version != 3 {
+            return Err("not a csharp cache".to_string());
+        }
+        let marker = u64::from_le_bytes(bytes[bytes.len() - 8..].try_into().unwrap());
+        if marker != Self::CSHARP_END_MARKER {
+            return Err("csharp cache missing end marker".to_string());
+        }
+
+        let mut r = CSharpCacheReader::new(bytes);
+        let version = r.read_i32_le()?;
+        if version != 2 && version != 3 {
+            return Err("unsupported csharp cache version".to_string());
+        }
+
+        let root = Self::read_csharp_rvfile(&mut r, version, true, false)?;
+        if r.remaining() < 8 {
+            return Err("csharp cache truncated after root".to_string());
+        }
+        let eof = r.read_u64_le()?;
+        if eof != Self::CSHARP_END_MARKER {
+            return Err("csharp cache invalid end marker".to_string());
+        }
+
+        Self::csharp_update_fix_tosort_status(Rc::clone(&root));
+        Ok(root)
+    }
+
+    fn csharp_update_fix_tosort_status(root: Rc<RefCell<RvFile>>) {
+        let children = root.borrow().children.clone();
+        let want = ToSortDirType::TO_SORT_PRIMARY | ToSortDirType::TO_SORT_CACHE;
+        if children.iter().any(|c| c.borrow().to_sort_status_is(want)) {
+            return;
+        }
+        const OLD_PRIMARY: u32 = 1 << 30;
+        const OLD_CACHE: u32 = 1 << 31;
+        for child in children {
+            let mut c = child.borrow_mut();
+            let bits = c.file_status.bits();
+            if bits & OLD_PRIMARY != 0 {
+                c.to_sort_type.insert(ToSortDirType::TO_SORT_PRIMARY);
+            }
+            if bits & OLD_CACHE != 0 {
+                c.to_sort_type.insert(ToSortDirType::TO_SORT_CACHE);
+            }
+            let cleared = bits & !(OLD_PRIMARY | OLD_CACHE);
+            c.file_status = crate::rv_file::FileStatus::from_bits_retain(cleared);
+        }
+    }
+
+    fn game_data_from_u8(id: u8) -> Option<crate::rv_game::GameData> {
+        use crate::rv_game::GameData;
+        Some(match id {
+            11 => GameData::Id,
+            1 => GameData::Description,
+            2 => GameData::RomOf,
+            3 => GameData::IsBios,
+            4 => GameData::Sourcefile,
+            5 => GameData::CloneOf,
+            24 => GameData::CloneOfId,
+            6 => GameData::SampleOf,
+            7 => GameData::Board,
+            8 => GameData::Year,
+            9 => GameData::Manufacturer,
+            10 => GameData::EmuArc,
+            12 => GameData::Publisher,
+            13 => GameData::Developer,
+            14 => GameData::Genre,
+            15 => GameData::SubGenre,
+            16 => GameData::Ratings,
+            17 => GameData::Score,
+            18 => GameData::Players,
+            19 => GameData::Enabled,
+            20 => GameData::CRC,
+            21 => GameData::RelatedTo,
+            22 => GameData::Source,
+            23 => GameData::Category,
+            _ => return None,
+        })
+    }
+
+    fn dat_data_from_u8(id: u8) -> Option<crate::rv_dat::DatData> {
+        use crate::rv_dat::DatData;
+        Some(match id {
+            0 => DatData::Id,
+            1 => DatData::DatName,
+            2 => DatData::DatRootFullName,
+            3 => DatData::RootDir,
+            4 => DatData::Description,
+            5 => DatData::Category,
+            6 => DatData::Version,
+            7 => DatData::Date,
+            8 => DatData::Author,
+            9 => DatData::Email,
+            10 => DatData::HomePage,
+            11 => DatData::Url,
+            12 => DatData::FileType,
+            13 => DatData::MergeType,
+            14 => DatData::SuperDat,
+            15 => DatData::DirSetup,
+            16 => DatData::Header,
+            17 => DatData::SubDirType,
+            18 => DatData::Compression,
+            _ => return None,
+        })
+    }
+
+    fn read_csharp_rvfile(
+        r: &mut CSharpCacheReader<'_>,
+        version: i32,
+        is_root: bool,
+        force_in_to_sort: bool,
+    ) -> Result<Rc<RefCell<RvFile>>, String> {
+        use dat_reader::enums::{DatStatus, FileType, GotStatus, HeaderFileType, ZipStructure};
+
+        let file_type = if is_root {
+            FileType::Dir
+        } else {
+            let ft = r.read_u8()?;
+            match ft {
+                0 => FileType::UnSet,
+                1 => FileType::Dir,
+                2 => FileType::Zip,
+                3 => FileType::SevenZip,
+                4 => FileType::File,
+                5 => FileType::FileZip,
+                6 => FileType::FileSevenZip,
+                100 => FileType::FileOnly,
+                _ => FileType::UnSet,
+            }
+        };
+
+        let flags = r.read_u32_le()?;
+
+        let name = r.read_dotnet_string()?;
+        let file_name = r.read_dotnet_string()?;
+        let file_mod_time_stamp = r.read_i64_le()?;
+
+        let has_dat = flags & (1 << 16) != 0;
+        let dat_index = if has_dat {
+            Some(r.read_i32_le()?)
+        } else {
+            None
+        };
+
+        let mut dat_status = match r.read_u8()? {
+            0 => DatStatus::InDatCollect,
+            1 => DatStatus::InDatMerged,
+            2 => DatStatus::InDatNoDump,
+            3 => DatStatus::NotInDat,
+            4 => DatStatus::InToSort,
+            5 => DatStatus::InDatMIA,
+            _ => DatStatus::NotInDat,
+        };
+        if force_in_to_sort {
+            dat_status = DatStatus::InToSort;
+        }
+        let got_status = match r.read_u8()? {
+            0 => GotStatus::NotGot,
+            1 => GotStatus::Got,
+            2 => GotStatus::Corrupt,
+            3 => GotStatus::FileLocked,
+            _ => GotStatus::NotGot,
+        };
+
+        let is_compressed_dir = file_type == FileType::Zip || file_type == FileType::SevenZip;
+        let mut zip_dat_struct: u8 = 0;
+        if is_compressed_dir {
+            if version >= 3 {
+                zip_dat_struct = r.read_u8()?;
+            } else if dat_status == DatStatus::InDatCollect {
+                zip_dat_struct = match file_type {
+                    FileType::SevenZip => ZipStructure::SevenZipSLZMA as u8,
+                    _ => ZipStructure::ZipTrrnt as u8,
+                };
+            }
+        }
+        let mut zip_struct = ZipStructure::None;
+        if is_compressed_dir {
+            let zs = r.read_u8()?;
+            zip_struct = match zs {
+                0 => ZipStructure::None,
+                1 => ZipStructure::ZipTrrnt,
+                2 => ZipStructure::ZipTDC,
+                4 => ZipStructure::SevenZipTrrnt,
+                5 => ZipStructure::ZipZSTD,
+                8 => ZipStructure::SevenZipSLZMA,
+                9 => ZipStructure::SevenZipNLZMA,
+                10 => ZipStructure::SevenZipSZSTD,
+                11 => ZipStructure::SevenZipNZSTD,
+                _ => ZipStructure::None,
+            };
+            if file_type == FileType::SevenZip && zip_struct == ZipStructure::ZipTrrnt {
+                zip_struct = ZipStructure::SevenZipSLZMA;
+            }
+            if file_type == FileType::SevenZip
+                && dat_status == DatStatus::InDatCollect
+                && zip_dat_struct == ZipStructure::ZipTrrnt as u8
+            {
+                zip_dat_struct = ZipStructure::SevenZipSLZMA as u8;
+            }
+        }
+
+        let has_tree = flags & (1 << 14) != 0;
+        let has_game = flags & (1 << 15) != 0;
+        let has_dir_dat = flags & (1 << 17) != 0;
+        let has_children = flags & (1 << 18) != 0;
+
+        let mut node = RvFile::new(file_type);
+        node.name = name;
+        node.file_name = file_name;
+        node.file_mod_time_stamp = file_mod_time_stamp;
+        node.dat_status = dat_status;
+        node.got_status = got_status;
+        node.zip_struct = zip_struct;
+        node.zip_dat_struct = zip_dat_struct;
+        if let Some(idx) = dat_index {
+            node.dat_index_for_serde = Some(idx);
+        }
+        node.rep_status_reset();
+
+        if has_tree {
+            node.tree_expanded = r.read_bool()?;
+            node.tree_checked = match r.read_u8()? {
+                0 => crate::rv_file::TreeSelect::UnSelected,
+                1 => crate::rv_file::TreeSelect::Selected,
+                2 => crate::rv_file::TreeSelect::Locked,
+                _ => crate::rv_file::TreeSelect::Selected,
+            };
+        }
+
+        if has_game {
+            let c = r.read_u8()? as usize;
+            let mut game = crate::rv_game::RvGame::new();
+            for _ in 0..c {
+                let id = r.read_u8()?;
+                let val = r.read_dotnet_string()?;
+                if let Some(k) = Self::game_data_from_u8(id) {
+                    game.add_data(k, &val);
+                }
+            }
+            node.game = Some(Rc::new(RefCell::new(game)));
+        }
+
+        let mut dir_dats: Vec<Rc<RefCell<crate::rv_dat::RvDat>>> = Vec::new();
+        if has_dir_dat {
+            let count = r.read_i32_le()? as usize;
+            for i in 0..count {
+                let time_stamp = r.read_i64_le()?;
+                let dat_flags = r.read_u8()?;
+                let meta_count = r.read_u8()? as usize;
+                let mut dat = crate::rv_dat::RvDat::new();
+                dat.dat_index = i as i32;
+                dat.time_stamp = time_stamp;
+                dat.dat_flags = crate::rv_dat::DatFlags::from_bits_retain(dat_flags);
+                for _ in 0..meta_count {
+                    let id = r.read_u8()?;
+                    let val = r.read_dotnet_string()?;
+                    if let Some(k) = Self::dat_data_from_u8(id) {
+                        dat.set_data(k, Some(val));
+                    }
+                }
+                dir_dats.push(Rc::new(RefCell::new(dat)));
+            }
+            node.dir_dats = dir_dats.clone();
+        }
+
+        let mut children: Vec<Rc<RefCell<RvFile>>> = Vec::new();
+        if has_children {
+            let count = r.read_i32_le()? as usize;
+            for i in 0..count {
+                let child_force = force_in_to_sort || (is_root && i > 0);
+                let child = Self::read_csharp_rvfile(r, version, false, child_force)?;
+                children.push(child);
+            }
+        }
+        node.children = children;
+
+        let has_size = flags & (1 << 0) != 0;
+        let has_crc = flags & (1 << 1) != 0;
+        let has_sha1 = flags & (1 << 2) != 0;
+        let has_md5 = flags & (1 << 3) != 0;
+        let has_header_file_type = flags & (1 << 4) != 0;
+        let has_alt_size = flags & (1 << 5) != 0;
+        let has_alt_crc = flags & (1 << 6) != 0;
+        let has_alt_sha1 = flags & (1 << 7) != 0;
+        let has_alt_md5 = flags & (1 << 8) != 0;
+        let has_merge = flags & (1 << 9) != 0;
+        let has_status = flags & (1 << 10) != 0;
+        let has_zip_file_index = flags & (1 << 11) != 0;
+        let has_zip_file_header = flags & (1 << 12) != 0;
+        let has_chd_version = flags & (1 << 13) != 0;
+        let has_to_sort_status = flags & (1 << 19) != 0;
+
+        if has_size {
+            node.size = Some(r.read_u64_le()?);
+        }
+        if has_crc {
+            node.crc = Some(r.read_byte_array_u8len()?);
+        }
+        if has_sha1 {
+            node.sha1 = Some(r.read_byte_array_u8len()?);
+        }
+        if has_md5 {
+            node.md5 = Some(r.read_byte_array_u8len()?);
+        }
+        if has_header_file_type {
+            node.header_file_type = HeaderFileType::from_bits_retain(r.read_u8()?);
+        }
+        if has_alt_size {
+            node.alt_size = Some(r.read_u64_le()?);
+        }
+        if has_alt_crc {
+            node.alt_crc = Some(r.read_byte_array_u8len()?);
+        }
+        if has_alt_sha1 {
+            node.alt_sha1 = Some(r.read_byte_array_u8len()?);
+        }
+        if has_alt_md5 {
+            node.alt_md5 = Some(r.read_byte_array_u8len()?);
+        }
+        if has_merge {
+            node.merge = r.read_dotnet_string()?;
+        }
+        if has_status {
+            node.status = Some(r.read_dotnet_string()?);
+        }
+        if has_zip_file_index {
+            let _ = r.read_i32_le()?;
+        }
+        if has_zip_file_header {
+            node.local_header_offset = Some(r.read_u64_le()?);
+        }
+        if has_chd_version {
+            node.chd_version = Some(r.read_i32_le()? as u32);
+        }
+        if has_to_sort_status {
+            node.to_sort_type = ToSortDirType::from_bits_retain(r.read_u8()?);
+        }
+        let file_status_bits = r.read_u32_le()?;
+        node.file_status = crate::rv_file::FileStatus::from_bits_retain(file_status_bits);
+
+        Ok(Rc::new(RefCell::new(node)))
     }
 }
 

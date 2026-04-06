@@ -1,22 +1,39 @@
 impl FindFixes {
     /// Recursively scans the tree to pair `Missing` files with unassigned `Got` files.
     pub fn scan_files(root: Rc<RefCell<RvFile>>) {
+        let control = ProcessControl::new();
+        Self::scan_files_with_control(root, &control);
+    }
+
+    pub fn scan_files_with_control(root: Rc<RefCell<RvFile>>, control: &ProcessControl) {
         info!("Starting FindFixes pass...");
         Self::reset_status(Rc::clone(&root));
-
-        // TODO(perf): avoid collecting whole-tree vectors when possible; build indexes incrementally during traversal.
-        // TODO(threading): parallelize expensive steps (hash-index construction, redundant-match checks) with careful Rc/RefCell boundaries.
-        // TODO(threading): consider splitting FindFixes into phases with progress reporting/cancellation.
-        // TODO(perf): reduce repeated allocations in the candidate-building path (seen HashSets, candidate Vecs).
         let mut all_dat_files = Vec::new();
+        if control.is_soft_stop_requested() || control.is_hard_stop_requested() {
+            crate::task_reporter::task_log("Find Fixes cancelled.");
+            return;
+        }
+
+        crate::task_reporter::task_log("Find Fixes: collecting DAT files...");
         Self::get_all_dat_files(Rc::clone(&root), &mut all_dat_files);
         Self::hydrate_physical_dat_files(&all_dat_files);
+        if control.is_soft_stop_requested() || control.is_hard_stop_requested() {
+            crate::task_reporter::task_log("Find Fixes cancelled.");
+            return;
+        }
+        crate::task_reporter::task_log("Find Fixes: hydrating physical metadata...");
 
+        if control.is_soft_stop_requested() || control.is_hard_stop_requested() {
+            crate::task_reporter::task_log("Find Fixes cancelled.");
+            return;
+        }
         let mut files_got = Vec::new();
+        crate::task_reporter::task_log("Find Fixes: collecting Got/Missing sets...");
         let mut files_missing = Vec::new();
         Self::get_selected_files(Rc::clone(&root), &mut files_got, &mut files_missing);
         let mut all_got_files = Vec::new();
         Self::get_all_got_files(Rc::clone(&root), &mut all_got_files);
+
 
         info!(
             "FindFixes: Collected {} Got files and {} Missing files.",
@@ -24,6 +41,7 @@ impl FindFixes {
             files_missing.len()
         );
 
+        crate::task_reporter::task_log("Find Fixes: indexing hashes...");
         let hash_data = Self::collect_hash_data(&files_got);
         let (crc_map, sha1_map, md5_map) = Self::build_hash_maps(&hash_data);
 
@@ -34,6 +52,9 @@ impl FindFixes {
         let missing_hash_data = Self::collect_hash_data(&files_missing);
         let (missing_crc_map, missing_sha1_map, missing_md5_map) =
             Self::build_hash_maps(&missing_hash_data);
+
+        let (got_identity_keys, got_identity_retains, got_retained_counts) =
+            Self::build_retained_physical_identity_index(&files_got);
 
         let mut used_got_indices = HashSet::new();
 
@@ -57,7 +78,14 @@ impl FindFixes {
         let mut seen_epoch = vec![0u32; files_got.len()];
         let mut epoch = 1u32;
 
-        for missing in &files_missing {
+        crate::task_reporter::task_log("Find Fixes: matching missing files...");
+        for (missing_idx, missing) in files_missing.iter().enumerate() {
+            if (missing_idx & 0x3FF) == 0
+                && (control.is_soft_stop_requested() || control.is_hard_stop_requested())
+            {
+                crate::task_reporter::task_log("Find Fixes cancelled.");
+                return;
+            }
             let mut missing_ref = missing.borrow_mut();
             let size = missing_ref.size.unwrap_or(0);
 
@@ -106,7 +134,15 @@ impl FindFixes {
                 }
             }
             if !crc_candidates.is_empty() {
-                found_got_idx = Self::preferred_got_idx(&crc_candidates, &files_got, &used_got_indices);
+                found_got_idx = Self::preferred_got_idx(
+                    &crc_candidates,
+                    &files_got,
+                    &used_got_indices,
+                    &got_identity_keys,
+                    &got_identity_retains,
+                    &got_retained_counts,
+                    &missing_ref,
+                );
             }
 
             if found_got_idx.is_none() {
@@ -143,7 +179,15 @@ impl FindFixes {
                 }
                 if !sha1_candidates.is_empty() {
                     found_got_idx =
-                        Self::preferred_got_idx(&sha1_candidates, &files_got, &used_got_indices);
+                        Self::preferred_got_idx(
+                            &sha1_candidates,
+                            &files_got,
+                            &used_got_indices,
+                            &got_identity_keys,
+                            &got_identity_retains,
+                            &got_retained_counts,
+                            &missing_ref,
+                        );
                 }
             }
 
@@ -176,7 +220,15 @@ impl FindFixes {
                 }
                 if !md5_candidates.is_empty() {
                     found_got_idx =
-                        Self::preferred_got_idx(&md5_candidates, &files_got, &used_got_indices);
+                        Self::preferred_got_idx(
+                            &md5_candidates,
+                            &files_got,
+                            &used_got_indices,
+                            &got_identity_keys,
+                            &got_identity_retains,
+                            &got_retained_counts,
+                            &missing_ref,
+                        );
                 }
             }
 
@@ -228,6 +280,43 @@ impl FindFixes {
             }
         }
 
+        for got in &files_got {
+            let should_check = { got.borrow().rep_status() == RepStatus::NeededForFix };
+            if !should_check {
+                continue;
+            }
+            for missing in &files_missing {
+                let missing_ref = missing.borrow();
+                if !matches!(
+                    missing_ref.rep_status(),
+                    RepStatus::CanBeFixed | RepStatus::CanBeFixedMIA
+                ) {
+                    continue;
+                }
+                if !Self::missing_can_be_fixed_by_got(&missing_ref, &got.borrow()) {
+                    continue;
+                }
+                let same_archive_parent = {
+                    let a = got.borrow().parent.as_ref().and_then(|p| p.upgrade());
+                    let b = missing_ref.parent.as_ref().and_then(|p| p.upgrade());
+                    a.zip(b).is_some_and(|(a, b)| {
+                        Rc::ptr_eq(&a, &b)
+                            && matches!(a.borrow().file_type, FileType::Zip | FileType::SevenZip)
+                    })
+                };
+                let same_game = {
+                    let a = got.borrow().game.as_ref().map(Rc::clone);
+                    let b = missing_ref.game.as_ref().map(Rc::clone);
+                    a.zip(b).is_some_and(|(a, b)| Rc::ptr_eq(&a, &b))
+                };
+                if same_archive_parent || same_game {
+                    got.borrow_mut().set_rep_status(RepStatus::Rename);
+                    got.borrow_mut().cached_stats = None;
+                    break;
+                }
+            }
+        }
+
         for (idx, got) in files_got.iter().enumerate() {
             let (got_status, rep_status, dat_status) = {
                 let got_ref = got.borrow();
@@ -238,7 +327,12 @@ impl FindFixes {
                     dat_status,
                     DatStatus::InDatMerged | DatStatus::InDatNoDump
                 ) {
-                    Some(Self::merged_cleanup_status(idx, &files_got))
+                    Some(Self::merged_cleanup_status_with_shared(
+                        idx,
+                        &got_identity_keys,
+                        &got_identity_retains,
+                        &got_retained_counts,
+                    ))
                 } else {
                     None
                 };
@@ -267,6 +361,7 @@ impl FindFixes {
             };
 
             if current_rep_status == RepStatus::NeededForFix
+                || current_rep_status == RepStatus::Rename
                 || current_rep_status == RepStatus::Correct
                 || current_rep_status == RepStatus::Delete
                 || current_rep_status == RepStatus::MoveToCorrupt
@@ -278,7 +373,12 @@ impl FindFixes {
                 dat_status,
                 DatStatus::InDatMerged | DatStatus::InDatNoDump
             ) {
-                Some(Self::merged_cleanup_status(idx, &files_got))
+                Some(Self::merged_cleanup_status_with_shared(
+                    idx,
+                    &got_identity_keys,
+                    &got_identity_retains,
+                    &got_retained_counts,
+                ))
             } else {
                 None
             };
@@ -350,10 +450,15 @@ impl FindFixes {
         }
 
         crate::clean_partial::apply_complete_only(Rc::clone(&root));
-        Self::apply_without_reset(Rc::clone(&root));
+        Self::apply_without_reset(Rc::clone(&root), control);
     }
 
-    fn apply_without_reset(root: Rc<RefCell<RvFile>>) {
+    fn apply_without_reset(root: Rc<RefCell<RvFile>>, control: &ProcessControl) {
+        if control.is_soft_stop_requested() || control.is_hard_stop_requested() {
+            crate::task_reporter::task_log("Find Fixes cancelled.");
+            return;
+        }
+
         let mut all_dat_files = Vec::new();
         Self::get_all_dat_files(Rc::clone(&root), &mut all_dat_files);
         Self::hydrate_physical_dat_files(&all_dat_files);
@@ -374,6 +479,9 @@ impl FindFixes {
         let missing_hash_data = Self::collect_hash_data(&files_missing);
         let (missing_crc_map, missing_sha1_map, missing_md5_map) =
             Self::build_hash_maps(&missing_hash_data);
+
+        let (got_identity_keys, got_identity_retains, got_retained_counts) =
+            Self::build_retained_physical_identity_index(&files_got);
 
         let mut used_got_indices = HashSet::new();
 
@@ -397,7 +505,13 @@ impl FindFixes {
         let mut seen_epoch = vec![0u32; files_got.len()];
         let mut epoch = 1u32;
 
-        for missing in &files_missing {
+        for (missing_idx, missing) in files_missing.iter().enumerate() {
+            if (missing_idx & 0x3FF) == 0
+                && (control.is_soft_stop_requested() || control.is_hard_stop_requested())
+            {
+                crate::task_reporter::task_log("Find Fixes cancelled.");
+                return;
+            }
             let mut missing_ref = missing.borrow_mut();
             let size = missing_ref.size.unwrap_or(0);
             if matches!(
@@ -446,7 +560,15 @@ impl FindFixes {
                 }
             }
             if !crc_candidates.is_empty() {
-                found_got_idx = Self::preferred_got_idx(&crc_candidates, &files_got, &used_got_indices);
+                found_got_idx = Self::preferred_got_idx(
+                    &crc_candidates,
+                    &files_got,
+                    &used_got_indices,
+                    &got_identity_keys,
+                    &got_identity_retains,
+                    &got_retained_counts,
+                    &missing_ref,
+                );
             }
 
             if found_got_idx.is_none() {
@@ -479,7 +601,15 @@ impl FindFixes {
                 }
                 if !sha1_candidates.is_empty() {
                     found_got_idx =
-                        Self::preferred_got_idx(&sha1_candidates, &files_got, &used_got_indices);
+                        Self::preferred_got_idx(
+                            &sha1_candidates,
+                            &files_got,
+                            &used_got_indices,
+                            &got_identity_keys,
+                            &got_identity_retains,
+                            &got_retained_counts,
+                            &missing_ref,
+                        );
                 }
             }
 
@@ -513,7 +643,15 @@ impl FindFixes {
                 }
                 if !md5_candidates.is_empty() {
                     found_got_idx =
-                        Self::preferred_got_idx(&md5_candidates, &files_got, &used_got_indices);
+                        Self::preferred_got_idx(
+                            &md5_candidates,
+                            &files_got,
+                            &used_got_indices,
+                            &got_identity_keys,
+                            &got_identity_retains,
+                            &got_retained_counts,
+                            &missing_ref,
+                        );
                 }
             }
 
@@ -556,6 +694,38 @@ impl FindFixes {
             }
         }
 
+        for got in &files_got {
+            let should_check = { got.borrow().rep_status() == RepStatus::NeededForFix };
+            if !should_check {
+                continue;
+            }
+            for missing in &files_missing {
+                let missing_ref = missing.borrow();
+                if !matches!(
+                    missing_ref.rep_status(),
+                    RepStatus::CanBeFixed | RepStatus::CanBeFixedMIA
+                ) {
+                    continue;
+                }
+                if !Self::missing_can_be_fixed_by_got(&missing_ref, &got.borrow()) {
+                    continue;
+                }
+                let same_archive_parent = {
+                    let a = got.borrow().parent.as_ref().and_then(|p| p.upgrade());
+                    let b = missing_ref.parent.as_ref().and_then(|p| p.upgrade());
+                    a.zip(b).is_some_and(|(a, b)| {
+                        Rc::ptr_eq(&a, &b)
+                            && matches!(a.borrow().file_type, FileType::Zip | FileType::SevenZip)
+                    })
+                };
+                if same_archive_parent {
+                    got.borrow_mut().set_rep_status(RepStatus::Rename);
+                    got.borrow_mut().cached_stats = None;
+                    break;
+                }
+            }
+        }
+
         for (idx, got) in files_got.iter().enumerate() {
             let (got_status, rep_status, dat_status) = {
                 let got_ref = got.borrow();
@@ -564,7 +734,12 @@ impl FindFixes {
             if got_status == GotStatus::Corrupt {
                 let merged_cleanup_status =
                     if matches!(dat_status, DatStatus::InDatMerged | DatStatus::InDatNoDump) {
-                        Some(Self::merged_cleanup_status(idx, &files_got))
+                        Some(Self::merged_cleanup_status_with_shared(
+                            idx,
+                            &got_identity_keys,
+                            &got_identity_retains,
+                            &got_retained_counts,
+                        ))
                     } else {
                         None
                     };
@@ -589,6 +764,7 @@ impl FindFixes {
                 (got_ref.rep_status(), got_ref.dat_status())
             };
             if current_rep_status == RepStatus::NeededForFix
+                || current_rep_status == RepStatus::Rename
                 || current_rep_status == RepStatus::Correct
                 || current_rep_status == RepStatus::Delete
                 || current_rep_status == RepStatus::MoveToCorrupt
@@ -597,7 +773,12 @@ impl FindFixes {
             }
             let merged_cleanup_status =
                 if matches!(dat_status, DatStatus::InDatMerged | DatStatus::InDatNoDump) {
-                    Some(Self::merged_cleanup_status(idx, &files_got))
+                    Some(Self::merged_cleanup_status_with_shared(
+                        idx,
+                        &got_identity_keys,
+                        &got_identity_retains,
+                        &got_retained_counts,
+                    ))
                 } else {
                     None
                 };

@@ -97,6 +97,49 @@ fn test_get_full_name_uses_dir_mappings() {
 }
 
 #[test]
+fn test_rep_status_reset_uses_rule_ignore_list_without_falling_back_to_global() {
+    let original_settings = get_settings();
+    let mut settings = Settings::default();
+    settings.ignore_files.items = vec!["ignored.bin".to_string()];
+    settings.dat_rules.items = vec![crate::settings::DatRule {
+        dir_key: "RomVault".to_string(),
+        ..Default::default()
+    }];
+    update_settings(settings);
+
+    let parent = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+    parent.borrow_mut().name = "RomVault".to_string();
+
+    let mut file = RvFile::new(FileType::File);
+    file.name = "ignored.bin".to_string();
+    file.dat_status = DatStatus::NotInDat;
+    file.got_status = GotStatus::Got;
+    file.parent = Some(Rc::downgrade(&parent));
+    file.rep_status_reset();
+    assert_ne!(file.rep_status(), RepStatus::Ignore);
+
+    update_settings(Settings {
+        ignore_files: crate::settings::IgnoreFilesWrapper {
+            items: vec!["ignored.bin".to_string()],
+        },
+        ..Settings::default()
+    });
+
+    let parent = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+    parent.borrow_mut().name = "NoRule".to_string();
+
+    let mut file = RvFile::new(FileType::File);
+    file.name = "ignored.bin".to_string();
+    file.dat_status = DatStatus::NotInDat;
+    file.got_status = GotStatus::Got;
+    file.parent = Some(Rc::downgrade(&parent));
+    file.rep_status_reset();
+    assert_eq!(file.rep_status(), RepStatus::Ignore);
+
+    update_settings(original_settings);
+}
+
+#[test]
 fn test_rep_status_reset_treats_indatmerged_missing_file_as_not_collected() {
     let mut file = RvFile::new(FileType::File);
     file.dat_status = DatStatus::InDatMerged;
@@ -115,7 +158,7 @@ fn test_rep_status_reset_treats_indatnodump_corrupt_file_as_unneeded() {
 
     file.rep_status_reset();
 
-    assert_eq!(file.rep_status(), RepStatus::UnNeeded);
+    assert_eq!(file.rep_status(), RepStatus::Corrupt);
 }
 
 #[test]

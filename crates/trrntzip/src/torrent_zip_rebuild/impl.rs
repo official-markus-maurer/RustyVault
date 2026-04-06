@@ -25,8 +25,6 @@ use std::path::Path;
 ///
 /// Implementation notes:
 /// - Rebuilds the archive in a deterministic order and applies standardized timestamps/flags.
-///
-/// TODO: Guarantee full byte-for-byte deterministic layout for strict TorrentZip validation.
 pub struct TorrentZipRebuild;
 
 struct RawZipEntry {

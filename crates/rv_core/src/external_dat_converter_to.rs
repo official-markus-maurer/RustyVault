@@ -16,7 +16,6 @@ use std::rc::Rc;
 /// Implementation notes:
 /// - Performs a direct structural mapping from `RvFile` to `DatDir` / `DatGame`, gated by filters.
 ///
-/// TODO: Add an optional cleanup pass to remove redundant empty directories from exported DATs.
 pub struct ExternalDatConverterTo {
     /// Include the XML header block.
     pub use_header: bool,
@@ -34,6 +33,7 @@ pub struct ExternalDatConverterTo {
     pub filter_files: bool,
     /// Only include archive files.
     pub filter_zips: bool,
+    pub cleanup_redundant_empty_directories: bool,
 }
 
 impl ExternalDatConverterTo {
@@ -48,6 +48,7 @@ impl ExternalDatConverterTo {
             filter_merged: false,
             filter_files: true,
             filter_zips: true,
+            cleanup_redundant_empty_directories: true,
         }
     }
 
@@ -102,6 +103,9 @@ impl ExternalDatConverterTo {
 
         Self::archive_directory_flatten(&mut dat_header.base_dir);
         Self::remove_unneeded_directories(&mut dat_header.base_dir);
+        if self.cleanup_redundant_empty_directories {
+            Self::remove_redundant_empty_directory_markers(&mut dat_header.base_dir);
+        }
 
         Some(dat_header)
     }
@@ -344,6 +348,55 @@ impl ExternalDatConverterTo {
         }
 
         d_dir.children = kept_children;
+    }
+
+    fn remove_redundant_empty_directory_markers(d_dir: &mut DatDir) {
+        fn collect_nonempty_dir_prefixes(
+            dir: &DatDir,
+            out: &mut std::collections::HashSet<String>,
+        ) {
+            for node in &dir.children {
+                if let Some(child_dir) = node.dir() {
+                    collect_nonempty_dir_prefixes(child_dir, out);
+                    continue;
+                }
+                let name = node.name.as_str();
+                if name.ends_with('/') {
+                    continue;
+                }
+                let mut remaining = name;
+                let mut prefix = String::new();
+                while let Some((head, tail)) = remaining.split_once('/') {
+                    prefix.push_str(head);
+                    prefix.push('/');
+                    out.insert(prefix.clone());
+                    remaining = tail;
+                }
+            }
+        }
+
+        fn prune_dir(dir: &mut DatDir) {
+            let mut needed = std::collections::HashSet::new();
+            collect_nonempty_dir_prefixes(dir, &mut needed);
+
+            for node in dir.children.iter_mut() {
+                if let Some(child_dir) = node.dir_mut() {
+                    prune_dir(child_dir);
+                }
+            }
+
+            dir.children.retain(|node| {
+                if let Some(child_dir) = node.dir() {
+                    !child_dir.children.is_empty()
+                } else if node.name.ends_with('/') {
+                    needed.contains(&node.name)
+                } else {
+                    true
+                }
+            });
+        }
+
+        prune_dir(d_dir);
     }
 }
 

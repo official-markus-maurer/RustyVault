@@ -244,7 +244,7 @@ pub fn draw_left_toolbar(app: &mut RomVaultApp, ctx: &egui::Context) {
                                     .on_hover_text("Left Click: Find Fixes\nCtrl+Shift+Left Click: Find Fixes (Advanced Logging)");
                                 if find_resp.clicked() {
                                     let is_advanced = ui.input(|i| i.modifiers.ctrl && i.modifiers.shift);
-                                    app.launch_task("Find Fixes", move |tx| {
+                                    app.launch_task("Find Fixes", move |tx, control| {
                                         if is_advanced {
                                             let _ = tx.send("Running FindFixes (Advanced Logging Enabled)...".to_string());
                                         } else {
@@ -252,8 +252,10 @@ pub fn draw_left_toolbar(app: &mut RomVaultApp, ctx: &egui::Context) {
                                         }
                                         GLOBAL_DB.with(|db_ref| {
                                             if let Some(db) = db_ref.borrow().as_ref() {
-                                                FindFixes::scan_files(Rc::clone(&db.dir_root));
-                                                db.write_cache();
+                                                FindFixes::scan_files_with_control(
+                                                    Rc::clone(&db.dir_root),
+                                                    &control,
+                                                );
                                             }
                                         });
                                     });

@@ -7,7 +7,7 @@ impl DatClean {
         add_category: bool,
         cat_order: &[String],
     ) {
-        let original = std::mem::take(&mut dat_header.base_dir.children);
+        let original = dat_header.base_dir.take_children();
         dat_header.dir = Some("noautodir".to_string());
 
         let mut root_dir_name = String::new();
@@ -43,7 +43,7 @@ impl DatClean {
             }
         }
 
-        dat_header.base_dir.children.clear();
+        dat_header.base_dir.clear_children();
 
         let d_game = crate::dat_store::DatGame {
             description: dat_header.description.clone(),
@@ -99,7 +99,7 @@ impl DatClean {
             let Some(dir_set) = set.dir_mut() else {
                 continue;
             };
-            let set_children = std::mem::take(&mut dir_set.children);
+            let set_children = dir_set.take_children();
             let set_len = set_children.len();
 
             for mut rom in set_children {

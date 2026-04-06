@@ -60,6 +60,32 @@ fn test_populate_rv_dat_from_header_sets_extended_metadata() {
 }
 
 #[test]
+fn test_update_dat_applies_header_file_type_from_dat_header_and_rule() {
+    use crate::settings::{DatRule, HeaderType};
+    use dat_reader::enums::HeaderFileType;
+
+    let mut header = DatHeader {
+        header: Some("No-Intro_A7800.xml".to_string()),
+        ..Default::default()
+    };
+    header
+        .base_dir
+        .add_child(DatNode::new_file("game.bin".to_string(), FileType::File));
+
+    let rule = DatRule {
+        dir_key: "RustyVault".to_string(),
+        header_type: HeaderType::Headered,
+        ..Default::default()
+    };
+
+    DatUpdate::apply_header_rules(&mut header, &rule);
+
+    let child = header.base_dir.children[0].file().unwrap();
+    assert!(child.header_file_type.contains(HeaderFileType::A7800));
+    assert!(child.header_file_type.contains(HeaderFileType::REQUIRED));
+}
+
+#[test]
 fn test_map_dat_node_to_rv_file_marks_dat_sourced_flags() {
     let parent = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
     let dat_rc = Rc::new(RefCell::new(RvDat::new()));
@@ -212,6 +238,94 @@ fn test_update_dat_reuses_existing_dat_directory_for_case_only_name_difference()
 }
 
 #[test]
+fn test_update_dat_creates_virtual_dir_and_category_and_uses_rule_dir_name_and_overrides() {
+    use crate::settings::{DatRule, FilterType, HeaderType, MergeType};
+
+    let original_settings = get_settings();
+    let temp = tempdir().unwrap();
+    let dat_root = temp.path().join("DatRoot");
+    let nested = dat_root.join("Platforms").join("Nintendo");
+    fs::create_dir_all(&nested).unwrap();
+
+    fs::write(
+        nested.join("sample.xml"),
+        r#"<?xml version="1.0"?>
+<datafile>
+  <header>
+    <name>MyDat</name>
+    <description>DescDir</description>
+    <category>CatDir</category>
+    <id>ID-1</id>
+    <compression>zip</compression>
+    <merge>split</merge>
+  </header>
+</datafile>"#,
+    )
+    .unwrap();
+
+    let mut settings = Settings {
+        dat_root: dat_root.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    settings.dat_rules.items.push(DatRule {
+        dir_key: "RustyVault\\Platforms\\Nintendo\\MyDat".to_string(),
+        add_category_sub_dirs: true,
+        use_description_as_dir_name: true,
+        merge_override_dat: true,
+        merge: MergeType::NonMerged,
+        compression_override_dat: true,
+        compression: dat_reader::enums::FileType::SevenZip,
+        filter: FilterType::KeepAll,
+        header_type: HeaderType::Optional,
+        ..Default::default()
+    });
+    update_settings(settings);
+
+    let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+    let rustyvault = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+    rustyvault.borrow_mut().name = "RustyVault".to_string();
+    rustyvault.borrow_mut().parent = Some(Rc::downgrade(&root));
+    root.borrow_mut().child_add(Rc::clone(&rustyvault));
+
+    DatUpdate::update_dat(Rc::clone(&root), &dat_root.to_string_lossy());
+    update_settings(original_settings);
+
+    let rv = rustyvault.borrow();
+    let platforms = rv
+        .children
+        .iter()
+        .find(|c| c.borrow().name == "Platforms")
+        .unwrap();
+    let platforms = platforms.borrow();
+    let nintendo = platforms
+        .children
+        .iter()
+        .find(|c| c.borrow().name == "Nintendo")
+        .unwrap();
+    let nintendo = nintendo.borrow();
+    let cat = nintendo
+        .children
+        .iter()
+        .find(|c| c.borrow().name == "CatDir")
+        .unwrap();
+    let cat = cat.borrow();
+    let dat_dir = cat
+        .children
+        .iter()
+        .find(|c| c.borrow().name == "DescDir")
+        .unwrap();
+    let dat_dir = dat_dir.borrow();
+
+    assert_eq!(dat_dir.dir_dats.len(), 1);
+    let dat = dat_dir.dir_dats[0].borrow();
+    assert_eq!(dat.get_data(DatData::Compression), Some("7z".to_string()));
+    assert_eq!(
+        dat.get_data(DatData::MergeType),
+        Some("nonmerged".to_string())
+    );
+}
+
+#[test]
 fn test_map_dat_node_to_rv_file_preserves_existing_physical_metadata_for_matching_node() {
     let parent = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
     let dat_rc = Rc::new(RefCell::new(RvDat::new()));
@@ -292,7 +406,7 @@ fn test_map_dat_node_to_rv_file_preserves_existing_archive_state_for_matching_no
     };
     let mapped = mapped_child.borrow();
     assert_eq!(mapped.got_status(), dat_reader::enums::GotStatus::Got);
-    assert_eq!(mapped.rep_status(), crate::enums::RepStatus::Correct);
+    assert_eq!(mapped.rep_status(), crate::enums::RepStatus::DirCorrect);
     assert_eq!(mapped.zip_struct, dat_reader::enums::ZipStructure::ZipTrrnt);
     assert_eq!(mapped.file_mod_time_stamp, 123456);
 }

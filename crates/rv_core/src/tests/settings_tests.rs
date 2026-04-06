@@ -1,10 +1,102 @@
 use super::*;
+use crate::rv_file::RvFile;
+use dat_reader::enums::{DatStatus, FileType, GotStatus};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 fn with_settings_test_state(test: impl FnOnce()) {
     let original = get_settings();
     update_settings(Settings::default());
     test();
     update_settings(original);
+}
+
+#[test]
+fn test_update_settings_dedupes_dir_mappings_and_normalizes_keys() {
+    with_settings_test_state(|| {
+        let mut settings = Settings::default();
+        settings.dir_mappings.items = vec![
+            DirMapping {
+                dir_key: "RustyVault\\".to_string(),
+                dir_path: "One".to_string(),
+            },
+            DirMapping {
+                dir_key: "rustyvault".to_string(),
+                dir_path: "Two".to_string(),
+            },
+        ];
+        update_settings(settings);
+
+        let s = get_settings();
+        assert_eq!(s.dir_mappings.items.len(), 2);
+        let rv = s
+            .dir_mappings
+            .items
+            .iter()
+            .find(|m| m.dir_key == "RustyVault")
+            .unwrap();
+        assert_eq!(
+            std::path::Path::new(&rv.dir_path)
+                .file_name()
+                .and_then(|s| s.to_str()),
+            Some("One")
+        );
+        assert!(s.dir_mappings.items.iter().any(|m| m.dir_key == "ToSort"));
+    });
+}
+
+#[test]
+fn test_update_settings_dedupes_dat_rules_and_normalizes_keys() {
+    with_settings_test_state(|| {
+        let mut settings = Settings::default();
+        settings.dat_rules.items = vec![
+            DatRule {
+                dir_key: "DatRoot\\Arcade\\".to_string(),
+                single_archive: true,
+                ..Default::default()
+            },
+            DatRule {
+                dir_key: "datroot/arcade".to_string(),
+                single_archive: false,
+                ..Default::default()
+            },
+        ];
+        update_settings(settings);
+
+        let s = get_settings();
+        assert_eq!(s.dat_rules.items.len(), 1);
+        assert_eq!(s.dat_rules.items[0].dir_key, "DatRoot\\Arcade");
+        assert!(s.dat_rules.items[0].single_archive);
+    });
+}
+
+#[test]
+fn test_ignore_patterns_apply_to_db_but_scan_only_ignore_prefix_is_excluded() {
+    with_settings_test_state(|| {
+        let mut settings = Settings::default();
+        settings.ignore_files.items = vec![
+            "ignore:scanonly.bin".to_string(),
+            "regex:^dbonly\\.bin$".to_string(),
+        ];
+        update_settings(settings);
+
+        let root = Rc::new(RefCell::new(RvFile::new(FileType::Dir)));
+        root.borrow_mut().name = "Root".to_string();
+
+        let mut db_only = RvFile::new(FileType::File);
+        db_only.name = "dbonly.bin".to_string();
+        db_only.set_dat_got_status(DatStatus::NotInDat, GotStatus::Got);
+        db_only.parent = Some(Rc::downgrade(&root));
+        db_only.rep_status_reset();
+        assert_eq!(db_only.rep_status(), crate::enums::RepStatus::Ignore);
+
+        let mut scan_only = RvFile::new(FileType::File);
+        scan_only.name = "scanonly.bin".to_string();
+        scan_only.set_dat_got_status(DatStatus::NotInDat, GotStatus::Got);
+        scan_only.parent = Some(Rc::downgrade(&root));
+        scan_only.rep_status_reset();
+        assert_ne!(scan_only.rep_status(), crate::enums::RepStatus::Ignore);
+    });
 }
 
 #[test]

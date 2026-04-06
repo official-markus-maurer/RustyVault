@@ -3323,6 +3323,7 @@ dependencies = [
  "tracing",
  "trrntzip",
  "zip",
+ "zstd",
 ]
 
 [[package]]
@@ -3953,10 +3954,6 @@ dependencies = [
  "rv_io",
  "trrntzip",
 ]
-
-[[package]]
-name = "trrntzip_ui"
-version = "0.1.0"
 
 [[package]]
 name = "ttf-parser"

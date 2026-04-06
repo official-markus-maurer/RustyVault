@@ -34,10 +34,12 @@ pub fn matches_pattern(name: &str, pattern: &str) -> bool {
         return re.is_ok_and(|re| re.is_match(name));
     }
 
-    if p.contains('*') || p.contains('?') {
-        wildcard_match(p, name)
+    let p_lower = p.to_lowercase();
+    let n_lower = name.to_lowercase();
+    if p_lower.contains('*') || p_lower.contains('?') {
+        wildcard_match(&p_lower, &n_lower)
     } else {
-        p == name
+        p_lower == n_lower
     }
 }
 
@@ -75,10 +77,7 @@ impl PatternMatcher {
                 continue;
             }
 
-            #[cfg(windows)]
-            let p = p.to_ascii_lowercase();
-            #[cfg(not(windows))]
-            let p = p.to_string();
+            let p = p.to_lowercase();
 
             if p.contains('*') || p.contains('?') {
                 wildcard.push(p);
@@ -105,24 +104,15 @@ impl PatternMatcher {
             return false;
         }
 
-        #[cfg(windows)]
-        let n = name.to_ascii_lowercase();
-        #[cfg(not(windows))]
-        let n = name;
+        let n = name.to_lowercase();
 
-        #[cfg(windows)]
         let is_literal_match = self.literal.contains(n.as_str());
-        #[cfg(not(windows))]
-        let is_literal_match = self.literal.contains(n);
         if is_literal_match {
             return true;
         }
 
         for pat in &self.wildcard {
-            #[cfg(windows)]
             let is_match = wildcard_match(pat, n.as_str());
-            #[cfg(not(windows))]
-            let is_match = wildcard_match(pat, n);
             if is_match {
                 return true;
             }

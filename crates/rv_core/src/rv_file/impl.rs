@@ -328,6 +328,11 @@ impl RvFile {
         self.got_status = status;
     }
 
+    pub fn set_dat_ref(&mut self, dat: Option<Rc<RefCell<RvDat>>>) {
+        self.dat_index_for_serde = dat.as_ref().map(|d| d.borrow().dat_index);
+        self.dat = dat;
+    }
+
     /// Retrieves the calculated `RepStatus` of this node.
     pub fn rep_status(&self) -> RepStatus {
         self.rep_status

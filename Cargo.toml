@@ -9,7 +9,6 @@ members = [
     "crates/trrntzip_cmd",
     "crates/file_header_reader",
     "crates/dir2dat",
-    "crates/trrntzip_ui",
     "crates/romvault_ui"
 ]
 resolver = "2"

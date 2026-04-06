@@ -35,6 +35,7 @@ impl FindFixes {
         drop(n);
 
         for child in children {
+            child.borrow_mut().parent = Some(Rc::downgrade(&node));
             Self::get_selected_files(child, got_files, missing_files);
         }
     }
@@ -54,6 +55,7 @@ impl FindFixes {
         drop(n);
 
         for child in children {
+            child.borrow_mut().parent = Some(Rc::downgrade(&node));
             Self::get_all_got_files(child, got_files);
         }
     }
@@ -81,6 +83,7 @@ impl FindFixes {
         drop(n);
 
         for child in children {
+            child.borrow_mut().parent = Some(Rc::downgrade(&node));
             Self::get_all_dat_files(child, dat_files);
         }
     }

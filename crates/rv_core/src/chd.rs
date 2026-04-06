@@ -118,6 +118,43 @@ mod tests {
     }
 
     #[test]
+    fn chd_v4_header_parse_prefers_stored_sha1_and_detects_parent() {
+        let mut b = vec![0u8; 108];
+        b[..8].copy_from_slice(b"MComprHD");
+        b[8..12].copy_from_slice(&(108u32.to_be_bytes()));
+        b[12..16].copy_from_slice(&(4u32.to_be_bytes()));
+
+        b[48..68].copy_from_slice(&[0x22u8; 20]);
+        b[68..88].copy_from_slice(&[0x33u8; 20]);
+        b[88..108].copy_from_slice(&[0x44u8; 20]);
+
+        let info = parse_chd_header_from_bytes(&b).unwrap();
+        assert_eq!(info.version, 4);
+        assert_eq!(info.sha1.as_ref().unwrap(), &[0x22u8; 20]);
+        assert!(info.md5.is_none());
+        assert!(info.requires_parent);
+    }
+
+    #[test]
+    fn chd_v3_header_parse_uses_rawsha1_and_detects_parent() {
+        let mut b = vec![0u8; 120];
+        b[..8].copy_from_slice(b"MComprHD");
+        b[8..12].copy_from_slice(&(120u32.to_be_bytes()));
+        b[12..16].copy_from_slice(&(3u32.to_be_bytes()));
+
+        b[44..60].copy_from_slice(&[0x55u8; 16]);
+        b[60..76].copy_from_slice(&[0x66u8; 16]);
+        b[80..100].copy_from_slice(&[0x77u8; 20]);
+        b[100..120].copy_from_slice(&[0x88u8; 20]);
+
+        let info = parse_chd_header_from_bytes(&b).unwrap();
+        assert_eq!(info.version, 3);
+        assert_eq!(info.md5.as_ref().unwrap(), &[0x55u8; 16]);
+        assert_eq!(info.sha1.as_ref().unwrap(), &[0x77u8; 20]);
+        assert!(info.requires_parent);
+    }
+
+    #[test]
     fn chd_invalid_magic() {
         let b = vec![0u8; 124];
         assert!(parse_chd_header_from_bytes(&b).is_none());

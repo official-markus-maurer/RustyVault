@@ -29,9 +29,22 @@ impl ArchiveExtract {
         }
     }
 
-    fn make_out_path(out_dir: &str, archive_name: &str) -> PathBuf {
+    fn make_out_path(out_dir: &str, archive_name: &str) -> Option<PathBuf> {
         let norm = archive_name.replace('/', "\\");
-        Path::new(out_dir).join(norm)
+        let rel = Path::new(&norm);
+        let mut safe = PathBuf::new();
+        for comp in rel.components() {
+            match comp {
+                std::path::Component::Normal(p) => safe.push(p),
+                std::path::Component::CurDir => {}
+                std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_) => {
+                    return None;
+                }
+            }
+        }
+        Some(Path::new(out_dir).join(safe))
     }
 
     pub fn full_extract(&mut self, filename: &str, out_dir: &str) -> bool {
@@ -78,7 +91,11 @@ impl ArchiveExtract {
 
             if is_directory {
                 let dir_name = filename_in_archive.trim_end_matches('/');
-                let out_full_dir = Self::make_out_path(out_dir, dir_name);
+                let Some(out_full_dir) = Self::make_out_path(out_dir, dir_name) else {
+                    self.msg(&format!("Invalid archive path {}", filename_in_archive));
+                    archive.zip_file_close();
+                    return false;
+                };
                 if fs::create_dir_all(&out_full_dir).is_err() {
                     self.msg(&format!("Error creating directory {:?}", out_full_dir));
                     archive.zip_file_close();
@@ -88,7 +105,11 @@ impl ArchiveExtract {
             }
 
             self.msg(&format!("Extracting {}", filename_in_archive));
-            let out_path = Self::make_out_path(out_dir, &filename_in_archive);
+            let Some(out_path) = Self::make_out_path(out_dir, &filename_in_archive) else {
+                self.msg(&format!("Invalid archive path {}", filename_in_archive));
+                archive.zip_file_close();
+                return false;
+            };
             if let Some(parent) = out_path.parent() {
                 if !parent.as_os_str().is_empty() && fs::create_dir_all(parent).is_err() {
                     self.msg(&format!("Error creating directory {:?}", parent));

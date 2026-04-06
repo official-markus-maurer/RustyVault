@@ -586,6 +586,13 @@ impl super::Fix {
         let mut zip_mut = zip_file.borrow_mut();
         zip_mut.zip_struct = desired_zip_struct;
         zip_mut.set_got_status(GotStatus::Got);
+        if let Ok(meta) = fs::metadata(&zip_path) {
+            if let Ok(modified) = meta.modified() {
+                if let Ok(dur) = modified.duration_since(std::time::UNIX_EPOCH) {
+                    zip_mut.file_mod_time_stamp = dur.as_secs() as i64;
+                }
+            }
+        }
         zip_mut.rep_status_reset();
         zip_mut.cached_stats = None;
         true

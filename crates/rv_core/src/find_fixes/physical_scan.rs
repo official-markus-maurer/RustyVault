@@ -177,8 +177,11 @@ impl FindFixes {
         }
 
         let crc: Option<[u8; 4]> = file.crc.as_deref().and_then(|b| b.try_into().ok());
+        let alt_crc: Option<[u8; 4]> = file.alt_crc.as_deref().and_then(|b| b.try_into().ok());
         let sha1: Option<[u8; 20]> = file.sha1.as_deref().and_then(|b| b.try_into().ok());
+        let alt_sha1: Option<[u8; 20]> = file.alt_sha1.as_deref().and_then(|b| b.try_into().ok());
         let md5: Option<[u8; 16]> = file.md5.as_deref().and_then(|b| b.try_into().ok());
+        let alt_md5: Option<[u8; 16]> = file.alt_md5.as_deref().and_then(|b| b.try_into().ok());
 
         if let Some(crc) = crc {
             if let Some(got_list) = crc_map.get(&(size, crc)) {
@@ -188,6 +191,11 @@ impl FindFixes {
                 if let Some(got_list) = crc_map.get(&(alt_size, crc)) {
                     extend_unique_epoch(&mut candidates, got_list, &mut seen_epoch, epoch);
                 }
+            }
+        }
+        if let Some(alt_crc) = alt_crc {
+            if let Some(got_list) = crc_map.get(&(alt_size, alt_crc)) {
+                extend_unique_epoch(&mut candidates, got_list, &mut seen_epoch, epoch);
             }
         }
         epoch = epoch.wrapping_add(1);
@@ -205,6 +213,11 @@ impl FindFixes {
                 }
             }
         }
+        if let Some(alt_sha1) = alt_sha1 {
+            if let Some(got_list) = sha1_map.get(&(alt_size, alt_sha1)) {
+                extend_unique_epoch(&mut candidates, got_list, &mut seen_epoch, epoch);
+            }
+        }
         epoch = epoch.wrapping_add(1);
         if epoch == 0 {
             seen_epoch.fill(0);
@@ -220,6 +233,11 @@ impl FindFixes {
                 }
             }
         }
+        if let Some(alt_md5) = alt_md5 {
+            if let Some(got_list) = md5_map.get(&(alt_size, alt_md5)) {
+                extend_unique_epoch(&mut candidates, got_list, &mut seen_epoch, epoch);
+            }
+        }
 
         candidates.into_iter().any(|idx| {
             let candidate = &files_got[idx];
@@ -229,6 +247,7 @@ impl FindFixes {
             let candidate_ref = candidate.borrow();
             candidate_ref.dat_status() == DatStatus::InDatCollect
                 && candidate_ref.got_status() == GotStatus::Got
+                && Self::got_and_matching_are_full_matches(file, &candidate_ref)
         })
     }
 

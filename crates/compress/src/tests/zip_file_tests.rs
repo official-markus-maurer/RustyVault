@@ -900,6 +900,29 @@ fn test_zip_file_add_fake_matches_reference_header_fields_for_ascii_and_utf8_and
 }
 
 #[test]
+fn test_zip_member_listing_preserves_archive_order() {
+    let path = unique_temp_zip("compress_zip_order");
+    {
+        let file = File::create(&path).unwrap();
+        let mut writer = ZipWriter::new(file);
+        let opt = FileOptions::<()>::default().compression_method(CompressionMethod::Stored);
+        writer.start_file("b.txt", opt).unwrap();
+        writer.write_all(b"b").unwrap();
+        writer.start_file("a.txt", opt).unwrap();
+        writer.write_all(b"a").unwrap();
+        writer.finish().unwrap();
+    }
+
+    let mut zip_file = ZipFile::new();
+    assert_eq!(zip_file.zip_file_open(&path, 0, true), ZipReturn::ZipGood);
+    assert_eq!(zip_file.local_files_count(), 2);
+    assert_eq!(zip_file.get_file_header(0).unwrap().filename, "b.txt");
+    assert_eq!(zip_file.get_file_header(1).unwrap().filename, "a.txt");
+    zip_file.zip_file_close();
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn test_zip_file_raw_write_stream_preserves_compressed_bytes() {
     let path = unique_temp_zip("compress_zip_raw_write");
     let filename = "hello.txt";

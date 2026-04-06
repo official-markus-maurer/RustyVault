@@ -260,7 +260,7 @@ impl DatClean {
         if d_dir.children.is_empty() {
             return false;
         }
-        let children = std::mem::take(&mut d_dir.children);
+        let children = d_dir.take_children();
         let mut found = false;
         for mut child in children {
             if Self::remove_empty_sets(&mut child) {
@@ -284,7 +284,7 @@ impl DatClean {
         if d_dir.children.is_empty() {
             return false;
         }
-        let children = std::mem::take(&mut d_dir.children);
+        let children = d_dir.take_children();
         let mut found = false;
         for mut child in children {
             if Self::remove_not_collected(&mut child) {
@@ -304,7 +304,7 @@ impl DatClean {
                 Self::remove_no_dumps(m_game);
                 continue;
             }
-            let children = std::mem::take(&mut m_game.children);
+            let children = m_game.take_children();
             for child in children {
                 let remove = child
                     .file()
@@ -326,7 +326,7 @@ impl DatClean {
                 Self::remove_chd(m_game);
                 continue;
             }
-            let children = std::mem::take(&mut m_game.children);
+            let children = m_game.take_children();
             for child in children {
                 let remove = child.file().is_some_and(|f| f.is_disk);
                 if !remove {
@@ -345,7 +345,7 @@ impl DatClean {
                 Self::remove_non_chd(m_game);
                 continue;
             }
-            let children = std::mem::take(&mut m_game.children);
+            let children = m_game.take_children();
             for child in children {
                 let remove = child.file().is_some_and(|f| !f.is_disk);
                 if !remove {
@@ -427,7 +427,7 @@ impl DatClean {
     }
 
     pub fn remove_files_not_in_games(t_dat: &mut DatDir) {
-        let children = std::mem::take(&mut t_dat.children);
+        let children = t_dat.take_children();
         for mut child in children {
             if child.file().is_some() {
                 continue;
@@ -442,7 +442,7 @@ impl DatClean {
     }
 
     pub fn remove_empty_directories(t_dat: &mut DatDir) {
-        let children = std::mem::take(&mut t_dat.children);
+        let children = t_dat.take_children();
         for mut child in children {
             let Some(dat_dir) = child.dir_mut() else {
                 t_dat.add_child(child);

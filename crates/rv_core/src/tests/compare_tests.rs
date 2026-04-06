@@ -1,4 +1,5 @@
 use super::*;
+use dat_reader::enums::{GotStatus, HeaderFileType};
 use std::cell::RefCell;
 use std::fs;
 use std::rc::Rc;
@@ -50,8 +51,13 @@ fn test_phase_1_test_hashes() {
 
     // Test Alt Match
     db_file.crc = Some(vec![0x11, 0x22, 0x33, 0x44]);
+    db_file.header_file_type = HeaderFileType::NES;
     db_file.alt_size = Some(1024);
     db_file.alt_crc = Some(vec![0xAA, 0xBB, 0xCC, 0xDD]);
+
+    sc_file.header_file_type = HeaderFileType::NES;
+    sc_file.alt_size = Some(1024);
+    sc_file.alt_crc = Some(vec![0xAA, 0xBB, 0xCC, 0xDD]);
 
     let (matched, alt) = FileCompare::phase_1_test(&db_file, &sc_file, EScanLevel::Level2, 0);
     assert!(matched);
@@ -59,8 +65,30 @@ fn test_phase_1_test_hashes() {
 
     // Test Mismatch
     sc_file.crc = Some(vec![0xFF, 0xFF, 0xFF, 0xFF]);
+    sc_file.alt_crc = Some(vec![0xFF, 0xFF, 0xFF, 0xFF]);
     let (matched, _) = FileCompare::phase_1_test(&db_file, &sc_file, EScanLevel::Level2, 0);
     assert!(!matched);
+}
+
+#[test]
+fn test_phase_1_test_hashes_requires_some_hash_match_unless_zero_size_no_hashes() {
+    let mut db_file = RvFile::new(FileType::File);
+    db_file.name = "rom.bin".to_string();
+    db_file.size = Some(1024);
+
+    let mut sc_file = ScannedFile::new(FileType::File);
+    sc_file.name = "rom.bin".to_string();
+    sc_file.size = Some(1024);
+    sc_file.crc = Some(vec![0xAA, 0xBB, 0xCC, 0xDD]);
+
+    let (matched, _) = FileCompare::phase_1_test(&db_file, &sc_file, EScanLevel::Level2, 0);
+    assert!(!matched);
+
+    db_file.size = Some(0);
+    sc_file.size = Some(0);
+    sc_file.crc = Some(vec![0, 0, 0, 0]);
+    let (matched, _) = FileCompare::phase_1_test(&db_file, &sc_file, EScanLevel::Level2, 0);
+    assert!(matched);
 }
 
 #[test]
@@ -131,15 +159,35 @@ fn test_phase_1_test_uses_sha1_identity_even_without_crc() {
 }
 
 #[test]
+fn test_phase_1_test_timestamp_match_can_use_db_header_length_for_alt_size_match() {
+    let mut db_file = RvFile::new(FileType::File);
+    db_file.name = "rom.nes".to_string();
+    db_file.size = Some(4);
+    db_file.header_file_type = HeaderFileType::NES;
+    db_file.file_mod_time_stamp = 123456;
+
+    let mut sc_file = ScannedFile::new(FileType::File);
+    sc_file.name = "rom.nes".to_string();
+    sc_file.size = Some(20);
+    sc_file.file_mod_time_stamp = 123456;
+
+    let (matched, alt) = FileCompare::phase_1_test(&db_file, &sc_file, EScanLevel::Level1, 0);
+    assert!(matched);
+    assert!(alt);
+}
+
+#[test]
 fn test_phase_1_test_alt_match_uses_scanned_alt_hashes() {
     let mut db_file = RvFile::new(FileType::File);
     db_file.name = "rom.nes".to_string();
+    db_file.header_file_type = HeaderFileType::NES;
     db_file.alt_size = Some(4);
     db_file.alt_crc = Some(vec![0xAD, 0xF3, 0xF3, 0x63]);
 
     let mut sc_file = ScannedFile::new(FileType::File);
     sc_file.name = "rom.nes".to_string();
     sc_file.size = Some(20);
+    sc_file.header_file_type = HeaderFileType::NES;
     sc_file.crc = Some(vec![0x00, 0x00, 0x00, 0x00]);
     sc_file.alt_size = Some(4);
     sc_file.alt_crc = Some(vec![0xAD, 0xF3, 0xF3, 0x63]);
@@ -150,7 +198,7 @@ fn test_phase_1_test_alt_match_uses_scanned_alt_hashes() {
 }
 
 #[test]
-fn test_phase_1_test_primary_match_can_use_scanned_alt_hashes() {
+fn test_phase_1_test_does_not_match_primary_db_hashes_against_scanned_alt_hashes() {
     let mut db_file = RvFile::new(FileType::File);
     db_file.name = "rom.nes".to_string();
     db_file.size = Some(4);
@@ -164,12 +212,12 @@ fn test_phase_1_test_primary_match_can_use_scanned_alt_hashes() {
     sc_file.alt_crc = Some(vec![0xAD, 0xF3, 0xF3, 0x63]);
 
     let (matched, alt) = FileCompare::phase_1_test(&db_file, &sc_file, EScanLevel::Level2, 0);
-    assert!(matched);
-    assert!(alt);
+    assert!(!matched);
+    assert!(!alt);
 }
 
 #[test]
-fn test_phase_1_test_primary_match_can_use_scanned_alt_sha1() {
+fn test_phase_1_test_does_not_match_primary_db_sha1_against_scanned_alt_sha1() {
     let mut db_file = RvFile::new(FileType::File);
     db_file.name = "rom.nes".to_string();
     db_file.size = Some(4);
@@ -183,20 +231,22 @@ fn test_phase_1_test_primary_match_can_use_scanned_alt_sha1() {
     sc_file.alt_sha1 = Some(vec![0xAD, 0xF3, 0xF3, 0x63]);
 
     let (matched, alt) = FileCompare::phase_1_test(&db_file, &sc_file, EScanLevel::Level2, 0);
-    assert!(matched);
-    assert!(alt);
+    assert!(!matched);
+    assert!(!alt);
 }
 
 #[test]
 fn test_phase_2_name_agnostic_test_matches_renamed_file_by_alt_md5() {
     let mut db_file = RvFile::new(FileType::File);
     db_file.name = "expected.bin".to_string();
+    db_file.header_file_type = HeaderFileType::NES;
     db_file.alt_size = Some(4);
     db_file.alt_md5 = Some(vec![0x11, 0x22, 0x33, 0x44]);
 
     let mut sc_file = ScannedFile::new(FileType::File);
     sc_file.name = "renamed.bin".to_string();
     sc_file.size = Some(20);
+    sc_file.header_file_type = HeaderFileType::NES;
     sc_file.md5 = Some(vec![0x00, 0x00, 0x00, 0x00]);
     sc_file.alt_size = Some(4);
     sc_file.alt_md5 = Some(vec![0x11, 0x22, 0x33, 0x44]);
@@ -211,12 +261,14 @@ fn test_phase_2_name_agnostic_test_matches_renamed_file_by_alt_md5() {
 fn test_phase_2_name_agnostic_test_matches_renamed_file_by_alt_sha1() {
     let mut db_file = RvFile::new(FileType::File);
     db_file.name = "expected.bin".to_string();
+    db_file.header_file_type = HeaderFileType::NES;
     db_file.alt_size = Some(4);
     db_file.alt_sha1 = Some(vec![0x11, 0x22, 0x33, 0x44]);
 
     let mut sc_file = ScannedFile::new(FileType::File);
     sc_file.name = "renamed.bin".to_string();
     sc_file.size = Some(20);
+    sc_file.header_file_type = HeaderFileType::NES;
     sc_file.sha1 = Some(vec![0x00, 0x00, 0x00, 0x00]);
     sc_file.alt_size = Some(4);
     sc_file.alt_sha1 = Some(vec![0x11, 0x22, 0x33, 0x44]);
@@ -225,6 +277,20 @@ fn test_phase_2_name_agnostic_test_matches_renamed_file_by_alt_sha1() {
     let (matched, alt) = FileCompare::phase_2_name_agnostic_test(&db_file, &mut sc_file);
     assert!(matched);
     assert!(alt);
+}
+
+#[test]
+fn test_phase_2_test_treats_file_locked_as_match() {
+    let mut db_file = RvFile::new(FileType::File);
+    db_file.name = "rom.bin".to_string();
+
+    let mut sc_file = ScannedFile::new(FileType::File);
+    sc_file.name = "rom.bin".to_string();
+    sc_file.got_status = GotStatus::FileLocked;
+
+    let (matched, alt) = FileCompare::phase_2_test(&db_file, &mut sc_file, 0);
+    assert!(matched);
+    assert!(!alt);
 }
 
 #[test]
@@ -459,7 +525,7 @@ fn test_phase_2_test_rejects_locked_file_instead_of_auto_matching() {
     sc_file.deep_scanned = true;
 
     let (matched, alt) = FileCompare::phase_2_test(&db_file, &mut sc_file, 0);
-    assert!(!matched);
+    assert!(matched);
     assert!(!alt);
 }
 
@@ -475,7 +541,7 @@ fn test_phase_2_test_allows_size_only_exact_name_match_without_hash_identity() {
     sc_file.deep_scanned = true;
 
     let (matched, alt) = FileCompare::phase_2_test(&db_file, &mut sc_file, 0);
-    assert!(matched);
+    assert!(!matched);
     assert!(!alt);
 }
 
@@ -491,8 +557,8 @@ fn test_phase_2_test_allows_alt_size_only_exact_name_match_without_hash_identity
     sc_file.deep_scanned = true;
 
     let (matched, alt) = FileCompare::phase_2_test(&db_file, &mut sc_file, 0);
-    assert!(matched);
-    assert!(alt);
+    assert!(!matched);
+    assert!(!alt);
 }
 
 #[test]
@@ -507,7 +573,7 @@ fn test_phase_2_test_allows_fileonly_size_only_exact_name_match_without_hash_ide
     sc_file.deep_scanned = true;
 
     let (matched, alt) = FileCompare::phase_2_test(&db_file, &mut sc_file, 0);
-    assert!(matched);
+    assert!(!matched);
     assert!(!alt);
 }
 
@@ -523,7 +589,7 @@ fn test_phase_2_test_allows_archive_member_size_only_exact_name_match_without_ha
     sc_file.deep_scanned = true;
 
     let (matched, alt) = FileCompare::phase_2_test(&db_file, &mut sc_file, 0);
-    assert!(matched);
+    assert!(!matched);
     assert!(!alt);
 }
 
@@ -778,6 +844,6 @@ fn test_phase_2_name_agnostic_test_allows_size_only_identity_with_timestamp_conf
     sc_file.deep_scanned = true;
 
     let (matched, alt) = FileCompare::phase_2_name_agnostic_test(&db_file, &mut sc_file);
-    assert!(matched);
-    assert!(alt);
+    assert!(!matched);
+    assert!(!alt);
 }

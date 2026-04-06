@@ -101,6 +101,43 @@ fn test_scan_directory_level2_hashes_loose_files() {
 }
 
 #[test]
+fn test_scan_directory_rule_scan_ignores_override_global_scan_ignores() {
+    let original_settings = crate::settings::get_settings();
+    let mut settings = crate::settings::Settings::default();
+    settings.ignore_files.items = vec!["ignore:global_ignore.bin".to_string()];
+    crate::settings::update_settings(settings);
+
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("global_ignore.bin"), b"a").unwrap();
+    std::fs::write(dir.path().join("rule_ignore.bin"), b"b").unwrap();
+    std::fs::write(dir.path().join("keep.bin"), b"c").unwrap();
+
+    let files_global_only = Scanner::scan_directory_with_level_and_ignore(
+        dir.path().to_str().unwrap(),
+        crate::settings::EScanLevel::Level1,
+        &[],
+    );
+    assert!(files_global_only
+        .iter()
+        .all(|f| f.name != "global_ignore.bin"));
+
+    let rule_patterns = vec!["ignore:rule_ignore.bin".to_string()];
+    let files_rule_override = Scanner::scan_directory_with_level_and_ignore(
+        dir.path().to_str().unwrap(),
+        crate::settings::EScanLevel::Level1,
+        &rule_patterns,
+    );
+    assert!(files_rule_override
+        .iter()
+        .any(|f| f.name == "global_ignore.bin"));
+    assert!(files_rule_override
+        .iter()
+        .all(|f| f.name != "rule_ignore.bin"));
+
+    crate::settings::update_settings(original_settings);
+}
+
+#[test]
 fn test_scan_archive_file_populates_headerless_alt_hashes() {
     let dir = tempdir().unwrap();
     let archive_path = dir.path().join("headered.zip");

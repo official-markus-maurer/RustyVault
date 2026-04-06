@@ -35,20 +35,14 @@ impl RvFile {
             && self.got_status == dat_reader::enums::GotStatus::Got
         {
             if let Some(parent_rc) = self.parent.as_ref().and_then(|p| p.upgrade()) {
-                let parent_name = parent_rc.borrow().get_full_name();
-                let rule = crate::settings::find_rule(&parent_name);
-
-                let rule_has_db_patterns = rule.ignore_files.items.iter().any(|p| {
-                    crate::patterns::extract_db_pattern(p).is_some_and(|s| !s.trim().is_empty())
-                });
-
-                let patterns = if rule_has_db_patterns {
-                    &rule.ignore_files.items
+                let parent_name = parent_rc.borrow().get_logical_name();
+                let patterns = if let Some(rule) = crate::settings::find_rule_opt(&parent_name) {
+                    rule.ignore_files.items
                 } else {
-                    &crate::settings::get_settings().ignore_files.items
+                    crate::settings::get_settings().ignore_files.items
                 };
 
-                for raw in patterns {
+                for raw in &patterns {
                     let Some(pat) = crate::patterns::extract_db_pattern(raw) else {
                         continue;
                     };
@@ -57,29 +51,9 @@ impl RvFile {
                         continue;
                     }
 
-                    #[cfg(windows)]
-                    {
-                        let is_regex = pat.len() >= 6 && pat[..6].eq_ignore_ascii_case("regex:");
-                        if is_regex {
-                            if crate::patterns::matches_pattern(&self.name, pat) {
-                                self.rep_status = RepStatus::Ignore;
-                                return;
-                            }
-                        } else {
-                            let name = self.name.to_ascii_lowercase();
-                            let p = pat.to_ascii_lowercase();
-                            if crate::patterns::matches_pattern(&name, &p) {
-                                self.rep_status = RepStatus::Ignore;
-                                return;
-                            }
-                        }
-                    }
-                    #[cfg(not(windows))]
-                    {
-                        if crate::patterns::matches_pattern(&self.name, pat) {
-                            self.rep_status = RepStatus::Ignore;
-                            return;
-                        }
+                    if crate::patterns::matches_pattern(&self.name, pat) {
+                        self.rep_status = RepStatus::Ignore;
+                        return;
                     }
                 }
             }
@@ -87,146 +61,170 @@ impl RvFile {
 
         let new_status = match (self.file_type, self.dat_status, self.got_status) {
             (
-                FileType::File
-                | FileType::FileZip
-                | FileType::FileSevenZip
-                | FileType::FileOnly
-                | FileType::Zip
-                | FileType::SevenZip,
+                FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly,
                 dat_reader::enums::DatStatus::InDatCollect,
                 dat_reader::enums::GotStatus::Got,
             ) => RepStatus::Correct,
             (
-                FileType::File
-                | FileType::FileZip
-                | FileType::FileSevenZip
-                | FileType::FileOnly
-                | FileType::Zip
-                | FileType::SevenZip,
+                FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly,
                 dat_reader::enums::DatStatus::InDatCollect,
                 dat_reader::enums::GotStatus::NotGot,
             ) => RepStatus::Missing,
             (
-                FileType::File
-                | FileType::FileZip
-                | FileType::FileSevenZip
-                | FileType::FileOnly
-                | FileType::Zip
-                | FileType::SevenZip,
+                FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly,
                 dat_reader::enums::DatStatus::InDatCollect,
                 dat_reader::enums::GotStatus::Corrupt,
             ) => RepStatus::Corrupt,
             (
-                FileType::File
-                | FileType::FileZip
-                | FileType::FileSevenZip
-                | FileType::FileOnly
-                | FileType::Zip
-                | FileType::SevenZip,
+                FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly,
                 dat_reader::enums::DatStatus::InDatMerged | dat_reader::enums::DatStatus::InDatNoDump,
                 dat_reader::enums::GotStatus::NotGot,
             ) => RepStatus::NotCollected,
             (
-                FileType::File
-                | FileType::FileZip
-                | FileType::FileSevenZip
-                | FileType::FileOnly
-                | FileType::Zip
-                | FileType::SevenZip,
+                FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly,
                 dat_reader::enums::DatStatus::InDatMerged | dat_reader::enums::DatStatus::InDatNoDump,
-                dat_reader::enums::GotStatus::Got | dat_reader::enums::GotStatus::Corrupt,
+                dat_reader::enums::GotStatus::Got,
             ) => RepStatus::UnNeeded,
             (
-                FileType::File
-                | FileType::FileZip
-                | FileType::FileSevenZip
-                | FileType::FileOnly
-                | FileType::Zip
-                | FileType::SevenZip,
+                FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly,
+                dat_reader::enums::DatStatus::InDatMerged | dat_reader::enums::DatStatus::InDatNoDump,
+                dat_reader::enums::GotStatus::Corrupt,
+            ) => RepStatus::Corrupt,
+            (
+                FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly,
                 dat_reader::enums::DatStatus::InDatMIA,
                 dat_reader::enums::GotStatus::NotGot,
             ) => RepStatus::MissingMIA,
             (
-                FileType::File
-                | FileType::FileZip
-                | FileType::FileSevenZip
-                | FileType::FileOnly
-                | FileType::Zip
-                | FileType::SevenZip,
+                FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly,
                 dat_reader::enums::DatStatus::InDatMIA,
                 dat_reader::enums::GotStatus::Got,
             ) => RepStatus::CorrectMIA,
             (
-                FileType::File
-                | FileType::FileZip
-                | FileType::FileSevenZip
-                | FileType::FileOnly
-                | FileType::Zip
-                | FileType::SevenZip,
+                FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly,
+                dat_reader::enums::DatStatus::InDatMIA,
+                dat_reader::enums::GotStatus::Corrupt,
+            ) => RepStatus::Corrupt,
+            (
+                FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly,
                 dat_reader::enums::DatStatus::InToSort,
                 dat_reader::enums::GotStatus::Got,
             ) => RepStatus::InToSort,
             (
-                FileType::File
-                | FileType::FileZip
-                | FileType::FileSevenZip
-                | FileType::FileOnly
-                | FileType::Zip
-                | FileType::SevenZip,
+                FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly,
+                dat_reader::enums::DatStatus::InToSort,
+                dat_reader::enums::GotStatus::Corrupt,
+            ) => RepStatus::Corrupt,
+            (
+                FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly,
                 dat_reader::enums::DatStatus::InToSort,
                 dat_reader::enums::GotStatus::NotGot,
             ) => RepStatus::Deleted,
             (
-                FileType::File
-                | FileType::FileZip
-                | FileType::FileSevenZip
-                | FileType::FileOnly
-                | FileType::Zip
-                | FileType::SevenZip,
+                FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly,
                 dat_reader::enums::DatStatus::NotInDat,
                 dat_reader::enums::GotStatus::Got,
             ) => RepStatus::Unknown,
             (
-                FileType::File
-                | FileType::FileZip
-                | FileType::FileSevenZip
-                | FileType::FileOnly
-                | FileType::Zip
-                | FileType::SevenZip,
+                FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly,
+                dat_reader::enums::DatStatus::NotInDat,
+                dat_reader::enums::GotStatus::Corrupt,
+            ) => RepStatus::Corrupt,
+            (
+                FileType::File | FileType::FileZip | FileType::FileSevenZip | FileType::FileOnly,
                 dat_reader::enums::DatStatus::NotInDat,
                 dat_reader::enums::GotStatus::NotGot,
             ) => RepStatus::Deleted,
             (
-                FileType::Dir,
-                dat_reader::enums::DatStatus::InDatCollect
-                | dat_reader::enums::DatStatus::InDatMerged
-                | dat_reader::enums::DatStatus::InDatNoDump,
+                FileType::Dir | FileType::Zip | FileType::SevenZip,
+                dat_reader::enums::DatStatus::InDatCollect,
                 dat_reader::enums::GotStatus::Got,
             ) => RepStatus::DirCorrect,
             (
-                FileType::Dir,
-                dat_reader::enums::DatStatus::InDatCollect
-                | dat_reader::enums::DatStatus::InDatMerged
-                | dat_reader::enums::DatStatus::InDatNoDump,
+                FileType::Dir | FileType::Zip | FileType::SevenZip,
+                dat_reader::enums::DatStatus::InDatCollect,
                 dat_reader::enums::GotStatus::NotGot,
             ) => RepStatus::DirMissing,
             (
-                FileType::Dir,
-                dat_reader::enums::DatStatus::InDatCollect
-                | dat_reader::enums::DatStatus::InDatMerged
-                | dat_reader::enums::DatStatus::InDatNoDump,
+                FileType::Dir | FileType::Zip | FileType::SevenZip,
+                dat_reader::enums::DatStatus::InDatCollect,
                 dat_reader::enums::GotStatus::Corrupt,
             ) => RepStatus::DirCorrupt,
             (
                 FileType::Dir,
+                dat_reader::enums::DatStatus::InDatMerged | dat_reader::enums::DatStatus::InDatNoDump,
+                dat_reader::enums::GotStatus::Got,
+            ) => RepStatus::DirCorrect,
+            (
+                FileType::Dir,
+                dat_reader::enums::DatStatus::InDatMerged | dat_reader::enums::DatStatus::InDatNoDump,
+                dat_reader::enums::GotStatus::NotGot,
+            ) => RepStatus::DirMissing,
+            (
+                FileType::Dir,
+                dat_reader::enums::DatStatus::InDatMerged | dat_reader::enums::DatStatus::InDatNoDump,
+                dat_reader::enums::GotStatus::Corrupt,
+            ) => RepStatus::DirCorrupt,
+            (
+                FileType::Zip | FileType::SevenZip,
+                dat_reader::enums::DatStatus::InDatMerged | dat_reader::enums::DatStatus::InDatNoDump,
+                dat_reader::enums::GotStatus::NotGot,
+            ) => RepStatus::NotCollected,
+            (
+                FileType::Zip | FileType::SevenZip,
+                dat_reader::enums::DatStatus::InDatMerged | dat_reader::enums::DatStatus::InDatNoDump,
+                dat_reader::enums::GotStatus::Got,
+            ) => RepStatus::UnNeeded,
+            (
+                FileType::Zip | FileType::SevenZip,
+                dat_reader::enums::DatStatus::InDatMerged | dat_reader::enums::DatStatus::InDatNoDump,
+                dat_reader::enums::GotStatus::Corrupt,
+            ) => RepStatus::DirCorrupt,
+            (
+                FileType::Zip | FileType::SevenZip,
+                dat_reader::enums::DatStatus::InDatMIA,
+                dat_reader::enums::GotStatus::NotGot,
+            ) => RepStatus::MissingMIA,
+            (
+                FileType::Zip | FileType::SevenZip,
+                dat_reader::enums::DatStatus::InDatMIA,
+                dat_reader::enums::GotStatus::Got,
+            ) => RepStatus::CorrectMIA,
+            (
+                FileType::Zip | FileType::SevenZip,
+                dat_reader::enums::DatStatus::InDatMIA,
+                dat_reader::enums::GotStatus::Corrupt,
+            ) => RepStatus::DirCorrupt,
+            (
+                FileType::Dir | FileType::Zip | FileType::SevenZip,
+                dat_reader::enums::DatStatus::InToSort,
+                dat_reader::enums::GotStatus::Got,
+            ) => RepStatus::DirInToSort,
+            (
+                FileType::Dir | FileType::Zip | FileType::SevenZip,
+                dat_reader::enums::DatStatus::InToSort,
+                dat_reader::enums::GotStatus::Corrupt,
+            ) => RepStatus::DirCorrupt,
+            (
+                FileType::Dir | FileType::Zip | FileType::SevenZip,
+                dat_reader::enums::DatStatus::InToSort,
+                dat_reader::enums::GotStatus::NotGot,
+            ) => RepStatus::Deleted,
+            (
+                FileType::Dir | FileType::Zip | FileType::SevenZip,
                 dat_reader::enums::DatStatus::NotInDat,
                 dat_reader::enums::GotStatus::Got,
             ) => RepStatus::DirUnknown,
             (
-                FileType::Dir,
-                dat_reader::enums::DatStatus::InToSort,
-                dat_reader::enums::GotStatus::Got,
-            ) => RepStatus::DirInToSort,
+                FileType::Dir | FileType::Zip | FileType::SevenZip,
+                dat_reader::enums::DatStatus::NotInDat,
+                dat_reader::enums::GotStatus::Corrupt,
+            ) => RepStatus::DirCorrupt,
+            (
+                FileType::Dir | FileType::Zip | FileType::SevenZip,
+                dat_reader::enums::DatStatus::NotInDat,
+                dat_reader::enums::GotStatus::NotGot,
+            ) => RepStatus::Deleted,
             _ => RepStatus::UnScanned,
         };
         self.rep_status = new_status;

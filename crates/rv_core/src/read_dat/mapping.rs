@@ -19,7 +19,7 @@ impl DatUpdate {
         let mut new_rv = RvFile::new(file_type);
         new_rv.name = dat_node.name.clone();
         new_rv.set_dat_status(DatStatus::InDatCollect);
-        new_rv.dat = Some(Rc::clone(&dat_rc));
+        new_rv.set_dat_ref(Some(Rc::clone(&dat_rc)));
         if let Some(existing) = &existing_match {
             Self::apply_existing_runtime_state(&mut new_rv, &existing.borrow());
         }
@@ -27,7 +27,7 @@ impl DatUpdate {
         if dat_node.is_dir() {
             let d_dir = dat_node.dir().unwrap();
             let logical_key = {
-                let parent_name = parent.borrow().get_full_name();
+                let parent_name = parent.borrow().get_logical_name();
                 if parent_name.is_empty() {
                     dat_node.name.clone()
                 } else {

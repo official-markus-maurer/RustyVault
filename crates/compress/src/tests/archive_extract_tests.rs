@@ -2,6 +2,7 @@ use crate::{ArchiveExtract, ICompress, ZipFile, ZipReturn};
 use crc32fast::Hasher as Crc32Hasher;
 use std::fs;
 use std::io::Write;
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zip::write::FileOptions;
 
@@ -51,6 +52,29 @@ fn archive_extract_zip_extracts_and_verifies_crc() {
     assert!(ex.full_extract(&zip_path, &out_dir));
     let out_path = std::path::Path::new(&out_dir).join("a.txt");
     assert_eq!(fs::read(&out_path).unwrap(), b"hello");
+
+    let _ = fs::remove_file(&zip_path);
+    let _ = fs::remove_dir_all(&out_dir);
+}
+
+#[test]
+fn archive_extract_rejects_zip_slip_paths() {
+    let zip_path = unique_temp("compress_extract_slip", "zip");
+    let out_dir = unique_temp("compress_extract_slip_out", "dir");
+    let _ = fs::create_dir_all(&out_dir);
+
+    {
+        let file = fs::File::create(&zip_path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let opt = FileOptions::<()>::default().compression_method(zip::CompressionMethod::Stored);
+        writer.start_file("..\\evil.txt", opt).unwrap();
+        writer.write_all(b"evil").unwrap();
+        writer.finish().unwrap();
+    }
+
+    let mut ex = ArchiveExtract::new();
+    assert!(!ex.full_extract(&zip_path, &out_dir));
+    assert!(!Path::new(&out_dir).join("..\\evil.txt").exists());
 
     let _ = fs::remove_file(&zip_path);
     let _ = fs::remove_dir_all(&out_dir);

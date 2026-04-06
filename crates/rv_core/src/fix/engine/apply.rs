@@ -107,8 +107,7 @@ impl Fix {
                 );
                 if let Some(last) = cache_timer {
                     if last.elapsed().as_secs_f64() / 60.0 > settings.cache_save_time_period as f64 {
-                        // TODO(perf): cache writes serialize the full DB; use incremental writes or a background writer.
-                        crate::cache::Cache::write_cache(Rc::clone(&root));
+                        crate::cache::Cache::enqueue_write_cache(Rc::clone(&root));
                         cache_timer = Some(std::time::Instant::now());
                     } else {
                         cache_timer = Some(last);
@@ -119,7 +118,7 @@ impl Fix {
             file_process_queue_head = 0;
             if let Some(last) = cache_timer {
                 if last.elapsed().as_secs_f64() / 60.0 > settings.cache_save_time_period as f64 {
-                    crate::cache::Cache::write_cache(Rc::clone(&root));
+                    crate::cache::Cache::enqueue_write_cache(Rc::clone(&root));
                     cache_timer = Some(std::time::Instant::now());
                 } else {
                     cache_timer = Some(last);
@@ -228,8 +227,11 @@ impl Fix {
         md5_map: &HashMap<crate::hash_keys::Md5Key, Rc<RefCell<RvFile>>>,
         retained_physical_counts: &mut HashMap<String, u32>,
     ) {
-        if child.borrow().rep_status() == RepStatus::Deleted {
-            return;
+        {
+            let c = child.borrow();
+            if !c.is_directory() && c.rep_status() == RepStatus::Deleted {
+                return;
+            }
         }
 
         let (file_type, rep_status, is_selected) = {

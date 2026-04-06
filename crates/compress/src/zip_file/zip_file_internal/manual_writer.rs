@@ -17,6 +17,7 @@ pub(crate) struct ManualCentralEntry {
     pub(crate) uncompressed_size: u64,
     pub(crate) local_header_offset: u64,
     pub(crate) is_directory: bool,
+    pub(crate) external_attributes: u32,
 }
 
 impl ManualZipWriter {
@@ -84,6 +85,7 @@ impl ManualZipWriter {
         if is_directory && uncompressed_size != 0 {
             return Err(ZipReturn::ZipErrorWritingToOutputStream);
         }
+        let external_attributes = if is_directory { 0x10 } else { 0x20 };
 
         let version_needed = if compression_method == 93 {
             63u16
@@ -152,6 +154,7 @@ impl ManualZipWriter {
             uncompressed_size,
             local_header_offset,
             is_directory,
+            external_attributes,
         })
     }
 
@@ -195,8 +198,9 @@ impl ManualZipWriter {
                 20u16
             };
 
+            let version_made_by = version_needed;
             central.extend_from_slice(&0x02014B50u32.to_le_bytes());
-            central.extend_from_slice(&version_needed.to_le_bytes());
+            central.extend_from_slice(&version_made_by.to_le_bytes());
             central.extend_from_slice(&version_needed.to_le_bytes());
             central.extend_from_slice(&entry.flags.to_le_bytes());
             central.extend_from_slice(&entry.compression_method.to_le_bytes());
@@ -210,7 +214,7 @@ impl ManualZipWriter {
             central.extend_from_slice(&0u16.to_le_bytes());
             central.extend_from_slice(&0u16.to_le_bytes());
             central.extend_from_slice(&0u16.to_le_bytes());
-            central.extend_from_slice(&0u32.to_le_bytes());
+            central.extend_from_slice(&entry.external_attributes.to_le_bytes());
             central.extend_from_slice(&header_local_offset.to_le_bytes());
             central.extend_from_slice(&entry.filename_bytes);
             if !extra.is_empty() {

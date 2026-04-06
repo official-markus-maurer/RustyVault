@@ -1,7 +1,6 @@
 impl DatClean {
     pub fn set_ext(t_dat: &mut DatDir, header_file_type: HeaderFileType) {
-        let mut children = Vec::new();
-        children.append(&mut t_dat.children);
+        let children = t_dat.take_children();
         for mut node in children {
             match node.node {
                 crate::dat_store::DatBase::File(_) => {
@@ -92,7 +91,7 @@ impl DatClean {
                 d_dir.set_dat_struct(checked, fix);
             }
 
-            let children = std::mem::take(&mut d_dir.children);
+            let children = d_dir.take_children();
             for mut child in children {
                 Self::set_compression_type(&mut child, file_type, zs, fix);
                 d_dir.add_child(child);

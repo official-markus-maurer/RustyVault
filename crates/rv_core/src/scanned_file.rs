@@ -156,38 +156,6 @@ impl ScannedFile {
         Self::string_compare(path_a, path_b)
     }
 
-    fn list_search(
-        list: &[ScannedFile],
-        needle: &ScannedFile,
-        cmp: fn(&ScannedFile, &ScannedFile) -> i32,
-    ) -> usize {
-        let mut bottom = 0usize;
-        let mut top = list.len();
-        let mut mid = 0usize;
-        let mut res = -1i32;
-
-        while bottom < top && res != 0 {
-            mid = (bottom + top) / 2;
-            res = cmp(needle, &list[mid]);
-            if res < 0 {
-                top = mid;
-            } else if res > 0 {
-                bottom = mid + 1;
-            }
-        }
-
-        let mut index = mid;
-        if res == 0 {
-            while index > 0 && cmp(needle, &list[index - 1]) == 0 {
-                index -= 1;
-            }
-        } else if res > 0 {
-            index += 1;
-        }
-
-        index
-    }
-
     fn compare_name_dir(left: &ScannedFile, right: &ScannedFile) -> i32 {
         Self::directory_name_compare_case(&left.name, &right.name)
     }
@@ -252,11 +220,11 @@ impl ScannedFile {
             _ => return,
         };
 
-        let files = std::mem::take(&mut self.children);
-        for file in files {
-            let index = Self::list_search(&self.children, &file, cmp);
-            self.children.insert(index, file);
-        }
+        self.children.sort_by(|a, b| match cmp(a, b) {
+            -1 => std::cmp::Ordering::Less,
+            0 => std::cmp::Ordering::Equal,
+            _ => std::cmp::Ordering::Greater,
+        });
     }
 }
 

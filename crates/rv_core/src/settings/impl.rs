@@ -449,6 +449,13 @@ fn canonicalize_settings(mut settings: Settings) -> Settings {
         .filter(|s| !s.is_empty())
         .collect();
 
+    for rule in &mut settings.dat_rules.items {
+        if matches!(rule.merge, MergeType::CHDsMerge) {
+            rule.merge = MergeType::Merge;
+            rule.filter = FilterType::CHDsOnly;
+        }
+    }
+
     let had_explicit_mappings = settings
         .dir_mappings
         .items
@@ -580,6 +587,7 @@ pub fn load_settings_from_file() {
         .to_path_buf();
     if settings_path.exists() {
         if let Ok(xml_str) = std::fs::read_to_string(&settings_path) {
+            let xml_str = xml_str.replace("TrrntZipLevel", "Level");
             if let Ok(settings) = quick_xml::de::from_str::<Settings>(&xml_str) {
                 let mut settings = canonicalize_settings(settings);
                 apply_base_dir_to_settings_paths(&mut settings, &base_dir);
@@ -788,6 +796,32 @@ pub fn find_rule(dir_key: &str) -> DatRule {
                 dir_key: normalized_dir_key,
                 ..Default::default()
             };
+        }
+    })
+}
+
+pub fn find_rule_opt(dir_key: &str) -> Option<DatRule> {
+    GLOBAL_SETTINGS.with(|s| {
+        let settings = s.borrow();
+        let normalized_dir_key = normalize_dir_key(dir_key);
+        let mut current = normalized_dir_key.as_str();
+
+        loop {
+            if let Some(rule) = settings
+                .dat_rules
+                .items
+                .iter()
+                .find(|r| logical_dir_key_eq(&normalize_dir_key(&r.dir_key), current))
+            {
+                return Some(rule.clone());
+            }
+
+            if let Some((parent, _)) = current.rsplit_once('\\') {
+                current = parent;
+                continue;
+            }
+
+            return None;
         }
     })
 }

@@ -60,7 +60,7 @@ pub fn read_dat(buffer: &[u8], filename: &str) -> Result<DatHeader, String> {
         || first_lower.contains("doctype")
         || first_lower.contains("datafile")
     {
-        // Fast DTD strip if present (single <!DOCTYPE ... > block)
+        // Fast DTD strip if present
         let has_dtd = content.contains("<!DOCTYPE") || content.contains("<!doctype");
         if has_dtd {
             let mut cleaned = String::with_capacity(content.len());
@@ -68,12 +68,28 @@ pub fn read_dat(buffer: &[u8], filename: &str) -> Result<DatHeader, String> {
             let mut i = 0;
             while i < bytes.len() {
                 if i + 9 < bytes.len() && bytes[i..i + 9].eq_ignore_ascii_case(b"<!doctype") {
-                    // Skip until first '>' after the doctype start
                     i += 9;
-                    while i < bytes.len() && bytes[i] != b'>' {
+                    let mut in_subset = false;
+                    while i < bytes.len() {
+                        if !in_subset && bytes[i] == b'[' {
+                            in_subset = true;
+                            i += 1;
+                            continue;
+                        }
+                        if in_subset
+                            && bytes[i] == b']'
+                            && i + 1 < bytes.len()
+                            && bytes[i + 1] == b'>'
+                        {
+                            i += 2;
+                            break;
+                        }
+                        if !in_subset && bytes[i] == b'>' {
+                            i += 1;
+                            break;
+                        }
                         i += 1;
                     }
-                    i += 1;
                     continue;
                 }
                 cleaned.push(bytes[i] as char);

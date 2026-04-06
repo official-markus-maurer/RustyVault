@@ -10,8 +10,6 @@ pub fn draw_left_panel(
     info_frame_fill: egui::Color32,
     info_frame_stroke: egui::Stroke,
 ) {
-    // TODO(perf): stats calculation can be expensive on large trees. Consider a background stats job with cached results,
-    // or incrementally maintained counters per subtree.
     egui::SidePanel::left("left_panel")
         .resizable(true)
         .default_width(400.0)

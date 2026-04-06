@@ -14,9 +14,12 @@ use std::rc::Rc;
 ///
 /// Implementation notes:
 /// - Uses a 3-way merge strategy (DB ↔ filesystem) and prioritizes deterministic name ordering.
-///
-/// TODO: Implement deep-scan recovery for header-derived hashes and CHD verification paths.
 pub struct FileScanning;
+
+struct ScanCacheTimer {
+    last: std::time::Instant,
+    minutes: i32,
+}
 
 impl FileScanning {
     const PHYSICAL_STATUS_FLAGS: FileStatus = FileStatus::SIZE_FROM_HEADER
@@ -129,8 +132,42 @@ impl FileScanning {
         file_dir: &mut ScannedFile,
         scan_level: crate::settings::EScanLevel,
     ) {
-        // TODO(perf): reduce repeated sorting and repeated `.borrow()` calls in hot loops.
-        // TODO(threading): consider parallelizing per-subdirectory integration where the DB tree does not share nodes.
+        let settings = crate::settings::get_settings();
+        let mut timer = if settings.cache_save_timer_enabled && settings.cache_save_time_period > 0 {
+            Some(ScanCacheTimer {
+                last: std::time::Instant::now(),
+                minutes: settings.cache_save_time_period,
+            })
+        } else {
+            None
+        };
+        Self::scan_dir_with_level_impl(db_dir, file_dir, scan_level, &mut timer);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn scan_dir_with_level_forced_cache_timer(
+        db_dir: Rc<RefCell<RvFile>>,
+        file_dir: &mut ScannedFile,
+        scan_level: crate::settings::EScanLevel,
+        force_elapsed: std::time::Duration,
+    ) {
+        let settings = crate::settings::get_settings();
+        let last = std::time::Instant::now()
+            .checked_sub(force_elapsed)
+            .unwrap_or_else(std::time::Instant::now);
+        let mut timer = Some(ScanCacheTimer {
+            last,
+            minutes: settings.cache_save_time_period.max(1),
+        });
+        Self::scan_dir_with_level_impl(db_dir, file_dir, scan_level, &mut timer);
+    }
+
+    fn scan_dir_with_level_impl(
+        db_dir: Rc<RefCell<RvFile>>,
+        file_dir: &mut ScannedFile,
+        scan_level: crate::settings::EScanLevel,
+        timer: &mut Option<ScanCacheTimer>,
+    ) {
         file_dir.sort();
         let container_type = db_dir.borrow().file_type;
         {
@@ -138,11 +175,19 @@ impl FileScanning {
             for child in dir_mut.children.iter_mut() {
                 child.borrow_mut().search_found = false;
             }
-            dir_mut.children.sort_by(|a, b| {
-                let a_b = a.borrow();
-                let b_b = b.borrow();
+            let needs_sort = dir_mut.children.windows(2).any(|pair| {
+                let a_b = pair[0].borrow();
+                let b_b = pair[1].borrow();
                 Self::compare_db_child_names(container_type, &a_b.name, &b_b.name)
+                    == std::cmp::Ordering::Greater
             });
+            if needs_sort {
+                dir_mut.children.sort_by(|a, b| {
+                    let a_b = a.borrow();
+                    let b_b = b.borrow();
+                    Self::compare_db_child_names(container_type, &a_b.name, &b_b.name)
+                });
+            }
         }
         for child in file_dir.children.iter_mut() {
             child.search_found = false;
@@ -151,17 +196,18 @@ impl FileScanning {
         let mut db_index = 0;
         let mut file_index = 0;
 
-        while db_index < db_dir.borrow().children.len() || file_index < file_dir.children.len() {
-            let (db_count, file_count) = {
-                let dir = db_dir.borrow();
-                (dir.children.len(), file_dir.children.len())
-            };
+        loop {
+            let db_count = db_dir.borrow().children.len();
+            let file_count = file_dir.children.len();
+            if db_index >= db_count && file_index >= file_count {
+                break;
+            }
 
             let mut db_child: Option<Rc<RefCell<RvFile>>> = None;
             let res: i32;
 
             if db_index < db_count && file_index < file_count {
-                let db_c = Rc::clone(&db_dir.borrow().children[db_index]);
+                let db_c = { Rc::clone(&db_dir.borrow().children[db_index]) };
                 let file_c = &file_dir.children[file_index];
                 res = match Self::compare_names_for_group(&db_c.borrow().name, &file_c.name) {
                     std::cmp::Ordering::Less => -1,
@@ -186,13 +232,15 @@ impl FileScanning {
                     let mut dbs_count = 1usize;
                     dbs.push(Rc::clone(&db_first));
 
-                    while db_index + dbs_count < db_dir.borrow().children.len()
+                    let db_children = { db_dir.borrow().children.clone() };
+                    let db_first_name = { db_first.borrow().name.clone() };
+                    while db_index + dbs_count < db_children.len()
                         && Self::compare_names_for_group(
-                            &db_first.borrow().name,
-                            &db_dir.borrow().children[db_index + dbs_count].borrow().name,
+                            &db_first_name,
+                            &db_children[db_index + dbs_count].borrow().name,
                         ) == std::cmp::Ordering::Equal
                     {
-                        dbs.push(Rc::clone(&db_dir.borrow().children[db_index + dbs_count]));
+                        dbs.push(Rc::clone(&db_children[db_index + dbs_count]));
                         dbs_count += 1;
                     }
 
@@ -347,7 +395,12 @@ impl FileScanning {
                         let db_type = db_c.borrow().file_type;
                         match db_type {
                             FileType::Dir => {
-                                Self::scan_dir_with_level(Rc::clone(&db_c), file_child, scan_level);
+                                Self::scan_dir_with_level_impl(
+                                    Rc::clone(&db_c),
+                                    file_child,
+                                    scan_level,
+                                    timer,
+                                );
                             }
                             FileType::Zip | FileType::SevenZip => {
                                 if Self::should_scan_archive_contents(
@@ -361,14 +414,23 @@ impl FileScanning {
                                         db_c.borrow_mut().mark_as_missing();
                                         Self::match_found(Rc::clone(&db_c), file_child, alt_match);
                                     }
-                                    Self::scan_dir_with_level(
+                                    Self::scan_dir_with_level_impl(
                                         Rc::clone(&db_c),
                                         file_child,
                                         scan_level,
+                                        timer,
                                     );
                                 }
                             }
                             _ => {}
+                        }
+                    }
+
+                    if let Some(t) = timer.as_mut() {
+                        if t.last.elapsed().as_secs_f64() / 60.0 > t.minutes as f64 {
+                            let root = Self::find_tree_root(Rc::clone(&db_dir));
+                            crate::cache::Cache::enqueue_write_cache(root);
+                            t.last = std::time::Instant::now();
                         }
                     }
 
@@ -407,6 +469,21 @@ impl FileScanning {
                     Self::db_file_not_found(Rc::clone(&db_c), Rc::clone(&db_dir), &mut db_index);
                 }
                 _ => {}
+            }
+        }
+    }
+
+    fn find_tree_root(node: Rc<RefCell<RvFile>>) -> Rc<RefCell<RvFile>> {
+        let mut current = node;
+        loop {
+            let parent = {
+                let borrowed = current.borrow();
+                borrowed.parent.as_ref().and_then(|w| w.upgrade())
+            };
+            if let Some(parent) = parent {
+                current = parent;
+            } else {
+                return current;
             }
         }
     }
